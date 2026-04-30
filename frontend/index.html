@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    
+    <!-- SEO 元信息 -->
+    <meta name="description" content="书房管理系统 - 基于 NFC 技术的智能图书管理，支持豆瓣数据同步" />
+    <meta name="keywords" content="书房管理,NFC,图书管理,豆瓣,书房" />
+    
+    <!-- PWA 相关 -->
+    <meta name="theme-color" content="#8B4513" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="书房管理" />
+    
+    <!-- 资源链接 -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+    
+    <title>书房管理系统 - NFC 智能图书管理</title>
+    
+    <!-- 首屏加载样式（内联，避免额外请求） -->
+    <style>
+        /* 基础重置 */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                         'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            background: #fdf8f4;
+        }
+        
+        /* 加载占位动画（应用未渲染前显示） */
+        #root:empty::after {
+            content: '📚';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 48px;
+            animation: root-pulse 1.5s ease-in-out infinite;
+        }
+        
+        @keyframes root-pulse {
+            0%, 100% { opacity: 0.4; transform: translate(-50%, -50%) scale(1); }
+            50% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+        }
+        
+        /* 减少动画偏好（尊重用户系统设置） */
+        @media (prefers-reduced-motion: reduce) {
+            #root:empty::after {
+                animation: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- React 应用挂载节点 -->
+    <div id="root"></div>
+    
+    <!-- JavaScript 禁用时的降级展示 -->
+    <noscript>
+        <div style="
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #fdf8f4;
+            text-align: center;
+            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
+        ">
+            <div>
+                <div style="font-size: 64px; margin-bottom: 16px;">📚</div>
+                <h1 style="color: #8B4513; margin: 0 0 8px;">书房管理系统</h1>
+                <p style="color: #6b5e56; margin: 0;">
+                    请启用 JavaScript 后访问本应用
+                </p>
+            </div>
+        </div>
+    </noscript>
+    
+    <!-- 应用入口脚本 -->
+    <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

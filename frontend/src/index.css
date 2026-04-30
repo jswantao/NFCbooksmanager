@@ -1,0 +1,382 @@
+/* ==============================
+   书房管理系统 - 全局样式
+   ==============================
+   
+   设计系统基于 CSS 自定义属性（变量），
+   支持亮色主题，预留暗色主题扩展能力。
+   
+   层级结构：
+   1. CSS 变量定义（设计令牌）
+   2. 基础重置
+   3. 布局工具
+   4. Ant Design 组件覆盖
+   5. 通用组件样式
+   6. 响应式断点
+   7. 可访问性与打印样式
+*/
+
+/* ==================== 1. CSS 设计令牌 ==================== */
+
+:root {
+    /* ---- 主色调（靛蓝系） ---- */
+    --p: #2563eb;          /* primary 主色 */
+    --ph: #1d4ed8;         /* primary-hover 悬停 */
+    --pl: #dbeafe;         /* primary-light 浅色背景 */
+    
+    /* ---- 背景色 ---- */
+    --bg: #f8fafc;         /* background 页面背景 */
+    --bg2: #f1f5f9;        /* background-secondary 次级背景 */
+    --s: #fff;             /* surface 卡片/容器背景 */
+    --b: #e2e8f0;          /* border 边框 */
+    --bl: #f1f5f9;         /* border-light 浅边框 */
+    
+    /* ---- 文字色 ---- */
+    --t: #0f172a;          /* text-primary 主要文字 */
+    --t2: #475569;         /* text-secondary 次要文字 */
+    --t3: #94a3b8;         /* text-tertiary 辅助文字 */
+    
+    /* ---- 阴影（层级递增） ---- */
+    --sh1: 0 1px 2px rgba(0,0,0,.05);                                    /* 卡片/按钮默认 */
+    --sh2: 0 4px 6px -1px rgba(0,0,0,.07), 0 2px 4px -2px rgba(0,0,0,.05); /* 卡片悬停 */
+    --sh3: 0 10px 15px -3px rgba(0,0,0,.08), 0 4px 6px -4px rgba(0,0,0,.04); /* 弹窗 */
+    --sh4: 0 20px 25px -5px rgba(0,0,0,.08), 0 8px 10px -6px rgba(0,0,0,.04); /* 最高层级 */
+    
+    /* ---- 圆角 ---- */
+    --r1: 6px;             /* 按钮/输入框 */
+    --r2: 8px;             /* 图片/标签 */
+    --r3: 12px;            /* 卡片 */
+    --r4: 16px;            /* 弹窗 */
+    
+    /* ---- 间距（4px 基准） ---- */
+    --s1: 4px;             /* 极小间距 */
+    --s2: 8px;             /* 小间距 */
+    --s3: 16px;            /* 标准间距 */
+    --s4: 24px;            /* 大间距 */
+    --s5: 32px;            /* 特大间距 */
+    --s6: 48px;            /* 区块间距 */
+    
+    /* ---- 动画缓动 ---- */
+    --tf: 150ms cubic-bezier(.4,0,.2,1);  /* fast 快速过渡 */
+    --tb: 200ms cubic-bezier(.4,0,.2,1);  /* base 基础过渡 */
+    --ts: 300ms cubic-bezier(.4,0,.2,1);  /* slow 慢速过渡 */
+}
+
+/* ==================== 2. 基础重置 ==================== */
+
+/* 通配选择器重置（谨慎使用，避免性能问题） */
+*,
+*::before,
+*::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--t);
+    line-height: 1.6;
+    font-size: 16px;
+}
+
+/* ---- 链接 ---- */
+a {
+    color: var(--p);
+    text-decoration: none;
+    transition: color var(--tf);
+}
+
+a:hover {
+    color: var(--ph);
+}
+
+/* ==================== 3. 布局工具类 ==================== */
+
+.min-h-screen {
+    min-height: 100vh;
+}
+
+/* ==================== 4. Ant Design 组件覆盖 ==================== */
+
+/* ---- 卡片 ---- */
+.ant-card {
+    border-radius: var(--r3);
+    border: 1px solid var(--b);
+    background: var(--s);
+    box-shadow: var(--sh1);
+    transition: all var(--tb);
+    overflow: hidden;
+}
+
+/* 可悬停卡片 */
+.ant-card-hoverable {
+    cursor: pointer;
+}
+
+.ant-card-hoverable:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--sh4);
+    border-color: transparent;
+}
+
+/* 卡片头部 */
+.ant-card-head {
+    border-bottom: 1px solid var(--bl);
+    padding: var(--s4) var(--s5);
+    background: var(--s);
+}
+
+/* 卡片内容 */
+.ant-card-body {
+    padding: var(--s5);
+}
+
+/* ---- 图书封面组件 ---- */
+.book-cover {
+    position: relative;
+    border-radius: var(--r2);
+    overflow: hidden;
+    transition: all var(--ts);
+    box-shadow: var(--sh2);
+    background: var(--bg2);
+}
+
+.book-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform var(--ts);
+}
+
+.book-cover:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--sh4);
+}
+
+.book-cover:hover img {
+    transform: scale(1.08);
+}
+
+/* ---- 滚动条美化 ---- */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--t3);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--t2);
+}
+
+/* Firefox 滚动条 */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--t3) transparent;
+}
+
+/* ---- 按钮 ---- */
+.ant-btn {
+    border-radius: var(--r1);
+    font-weight: 500;
+    transition: all var(--tb);
+    box-shadow: var(--sh1);
+}
+
+.ant-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--sh2);
+}
+
+.ant-btn:active {
+    transform: translateY(0);
+}
+
+/* 主按钮 */
+.ant-btn-primary {
+    background: var(--p);
+    border-color: var(--p);
+}
+
+.ant-btn-primary:hover {
+    background: var(--ph);
+    border-color: var(--ph);
+}
+
+/* ---- 输入框 ---- */
+.ant-input,
+.ant-input-number,
+.ant-picker,
+.ant-select-selector {
+    border-radius: var(--r1);
+    border-color: var(--b);
+    transition: all var(--tb);
+    background: var(--s);
+}
+
+/* 聚焦态：蓝色边框 + 浅蓝外发光 */
+.ant-input:focus,
+.ant-input-focused,
+.ant-input-number-focused,
+.ant-picker-focused,
+.ant-select-focused .ant-select-selector {
+    border-color: var(--p);
+    box-shadow: 0 0 0 3px var(--pl);
+}
+
+/* ---- 表格 ---- */
+.ant-table {
+    background: var(--s);
+    border-radius: var(--r3);
+    overflow: hidden;
+}
+
+/* 表头 */
+.ant-table-thead > tr > th {
+    background: var(--bg2);
+    color: var(--t2);
+    font-weight: 600;
+    font-size: .875rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    border-bottom: 2px solid var(--b);
+    padding: var(--s3) var(--s4);
+}
+
+/* 数据行 */
+.ant-table-tbody > tr > td {
+    border-bottom: 1px solid var(--bl);
+    padding: var(--s3) var(--s4);
+    transition: background var(--tf);
+}
+
+.ant-table-tbody > tr:hover > td {
+    background: var(--bg);
+}
+
+/* ---- 标签 ---- */
+.ant-tag {
+    border-radius: var(--r1);
+    font-weight: 500;
+    padding: 2px 10px;
+    border: none;
+}
+
+/* ---- 弹窗 ---- */
+.ant-modal-content {
+    border-radius: var(--r4);
+    overflow: hidden;
+    box-shadow: var(--sh4);
+}
+
+/* ---- 菜单 ---- */
+.ant-menu-item {
+    border-radius: var(--r1);
+    margin: 0 var(--s1);
+    transition: all var(--tb);
+}
+
+.ant-menu-item-selected {
+    background: var(--pl) !important;
+    color: var(--p) !important;
+    font-weight: 500;
+}
+
+/* ---- 消息提示 ---- */
+.ant-message-notice-content {
+    border-radius: var(--r2);
+    box-shadow: var(--sh3);
+    padding: 12px 20px;
+}
+
+/* ==================== 5. 响应式断点 ==================== */
+
+/* 平板及以下（≤768px） */
+@media (max-width: 768px) {
+    :root {
+        --s5: 24px;
+        --s6: 32px;
+    }
+    
+    .ant-card {
+        margin-bottom: var(--s3);
+        border-radius: var(--r2);
+    }
+    
+    .ant-card-body,
+    .ant-card-head {
+        padding: var(--s3);
+    }
+}
+
+/* 小屏手机（≤480px） */
+@media (max-width: 480px) {
+    /* 移动端禁用悬停动画（无 hover 能力） */
+    .ant-card-hoverable:hover,
+    .book-cover:hover {
+        transform: none;
+    }
+    
+    .book-cover:hover img {
+        transform: none;
+    }
+}
+
+/* ==================== 6. 可访问性与偏好 ==================== */
+
+/* 触摸设备禁用悬停效果（无 hover 状态） */
+@media (hover: none) and (pointer: coarse) {
+    .ant-card-hoverable:hover,
+    .book-cover:hover,
+    .ant-btn:hover {
+        transform: none;
+    }
+    
+    .book-cover:hover img {
+        transform: none;
+    }
+}
+
+/* 减少动画偏好（尊重用户系统设置） */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* ==================== 7. 打印样式 ==================== */
+
+@media print {
+    body {
+        background: #fff;
+    }
+    
+    .ant-card {
+        box-shadow: none;
+        border: 1px solid #ddd;
+    }
+    
+    /* 打印时隐藏交互元素 */
+    .ant-btn,
+    .ant-menu {
+        display: none;
+    }
+}
