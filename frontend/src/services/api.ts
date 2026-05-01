@@ -16,7 +16,6 @@ import axios, {
     type AxiosResponse,
     type AxiosError,
     type AxiosRequestConfig,
-    type CancelTokenSource,
 } from 'axios';
 import type {
     ApiResponse,
@@ -85,50 +84,38 @@ const apiClient = axios.create({
     },
 });
 
-// ==================== 请求去重管理 ====================
+// ==================== 请求去重（复用进行中的 Promise） ====================
 
-/** 请求 pending 映射表 */
-const pendingRequests = new Map<string, CancelTokenSource>();
+/** 进行中的 GET 请求缓存: key → Promise<AxiosResponse> */
+const inFlightRequests = new Map<string, Promise<AxiosResponse>>();
 
-/**
- * 生成请求唯一标识
- */
 const getRequestKey = (config: AxiosRequestConfig): string => {
     const { method, url, params, data } = config;
     return [method, url, JSON.stringify(params), JSON.stringify(data)].join('&');
-};
-
-/**
- * 添加 pending 请求
- */
-const addPendingRequest = (config: AxiosRequestConfig): void => {
-    const requestKey = getRequestKey(config);
-    removePendingRequest(config);
-
-    const source = axios.CancelToken.source();
-    config.cancelToken = source.token;
-    pendingRequests.set(requestKey, source);
-};
-
-/**
- * 移除 pending 请求
- */
-const removePendingRequest = (config: AxiosRequestConfig): void => {
-    const requestKey = getRequestKey(config);
-    const source = pendingRequests.get(requestKey);
-    if (source) {
-        source.cancel(`重复请求已取消: ${requestKey}`);
-        pendingRequests.delete(requestKey);
-    }
 };
 
 // ==================== 请求拦截器 ====================
 
 apiClient.interceptors.request.use(
     (config) => {
-        // GET 请求去重
         if (config.method?.toLowerCase() === 'get') {
-            addPendingRequest(config);
+            const key = getRequestKey(config);
+            const inFlight = inFlightRequests.get(key);
+            if (inFlight) {
+                // 已有相同请求在进行中 → 替换 adapter，直接返回缓存的 Promise
+                config.adapter = () => inFlight;
+            } else {
+                // 无重复 → 创建 deferred，存储 Promise 供后续请求复用
+                let resolveFn!: (value: AxiosResponse) => void;
+                let rejectFn!: (reason: any) => void;
+                const deferred = new Promise<AxiosResponse>((resolve, reject) => {
+                    resolveFn = resolve;
+                    rejectFn = reject;
+                });
+                inFlightRequests.set(key, deferred);
+                (config as any)._dedupResolve = resolveFn;
+                (config as any)._dedupReject = rejectFn;
+            }
         }
 
         if (import.meta.env.DEV) {
@@ -146,18 +133,35 @@ apiClient.interceptors.request.use(
 
 apiClient.interceptors.response.use(
     (response: AxiosResponse) => {
-        removePendingRequest(response.config);
+        const config = response.config;
+        if (config.method?.toLowerCase() === 'get') {
+            const key = getRequestKey(config);
+            const resolveFn = (config as any)._dedupResolve;
+            if (resolveFn) {
+                resolveFn(response);
+            }
+            inFlightRequests.delete(key);
+        }
         return response;
     },
     async (error: EnhancedAxiosError) => {
+        // 请求被取消（如组件卸载时的清理）
         if (axios.isCancel(error)) {
             return Promise.reject(error);
         }
 
-        removePendingRequest(error.config || {});
-
         const config = error.config as AxiosRequestConfig & { _retry?: number };
         const retryCount = config?._retry || 0;
+
+        // GET 请求失败后清理缓存
+        if (config?.method?.toLowerCase() === 'get') {
+            const key = getRequestKey(config);
+            const rejectFn = (config as any)._dedupReject;
+            if (rejectFn) {
+                rejectFn(error);
+            }
+            inFlightRequests.delete(key);
+        }
 
         let errorMessage = '网络错误，请检查连接';
 

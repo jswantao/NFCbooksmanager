@@ -282,7 +282,7 @@ const SearchResultCard: FC<{
                     </Tag>
 
                     {/* 操作按钮 */}
-                    <Space direction="vertical" style={{ width: '100%', marginTop: 14 }} size={8}>
+                    <Space orientation="vertical" style={{ width: '100%', marginTop: 14 }} size={8}>
                         <Button
                             type="primary"
                             icon={<PlusOutlined />}
@@ -546,7 +546,7 @@ const BookSearch: FC = () => {
             }}
         >
             <Alert
-                message="通过 ISBN 从豆瓣获取图书完整信息"
+                title="通过 ISBN 从豆瓣获取图书完整信息"
                 description="支持 10 位或 13 位 ISBN，自动同步封面、评分、简介等数据"
                 type="info"
                 showIcon

@@ -463,7 +463,7 @@ const AppHeader: FC<AppHeaderProps> = ({ currentTitle }) => {
                 placement="right"
                 onClose={() => setDrawerOpen(false)}
                 open={drawerOpen}
-                width={300}
+                size={300}
                 styles={{
                     body: { padding: '12px 0' },
                 }}

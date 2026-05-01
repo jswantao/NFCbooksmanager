@@ -951,7 +951,7 @@ const AllBooksManager: FC = () => {
                             title="图书总数"
                             value={total}
                             prefix={<BookOutlined style={{ color: '#3b82f6' }} />}
-                            valueStyle={{ color: '#3b82f6' }}
+                            styles={{ content: { color: '#3b82f6' } }}
                         />
                     </Card>
                 </Col>
@@ -968,7 +968,7 @@ const AllBooksManager: FC = () => {
                             title="豆瓣来源"
                             value={stats.doubanCount}
                             prefix={<SyncOutlined style={{ color: '#22c55e' }} />}
-                            valueStyle={{ color: '#22c55e' }}
+                            styles={{ content: { color: '#22c55e' } }}
                             suffix={`/ ${total}`}
                         />
                     </Card>
@@ -988,7 +988,7 @@ const AllBooksManager: FC = () => {
                             prefix={
                                 <CheckCircleOutlined style={{ color: '#a855f7' }} />
                             }
-                            valueStyle={{ color: '#a855f7' }}
+                            styles={{ content: { color: '#a855f7' } }}
                             suffix={`/ ${total}`}
                         />
                     </Card>

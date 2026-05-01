@@ -729,7 +729,7 @@ const PhysicalShelfManager: FC = () => {
                             title="物理书架总数"
                             value={total}
                             prefix={<EnvironmentOutlined style={{ color: '#3b82f6' }} />}
-                            valueStyle={{ color: '#3b82f6' }}
+                            styles={{ content: { color: '#3b82f6' } }}
                         />
                     </Card>
                 </Col>
@@ -747,7 +747,7 @@ const PhysicalShelfManager: FC = () => {
                             value={stats.nfcBound}
                             suffix={`/ ${total}`}
                             prefix={<TagOutlined style={{ color: '#22c55e' }} />}
-                            valueStyle={{ color: '#22c55e' }}
+                            styles={{ content: { color: '#22c55e' } }}
                         />
                     </Card>
                 </Col>
@@ -765,7 +765,7 @@ const PhysicalShelfManager: FC = () => {
                             value={stats.activeCount}
                             suffix={`/ ${total}`}
                             prefix={<CheckCircleOutlined style={{ color: '#a855f7' }} />}
-                            valueStyle={{ color: '#a855f7' }}
+                            styles={{ content: { color: '#a855f7' } }}
                         />
                     </Card>
                 </Col>
@@ -774,7 +774,7 @@ const PhysicalShelfManager: FC = () => {
             {/* 错误提示 */}
             {error && (
                 <Alert
-                    message="加载失败"
+                    title="加载失败"
                     description={error}
                     type="error"
                     showIcon
@@ -878,7 +878,7 @@ const PhysicalShelfManager: FC = () => {
                 okText={modalMode === 'edit' ? '保存修改' : '创建'}
                 cancelText="取消"
                 width={540}
-                destroyOnClose
+                destroyOnHidden
             >
                 <Form form={form} layout="vertical" size="large">
                     <Form.Item
@@ -925,7 +925,7 @@ const PhysicalShelfManager: FC = () => {
                 onCancel={() => setNfcModalVisible(false)}
                 footer={null}
                 width={500}
-                destroyOnClose
+                destroyOnHidden
             >
                 {nfcShelf && (
                     <div>
@@ -1010,7 +1010,7 @@ const PhysicalShelfManager: FC = () => {
                 onCancel={() => setMappingModalVisible(false)}
                 footer={null}
                 width={640}
-                destroyOnClose
+                destroyOnHidden
             >
                 <div style={{ marginBottom: 16 }}>
                     <Button
@@ -1104,7 +1104,7 @@ const PhysicalShelfManager: FC = () => {
                 okText="创建映射"
                 cancelText="取消"
                 width={500}
-                destroyOnClose
+                destroyOnHidden
             >
                 <Form form={mappingForm} layout="vertical" size="large">
                     <Form.Item

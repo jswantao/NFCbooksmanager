@@ -580,17 +580,17 @@ const BookManualAdd: FC = () => {
                     items={[
                         {
                             title: '填写信息',
-                            description: '录入图书基本资料',
+                            content: '录入图书基本资料',
                             icon: <FormOutlined />,
                         },
                         {
                             title: '预览确认',
-                            description: '核对录入信息',
+                            content: '核对录入信息',
                             icon: <EyeOutlined />,
                         },
                         {
                             title: '完成录入',
-                            description: '图书已保存',
+                            content: '图书已保存',
                             icon: <CheckCircleOutlined />,
                         },
                     ]}
@@ -990,7 +990,7 @@ const BookManualAdd: FC = () => {
                         }}
                     >
                         <Alert
-                            message="请仔细核对以下信息"
+                            title="请仔细核对以下信息"
                             description="确认无误后点击「确认录入」提交图书"
                             type="warning"
                             showIcon

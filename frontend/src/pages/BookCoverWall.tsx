@@ -466,7 +466,7 @@ const CoverCard: FC<{
                         pointerEvents: 'none',
                     }}
                 >
-                    <Text
+                    <Paragraph
                         style={{
                             color: '#fff',
                             fontWeight: 700,
@@ -477,7 +477,7 @@ const CoverCard: FC<{
                         ellipsis={{ rows: 2 }}
                     >
                         {book.title}
-                    </Text>
+                    </Paragraph>
                     {book.author && (
                         <Text
                             style={{
@@ -823,7 +823,7 @@ const BookCoverWall: FC = () => {
                 </Space>
             }
             placement="right"
-            width={400}
+            size={400}
             open={!!drawerBook}
             onClose={handleDrawerClose}
             styles={{

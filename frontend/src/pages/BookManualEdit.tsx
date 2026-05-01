@@ -648,7 +648,7 @@ const BookManualEdit: FC = () => {
             {/* 未保存提示 */}
             {showUnsavedAlert && (
                 <Alert
-                    message={
+                    title={
                         <Space>
                             <ExclamationCircleOutlined />
                             有未保存的更改

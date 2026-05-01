@@ -281,7 +281,7 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
                     status="error"
                     title="页面渲染异常"
                     subTitle={
-                        <Space direction="vertical" size={4}>
+                        <Space orientation="vertical" size={4}>
                             <span>{error?.message || '发生了未知错误'}</span>
                             {errorType && (
                                 <Tag color={errorType.color}>{errorType.label}</Tag>

@@ -483,10 +483,12 @@ const HomePage: FC = () => {
                                                 </span>
                                             }
                                             value={stats.total_books || 0}
-                                            valueStyle={{
-                                                color: '#fff',
-                                                fontSize: 26,
-                                                fontWeight: 700,
+                                            styles={{
+                                                content: {
+                                                    color: '#fff',
+                                                    fontSize: 26,
+                                                    fontWeight: 700,
+                                                },
                                             }}
                                             suffix={
                                                 <span
@@ -524,10 +526,12 @@ const HomePage: FC = () => {
                                                 </span>
                                             }
                                             value={stats.logical_shelves || 0}
-                                            valueStyle={{
-                                                color: '#fff',
-                                                fontSize: 26,
-                                                fontWeight: 700,
+                                            styles={{
+                                                content: {
+                                                    color: '#fff',
+                                                    fontSize: 26,
+                                                    fontWeight: 700,
+                                                },
                                             }}
                                             suffix={
                                                 <span
@@ -565,10 +569,12 @@ const HomePage: FC = () => {
                                                 </span>
                                             }
                                             value={stats.today_books || 0}
-                                            valueStyle={{
-                                                color: '#fff',
-                                                fontSize: 26,
-                                                fontWeight: 700,
+                                            styles={{
+                                                content: {
+                                                    color: '#fff',
+                                                    fontSize: 26,
+                                                    fontWeight: 700,
+                                                },
                                             }}
                                             suffix={
                                                 <span
@@ -606,10 +612,12 @@ const HomePage: FC = () => {
                                                 </span>
                                             }
                                             value={stats.active_mappings || 0}
-                                            valueStyle={{
-                                                color: '#fff',
-                                                fontSize: 26,
-                                                fontWeight: 700,
+                                            styles={{
+                                                content: {
+                                                    color: '#fff',
+                                                    fontSize: 26,
+                                                    fontWeight: 700,
+                                                },
                                             }}
                                             suffix={
                                                 <span
@@ -951,7 +959,7 @@ const HomePage: FC = () => {
                                                 <Progress
                                                     percent={percent}
                                                     strokeColor={strokeColor}
-                                                    trailColor={
+                                                    railColor={
                                                         token.colorFillSecondary
                                                     }
                                                     size="small"

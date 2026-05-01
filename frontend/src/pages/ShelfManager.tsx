@@ -587,7 +587,7 @@ const ShelfManager: FC = () => {
             {/* 错误提示 */}
             {error && (
                 <Alert
-                    message="加载失败"
+                    title="加载失败"
                     description={error}
                     type="error"
                     showIcon
@@ -618,7 +618,7 @@ const ShelfManager: FC = () => {
                                 title="书架总数"
                                 value={stats.shelfCount}
                                 prefix={<AppstoreOutlined style={{ color: '#3b82f6' }} />}
-                                valueStyle={{ color: '#3b82f6' }}
+                                styles={{ content: { color: '#3b82f6' } }}
                             />
                         </Card>
                     </Col>
@@ -635,7 +635,7 @@ const ShelfManager: FC = () => {
                                 title="藏书总数"
                                 value={stats.totalBooks}
                                 prefix={<BookOutlined style={{ color: '#22c55e' }} />}
-                                valueStyle={{ color: '#22c55e' }}
+                                styles={{ content: { color: '#22c55e' } }}
                             />
                         </Card>
                     </Col>
@@ -653,7 +653,7 @@ const ShelfManager: FC = () => {
                                 value={stats.withLocation}
                                 suffix={`/ ${stats.shelfCount}`}
                                 prefix={<EnvironmentOutlined style={{ color: '#a855f7' }} />}
-                                valueStyle={{ color: '#a855f7' }}
+                                styles={{ content: { color: '#a855f7' } }}
                             />
                         </Card>
                     </Col>
@@ -784,10 +784,10 @@ const ShelfManager: FC = () => {
                 confirmLoading={saving}
                 okText={modalMode === 'edit' ? '保存修改' : '创建书架'}
                 cancelText="取消"
-                maskClosable={!saving}
+                mask={{ closable: !saving }}
                 keyboard={!saving}
                 width={540}
-                destroyOnClose
+                destroyOnHidden
             >
                 <Form
                     form={form}

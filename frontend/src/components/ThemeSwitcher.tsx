@@ -190,11 +190,11 @@ const ThemeSwitcher: FC<ThemeSwitcherProps> = ({
             menu={{ items: menuItems }}
             trigger={['click']}
             placement="bottomRight"
-            overlayStyle={{ minWidth: 240 }}
+            styles={{ root: { minWidth: 240 } }}
         >
             <Tooltip
                 title={
-                    <Space direction="vertical" size={0}>
+                    <Space orientation="vertical" size={0}>
                         <span>切换主题</span>
                         <Text style={{ fontSize: 10, opacity: 0.7 }}>
                             ⌘T 下一个 · ⌘⇧D 暗色模式

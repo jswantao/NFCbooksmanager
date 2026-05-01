@@ -431,7 +431,7 @@ const CookieConfig: FC = () => {
             children: (
                 <div>
                     <Alert
-                        message="获取步骤"
+                        title="获取步骤"
                         type="info"
                         showIcon
                         style={{ marginBottom: 16 }}
@@ -442,12 +442,12 @@ const CookieConfig: FC = () => {
                         current={-1}
                         items={TUTORIAL_STEPS.map((step) => ({
                             title: step.title,
-                            description: step.description,
+                            content: step.description,
                             icon: step.icon,
                         }))}
                     />
                     <Alert
-                        message="注意事项"
+                        title="注意事项"
                         description={
                             <ul style={{ paddingLeft: 20, margin: 0 }}>
                                 <li>Cookie 通常 1-7 天后过期，需定期更新</li>
@@ -504,9 +504,7 @@ const CookieConfig: FC = () => {
                             <Statistic
                                 title="配置状态"
                                 value={statusConfig.statusText}
-                                valueStyle={{
-                                    color: statusConfig.statusColor,
-                                }}
+                                styles={{ content: { color: statusConfig.statusColor } }}
                                 prefix={statusConfig.statusIcon}
                             />
                         </Card>
@@ -528,7 +526,7 @@ const CookieConfig: FC = () => {
                                         'date'
                                     )}
                                     prefix={<ClockCircleOutlined />}
-                                    valueStyle={{ fontSize: 16 }}
+                                    styles={{ content: { fontSize: 16 } }}
                                 />
                             </Card>
                         </Col>
@@ -538,7 +536,7 @@ const CookieConfig: FC = () => {
                 {/* Cookie 有效期警告 */}
                 {ageWarning && (
                     <Alert
-                        message={ageWarning.message}
+                        title={ageWarning.message}
                         type={ageWarning.level === 'danger' ? 'error' : ageWarning.level}
                         showIcon
                         icon={ageWarning.icon}
@@ -689,7 +687,7 @@ const CookieConfig: FC = () => {
                 </Button>
             }
         >
-            <Space direction="vertical" size="large" style={{ width: '100%' }}>
+            <Space orientation="vertical" size="large" style={{ width: '100%' }}>
                 {/* 输入区域 */}
                 <div>
                     <div
@@ -803,7 +801,7 @@ const CookieConfig: FC = () => {
                 }
             >
                 <Alert
-                    message={testResult.message}
+                    title={testResult.message}
                     type={testResult.cookie_valid ? 'success' : 'error'}
                     showIcon
                     style={{ borderRadius: 8 }}
@@ -906,7 +904,7 @@ const CookieConfig: FC = () => {
                                 )}
 
                                 <Space
-                                    direction="vertical"
+                                    orientation="vertical"
                                     size="small"
                                 >
                                     {testResult.test_book.author && (
@@ -938,7 +936,7 @@ const CookieConfig: FC = () => {
                 {/* 测试失败：提示 */}
                 {!testResult.cookie_valid && (
                     <Alert
-                        message="常见原因"
+                        title="常见原因"
                         description={
                             <ul style={{ paddingLeft: 20, margin: '4px 0' }}>
                                 <li>Cookie 已过期（通常 1-7 天有效）</li>
@@ -1010,7 +1008,7 @@ const CookieConfig: FC = () => {
             {/* 错误状态 */}
             {error && (
                 <Alert
-                    message="加载失败"
+                    title="加载失败"
                     description={error}
                     type="error"
                     showIcon
@@ -1050,7 +1048,7 @@ const CookieConfig: FC = () => {
                 width={500}
             >
                 <Alert
-                    message="在浏览器控制台中执行以下命令获取 Cookie"
+                    title="在浏览器控制台中执行以下命令获取 Cookie"
                     type="info"
                     showIcon
                     style={{ marginBottom: 16, borderRadius: 8 }}

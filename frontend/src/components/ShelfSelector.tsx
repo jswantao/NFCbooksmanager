@@ -437,8 +437,8 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
             onCancel={onClose}
             footer={modalFooter}
             width={560}
-            destroyOnClose
-            maskClosable={!addingBook}
+            destroyOnHidden
+            mask={{ closable: !addingBook }}
             keyboard={!addingBook}
             styles={{
                 body: {
@@ -484,7 +484,7 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
             {error && !loading && (
                 <Alert
                     type="error"
-                    message="加载失败"
+                    title="加载失败"
                     description={error}
                     showIcon
                     action={

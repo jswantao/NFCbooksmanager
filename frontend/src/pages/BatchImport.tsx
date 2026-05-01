@@ -174,7 +174,7 @@ const StatCard: FC<{
                 value={value}
                 prefix={icon}
                 suffix={suffix ? <Text style={{ fontSize: 12 }}>{suffix}</Text> : undefined}
-                valueStyle={{ color: color || undefined, fontSize: 24 }}
+                styles={{ content: { color: color || undefined, fontSize: 24 } }}
             />
         </Card>
     </Col>
@@ -643,7 +643,7 @@ const BatchImport: FC = () => {
         >
             {/* 文件要求提示 */}
             <Alert
-                message="文件要求"
+                title="文件要求"
                 description={
                     <ul style={{ paddingLeft: 20, margin: '4px 0' }}>
                         <li>支持格式：.xlsx / .xls / .csv / .txt</li>
@@ -729,7 +729,7 @@ const BatchImport: FC = () => {
             {/* 错误提示 */}
             {loadError && (
                 <Alert
-                    message="预览失败"
+                    title="预览失败"
                     description={loadError}
                     type="error"
                     showIcon
@@ -829,7 +829,7 @@ const BatchImport: FC = () => {
                     </Row>
                     {preview.existing_count > 0 && (
                         <Alert
-                            message={`${preview.existing_count} 本图书已存在，导入时将自动跳过`}
+                            title={`${preview.existing_count} 本图书已存在，导入时将自动跳过`}
                             type="warning"
                             showIcon
                             style={{ borderRadius: 8 }}
@@ -837,7 +837,7 @@ const BatchImport: FC = () => {
                     )}
                     {preview.invalid_count > 0 && (
                         <Alert
-                            message={`${preview.invalid_count} 行数据无效，请检查文件内容`}
+                            title={`${preview.invalid_count} 行数据无效，请检查文件内容`}
                             type="error"
                             showIcon
                             style={{ marginTop: 8, borderRadius: 8 }}
@@ -1042,21 +1042,21 @@ const BatchImport: FC = () => {
                         <Statistic
                             title="成功"
                             value={task.success}
-                            valueStyle={{ color: '#22c55e' }}
+                            styles={{ content: { color: '#22c55e' } }}
                         />
                     </Col>
                     <Col span={6}>
                         <Statistic
                             title="跳过"
                             value={task.skipped || 0}
-                            valueStyle={{ color: '#f59e0b' }}
+                            styles={{ content: { color: '#f59e0b' } }}
                         />
                     </Col>
                     <Col span={6}>
                         <Statistic
                             title="失败"
                             value={task.failed}
-                            valueStyle={{ color: '#ef4444' }}
+                            styles={{ content: { color: '#ef4444' } }}
                         />
                     </Col>
                 </Row>
@@ -1207,7 +1207,7 @@ const BatchImport: FC = () => {
                     onCancel={() => setShowResults(false)}
                     footer={null}
                     width={900}
-                    destroyOnClose
+                    destroyOnHidden
                 >
                     <Table<ImportTaskResult>
                         dataSource={task.results || []}
@@ -1226,10 +1226,10 @@ const BatchImport: FC = () => {
                     onCancel={() => setShowErrors(false)}
                     footer={null}
                     width={700}
-                    destroyOnClose
+                    destroyOnHidden
                 >
                     <Alert
-                        message={`共 ${task.errors?.length || 0} 条错误`}
+                        title={`共 ${task.errors?.length || 0} 条错误`}
                         type="warning"
                         showIcon
                         style={{ marginBottom: 16, borderRadius: 8 }}

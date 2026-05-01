@@ -40,7 +40,7 @@ model:
 - ✅ **前端能力**：
 
   - 生成类型安全的 React 组件，合理拆分容器组件与展示组件
-  - 使用 Ant Design 5 的 Form、Table、Modal 等组件快速构建交互界面
+  - 使用 Ant Design 6 的 Form、Table、Modal 等组件快速构建交互界面
   - 配置 React Router 6 路由表，实现页面导航与权限控制
   - 封装 Axios 实例，统一处理请求前缀、Token 注入与错误提示
   - 配置 Vite 代理解决开发环境跨域问题

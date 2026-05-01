@@ -286,7 +286,7 @@ const AddressCard: FC<{
     onOpen: () => void;
 }> = React.memo(({ mobileURL, localIP, isLocalNetwork, onCopy, onOpen }) => (
     <Alert
-        message={
+        title={
             <Space size={8}>
                 <WifiOutlined />
                 <span>手机端访问地址</span>
@@ -444,32 +444,32 @@ const NFCOperator: FC = () => {
                         items={[
                             {
                                 title: '选择目标书架',
-                                description:
+                                content:
                                     '从下拉列表中选择需要关联 NFC 标签的逻辑书架',
                                 icon: <EnvironmentOutlined />,
                             },
                             {
                                 title: '手机端写入标签',
-                                description:
+                                content:
                                     '手机浏览器打开上方地址 → 使用 NFC TOOLS PRO → 写入数据',
                                 icon: <MobileOutlined />,
                             },
                             {
                                 title: '绑定物理书架',
-                                description:
+                                content:
                                     '如标签尚未绑定物理书架，手机扫描后将自动跳转绑定页面',
                                 icon: <LinkOutlined />,
                             },
                             {
                                 title: '扫描验证',
-                                description:
+                                content:
                                     '用手机扫描已写入的 NFC 标签，验证是否正确跳转到对应书架',
                                 icon: <CheckCircleOutlined />,
                             },
                         ]}
                     />
                     <Alert
-                        message="提示"
+                        title="提示"
                         description="推荐使用 NFC TOOLS PRO 应用进行标签读写操作，支持 NDEF 格式数据写入"
                         type="info"
                         showIcon
@@ -672,9 +672,11 @@ const NFCOperator: FC = () => {
                     bordered
                     size="middle"
                     items={descriptionItems}
-                    labelStyle={{
-                        fontWeight: 500,
-                        background: token.colorFillSecondary,
+                    styles={{
+                        label: {
+                            fontWeight: 500,
+                            background: token.colorFillSecondary,
+                        },
                     }}
                 />
 
@@ -852,7 +854,7 @@ const NFCOperator: FC = () => {
                     border: `1px solid ${token.colorBorderSecondary}`,
                 }}
             >
-                <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                <Space orientation="vertical" size={16} style={{ width: '100%' }}>
                     <div>
                         <label
                             style={{
@@ -911,7 +913,7 @@ const NFCOperator: FC = () => {
             {/* 错误状态 */}
             {error && (
                 <Alert
-                    message="加载失败"
+                    title="加载失败"
                     description={error}
                     type="error"
                     showIcon

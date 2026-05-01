@@ -386,7 +386,7 @@ const RankingList: FC<{
                             <Progress
                                 percent={percentage}
                                 strokeColor={barColor}
-                                trailColor="#f0e4d8"
+                                railColor="#f0e4d8"
                                 size="small"
                                 showInfo={false}
                             />
@@ -567,7 +567,7 @@ const Dashboard: FC = () => {
                     ]}
                 />
                 <Alert
-                    message="数据加载失败"
+                    title="数据加载失败"
                     description={error}
                     type="error"
                     showIcon
@@ -787,7 +787,7 @@ const Dashboard: FC = () => {
                                     marginBottom: 18,
                                 }}
                             >
-                                <Space direction="vertical" style={{ width: '100%' }} size={12}>
+                                <Space orientation="vertical" style={{ width: '100%' }} size={12}>
                                     {stats.shelf_utilization.map((item, index) => {
                                         const percent = Math.round(item.percentage);
                                         const strokeColor =
@@ -824,7 +824,7 @@ const Dashboard: FC = () => {
                                                 <Progress
                                                     percent={percent}
                                                     strokeColor={strokeColor}
-                                                    trailColor={token.colorFillSecondary}
+                                                    railColor={token.colorFillSecondary}
                                                     size="small"
                                                     showInfo={false}
                                                 />
@@ -1053,7 +1053,7 @@ const Dashboard: FC = () => {
                                 prefix={
                                     <RocketOutlined style={{ color: '#3b82f6' }} />
                                 }
-                                valueStyle={{ color: '#3b82f6', fontSize: 22 }}
+                                styles={{ content: { color: '#3b82f6', fontSize: 22 } }}
                                 suffix="本"
                             />
                         </Col>
@@ -1064,7 +1064,7 @@ const Dashboard: FC = () => {
                                 prefix={
                                     <SyncOutlined style={{ color: '#22c55e' }} />
                                 }
-                                valueStyle={{ color: '#22c55e', fontSize: 22 }}
+                                styles={{ content: { color: '#22c55e', fontSize: 22 } }}
                                 suffix="次"
                             />
                         </Col>
@@ -1077,7 +1077,7 @@ const Dashboard: FC = () => {
                                         style={{ color: '#f59e0b' }}
                                     />
                                 }
-                                valueStyle={{ color: '#f59e0b', fontSize: 22 }}
+                                styles={{ content: { color: '#f59e0b', fontSize: 22 } }}
                                 suffix="本"
                             />
                         </Col>

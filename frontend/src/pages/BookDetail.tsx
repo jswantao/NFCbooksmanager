@@ -975,7 +975,7 @@ const BookDetail: FC = () => {
 
                         {/* 操作按钮 */}
                         <Space
-                            direction="vertical"
+                            orientation="vertical"
                             style={{ width: '100%', marginTop: 20 }}
                             size={10}
                         >
@@ -1078,9 +1078,11 @@ const BookDetail: FC = () => {
                             column={{ xs: 1, sm: 2 }}
                             items={descriptionItems}
                             style={{ marginBottom: 20 }}
-                            labelStyle={{
-                                fontWeight: 500,
-                                background: token.colorBgLayout,
+                            styles={{
+                                label: {
+                                    fontWeight: 500,
+                                    background: token.colorBgLayout,
+                                },
                             }}
                         />
 
