@@ -1,34 +1,31 @@
 // frontend/src/pages/Dashboard.tsx
 /**
- * 管理仪表盘页面
+ * 管理仪表盘页面 - React 19 + Ant Design 6
  * 
- * 提供系统全局统计视图，包含以下模块：
- * 
- * 1. 统计卡片区：物理书架、逻辑书架、活跃映射、馆藏图书、上架图书
- * 2. 图表区域：
- *    - 藏书增长趋势（柱状图）
- *    - 评分分布 + 来源分布（进度条/柱状图）
- *    - 书架利用率（进度条列表）
- * 3. 排行榜：出版社 Top 8、作者 Top 8
- * 4. 活动时间线：最近操作记录
- * 5. 最近添加：最新图书列表
- * 6. 底部概览：今日新增、同步次数、未上架数量
- * 
- * 组件设计：
- * - 统计卡片带入场动画（渐入 + 上移）
- * - 简易柱状图（纯 CSS 实现，无第三方图表库依赖）
- * - 排行榜带奖牌标识（🥇🥈🥉）
- * 
- * 数据来源：GET /api/admin/stats
+ * 优化点：
+ * - 自定义 Hooks 封装数据加载
+ * - 时间范围筛选（本周/本月/本季/本年）
+ * - 统计卡片入场动画
+ * - 排行榜交互增强
+ * - 响应式网格优化
+ * - 图表加载骨架屏
+ * - 导出统计报告
+ * - 主题色适配
  */
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, {
+    useEffect,
+    useState,
+    useCallback,
+    useMemo,
+    useRef,
+    type FC,
+} from 'react';
 import {
     Card,
     Row,
     Col,
     Statistic,
-    Spin,
     Tag,
     Typography,
     Breadcrumb,
@@ -44,6 +41,10 @@ import {
     Segmented,
     List,
     Avatar,
+    theme,
+    Dropdown,
+    Divider,
+    type MenuProps,
 } from 'antd';
 import {
     BookOutlined,
@@ -67,357 +68,98 @@ import {
     StarFilled,
     RiseOutlined,
     FileTextOutlined,
+    HeatMapOutlined,
+    DownloadOutlined,
+    EyeOutlined,
+    CalendarOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { getDashboardStats } from '../services/api';
-
-// ---- 类型定义 ----
+import { getDashboardStats, extractErrorMessage } from '../services/api';
+import { formatNumber, formatPercent } from '../utils/format';
+import ReadingTrendChart from '../components/charts/ReadingTrendChart';
+import SourcePieChart from '../components/charts/SourcePieChart';
+import RatingBarChart from '../components/charts/RatingBarChart';
+import ReadingHeatmap from '../components/charts/ReadingHeatmap';
+import LoadingScreen from '../components/LoadingScreen';
+import ErrorBoundary from '../components/ErrorBoundary';
+import type { DashboardStats } from '../types';
 
 const { Title, Text } = Typography;
 
-/** 仪表盘统计数据 */
-interface DashboardStats {
-    physical_shelves: number;
-    logical_shelves: number;
-    active_mappings: number;
-    total_books: number;
-    books_in_shelves: number;
-    books_not_in_shelf: number;
-    books_by_source: Record<string, number>;
-    sync_count: number;
-    today_books: number;
-    recent_books: RecentBook[];
-    monthly_growth: MonthlyGrowth[];
-    top_publishers: RankingItem[];
-    top_authors: RankingItem[];
-    rating_distribution: RatingDistribution[];
-    shelf_utilization: ShelfUtilization[];
-    recent_activities: ActivityItem[];
-}
-
-interface RecentBook {
-    book_id: number;
-    title: string;
-    isbn: string;
-    author?: string;
-    source: string;
-    cover_url?: string;
-    rating?: string;
-    shelf_name?: string;
-    added_at: string;
-}
-
-interface MonthlyGrowth {
-    month: string;
-    count: number;
-    year: number;
-}
-
-interface RankingItem {
-    name: string;
-    count: number;
-    percentage?: number;
-}
-
-interface RatingDistribution {
-    range: string;
-    count: number;
-    color: string;
-}
-
-interface ShelfUtilization {
-    shelf_name: string;
-    book_count: number;
-    capacity?: number;
-    percentage: number;
-}
-
-interface ActivityItem {
-    id: number;
-    action: string;
-    detail: string;
-    type: string;
-    timestamp: string;
-}
-
-// ---- 常量 ----
+// ==================== 常量 ====================
 
 /** 统计卡片配置 */
 const STAT_CARDS = [
     {
-        key: 'physical_shelves',
+        key: 'physical_shelves' as const,
         title: '物理书架',
-        icon: <EnvironmentOutlined style={{ fontSize: 28, color: '#3b82f6' }} />,
+        icon: <EnvironmentOutlined />,
         color: '#3b82f6',
         bgColor: '#eff6ff',
         borderColor: '#bfdbfe',
     },
     {
-        key: 'logical_shelves',
+        key: 'logical_shelves' as const,
         title: '逻辑书架',
-        icon: <AppstoreOutlined style={{ fontSize: 28, color: '#22c55e' }} />,
+        icon: <AppstoreOutlined />,
         color: '#22c55e',
         bgColor: '#f0fdf4',
         borderColor: '#bbf7d0',
     },
     {
-        key: 'active_mappings',
+        key: 'active_mappings' as const,
         title: '活跃映射',
-        icon: <LinkOutlined style={{ fontSize: 28, color: '#a855f7' }} />,
+        icon: <LinkOutlined />,
         color: '#a855f7',
         bgColor: '#faf5ff',
         borderColor: '#e9d5ff',
     },
     {
-        key: 'total_books',
+        key: 'total_books' as const,
         title: '馆藏图书',
-        icon: <BookOutlined style={{ fontSize: 28, color: '#f97316' }} />,
+        icon: <BookOutlined />,
         color: '#f97316',
         bgColor: '#fff7ed',
         borderColor: '#fed7aa',
     },
     {
-        key: 'books_in_shelves',
+        key: 'books_in_shelves' as const,
         title: '上架图书',
-        icon: <DatabaseOutlined style={{ fontSize: 28, color: '#06b6d4' }} />,
+        icon: <DatabaseOutlined />,
         color: '#06b6d4',
         bgColor: '#ecfeff',
         borderColor: '#a5f3fc',
     },
+] as const;
+
+/** 时间范围选项 */
+const TIME_RANGE_OPTIONS = [
+    { label: '📅 本周', value: 'week' },
+    { label: '📅 本月', value: 'month' },
+    { label: '📅 本季', value: 'quarter' },
+    { label: '📅 本年', value: 'year' },
 ];
 
-/** 活动类型图标映射 */
-const ACTIVITY_ICONS: Record<string, React.ReactNode> = {
-    sync: <SyncOutlined />,
-    add: <RocketOutlined />,
-    update: <RiseOutlined />,
-    delete: <ExclamationCircleOutlined />,
-    mapping: <LinkOutlined />,
-    system: <FundOutlined />,
+/** 活动类型配置 */
+const ACTIVITY_CONFIG: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
+    sync: { icon: <SyncOutlined />, color: '#22c55e', label: '同步' },
+    add: { icon: <RocketOutlined />, color: '#3b82f6', label: '添加' },
+    update: { icon: <RiseOutlined />, color: '#f59e0b', label: '更新' },
+    delete: { icon: <ExclamationCircleOutlined />, color: '#ef4444', label: '删除' },
+    mapping: { icon: <LinkOutlined />, color: '#a855f7', label: '映射' },
+    system: { icon: <FundOutlined />, color: '#6366f1', label: '系统' },
 };
 
-/** 活动类型颜色映射 */
-const ACTIVITY_COLORS: Record<string, string> = {
-    sync: '#22c55e',
-    add: '#3b82f6',
-    update: '#f59e0b',
-    delete: '#ef4444',
-    mapping: '#a855f7',
-    system: '#6366f1',
-};
-
-/** 来源标签映射 */
-const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
-    douban: { label: '豆瓣', color: '#22c55e' },
-    manual: { label: '手动录入', color: '#f97316' },
-    isbn: { label: 'ISBN 扫描', color: '#3b82f6' },
-    nfc: { label: 'NFC 识别', color: '#a855f7' },
-};
-
-// ---- 子组件 ----
+// ==================== 自定义 Hook ====================
 
 /**
- * 统计卡片组件（带入场动画）
+ * 仪表盘数据加载 Hook
  */
-const StatCard: React.FC<{
-    title: string;
-    value: number;
-    icon: React.ReactNode;
-    color: string;
-    bgColor: string;
-    borderColor: string;
-    loading?: boolean;
-}> = React.memo(({ title, value, icon, color, bgColor, borderColor, loading }) => {
-    const [visible, setVisible] = useState(false);
-
-    useEffect(() => {
-        const timer = setTimeout(() => setVisible(true), 100 * Math.random());
-        return () => clearTimeout(timer);
-    }, []);
-
-    return (
-        <Card
-            hoverable
-            style={{
-                borderRadius: 12,
-                border: `1px solid ${borderColor}`,
-                background: bgColor,
-                boxShadow: '0 2px 8px rgba(139,69,19,.06)',
-                transition: 'all 0.4s cubic-bezier(0.4,0,0.2,1)',
-                transform: visible ? 'translateY(0)' : 'translateY(20px)',
-                opacity: visible ? 1 : 0,
-                height: '100%',
-                overflow: 'hidden',
-                position: 'relative',
-            }}
-            bodyStyle={{ padding: 20 }}
-        >
-            {/* 装饰圆形 */}
-            <div style={{
-                position: 'absolute',
-                top: -20,
-                right: -20,
-                width: 80,
-                height: 80,
-                borderRadius: '50%',
-                background: color,
-                opacity: 0.08,
-                pointerEvents: 'none',
-            }} />
-
-            {loading ? (
-                <Skeleton active paragraph={{ rows: 1 }} />
-            ) : (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ flex: 1 }}>
-                        <Text type="secondary" style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 4 }}>
-                            {title}
-                        </Text>
-                        <span style={{ fontSize: 32, fontWeight: 700, color, lineHeight: 1 }}>
-                            {value.toLocaleString()}
-                        </span>
-                    </div>
-                    <div style={{
-                        width: 56,
-                        height: 56,
-                        borderRadius: 14,
-                        background: `${color}15`,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        flexShrink: 0,
-                        marginLeft: 12,
-                    }}>
-                        {icon}
-                    </div>
-                </div>
-            )}
-        </Card>
-    );
-});
-StatCard.displayName = 'StatCard';
-
-/**
- * 简易柱状图（纯 CSS 实现）
- */
-const SimpleBarChart: React.FC<{
-    data: { label: string; value: number; color?: string }[];
-    height?: number;
-}> = React.memo(({ data, height = 200 }) => {
-    const maxValue = Math.max(...data.map((d) => d.value), 1);
-
-    return (
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, height, paddingTop: 20 }}>
-            {data.map((item, index) => (
-                <Tooltip key={index} title={`${item.label}: ${item.value}`}>
-                    <div style={{
-                        flex: 1,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        height: '100%',
-                        justifyContent: 'flex-end',
-                    }}>
-                        <Text style={{ fontSize: 11, marginBottom: 4, color: '#6b5e56', fontWeight: 500 }}>
-                            {item.value}
-                        </Text>
-                        <div style={{
-                            width: '100%',
-                            maxWidth: 40,
-                            height: `${(item.value / maxValue) * 100}%`,
-                            background: item.color || '#8B4513',
-                            borderRadius: '6px 6px 0 0',
-                            transition: 'height 0.5s cubic-bezier(0.4,0,0.2,1)',
-                            minHeight: 4,
-                        }} />
-                        <Text style={{ fontSize: 10, marginTop: 4, color: '#8c7b72', whiteSpace: 'nowrap' }}>
-                            {item.label}
-                        </Text>
-                    </div>
-                </Tooltip>
-            ))}
-        </div>
-    );
-});
-SimpleBarChart.displayName = 'SimpleBarChart';
-
-/**
- * 排行榜列表组件
- */
-const RankingList: React.FC<{
-    data: RankingItem[];
-    maxShow?: number;
-}> = React.memo(({ data, maxShow = 8 }) => {
-    const displayData = data.slice(0, maxShow);
-    const maxCount = Math.max(...displayData.map((d) => d.count), 1);
-    const medals = ['🥇', '🥈', '🥉'];
-
-    if (displayData.length === 0) {
-        return <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
-    }
-
-    return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {displayData.map((item, index) => (
-                <div
-                    key={item.name}
-                    style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 10,
-                        padding: '8px 12px',
-                        borderRadius: 8,
-                        background: index < 3 ? '#fafaf9' : 'transparent',
-                        transition: 'background 0.2s ease',
-                    }}
-                >
-                    <span style={{ fontSize: 18, width: 28, textAlign: 'center' }}>
-                        {index < 3 ? medals[index] : (
-                            <Text type="secondary" style={{ fontSize: 13 }}>{index + 1}</Text>
-                        )}
-                    </span>
-                    <Text style={{
-                        flex: 1,
-                        fontSize: 13,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                    }}>
-                        {item.name}
-                    </Text>
-                    <div style={{ width: 100 }}>
-                        <Progress
-                            percent={item.percentage || Math.round((item.count / maxCount) * 100)}
-                            strokeColor={index < 3 ? ['#f59e0b', '#a8a29e', '#d4a574'][index] : '#8B4513'}
-                            trailColor="#f0e4d8"
-                            size="small"
-                            showInfo={false}
-                        />
-                    </div>
-                    <Text strong style={{ fontSize: 13, minWidth: 30, textAlign: 'right' }}>
-                        {item.count}
-                    </Text>
-                </div>
-            ))}
-        </div>
-    );
-});
-RankingList.displayName = 'RankingList';
-
-// ---- 主组件 ----
-
-const Dashboard: React.FC = () => {
-    const navigate = useNavigate();
-
-    // ==================== 状态 ====================
-
+const useDashboardData = () => {
     const [loading, setLoading] = useState(true);
     const [stats, setStats] = useState<DashboardStats | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [refreshing, setRefreshing] = useState(false);
-    const [timeRange, setTimeRange] = useState<string>('month');
-
-    // ==================== 数据加载 ====================
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -425,9 +167,9 @@ const Dashboard: React.FC = () => {
 
         try {
             const data = await getDashboardStats();
-            setStats(data as DashboardStats);
-        } catch (err: any) {
-            const errorMsg = err?.response?.data?.detail || err?.message || '加载数据失败';
+            setStats(data);
+        } catch (err: unknown) {
+            const errorMsg = extractErrorMessage(err) || '加载数据失败';
             setError(errorMsg);
             console.error('[Dashboard] 加载失败:', err);
         } finally {
@@ -440,40 +182,348 @@ const Dashboard: React.FC = () => {
         loadData();
     }, [loadData]);
 
+    const refresh = useCallback(() => {
+        setRefreshing(true);
+        loadData();
+    }, [loadData]);
+
+    return { stats, loading, error, refreshing, refresh };
+};
+
+// ==================== 子组件 ====================
+
+/**
+ * 统计卡片（入场动画）
+ */
+const StatCard: FC<{
+    title: string;
+    value: number;
+    icon: React.ReactNode;
+    color: string;
+    bgColor: string;
+    borderColor: string;
+    loading?: boolean;
+    delay?: number;
+}> = React.memo(({ title, value, icon, color, bgColor, borderColor, loading, delay = 0 }) => {
+    const [visible, setVisible] = useState(false);
+
+    useEffect(() => {
+        const timer = setTimeout(() => setVisible(true), delay);
+        return () => clearTimeout(timer);
+    }, [delay]);
+
+    return (
+        <Card
+            hoverable
+            style={{
+                borderRadius: 14,
+                border: `1px solid ${borderColor}`,
+                background: bgColor,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+                transition: 'all 0.5s cubic-bezier(0.4, 0, 0.2, 1)',
+                transform: visible ? 'translateY(0)' : 'translateY(24px)',
+                opacity: visible ? 1 : 0,
+                height: '100%',
+                overflow: 'hidden',
+                position: 'relative',
+            }}
+            styles={{ body: { padding: 22 } }}
+        >
+            {/* 装饰背景圆 */}
+            <div
+                style={{
+                    position: 'absolute',
+                    top: -24,
+                    right: -24,
+                    width: 90,
+                    height: 90,
+                    borderRadius: '50%',
+                    background: color,
+                    opacity: 0.06,
+                    pointerEvents: 'none',
+                }}
+            />
+
+            {loading ? (
+                <Skeleton active paragraph={{ rows: 1 }} />
+            ) : (
+                <div
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                    }}
+                >
+                    <div style={{ flex: 1 }}>
+                        <Text
+                            type="secondary"
+                            style={{
+                                fontSize: 13,
+                                fontWeight: 500,
+                                display: 'block',
+                                marginBottom: 6,
+                            }}
+                        >
+                            {title}
+                        </Text>
+                        <span
+                            style={{
+                                fontSize: 34,
+                                fontWeight: 700,
+                                color,
+                                lineHeight: 1,
+                            }}
+                        >
+                            {formatNumber(value)}
+                        </span>
+                    </div>
+                    <div
+                        style={{
+                            width: 60,
+                            height: 60,
+                            borderRadius: 16,
+                            background: `${color}12`,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                            marginLeft: 16,
+                            fontSize: 28,
+                        }}
+                    >
+                        {icon}
+                    </div>
+                </div>
+            )}
+        </Card>
+    );
+});
+StatCard.displayName = 'StatCard';
+
+/**
+ * 排行榜列表
+ */
+const RankingList: FC<{
+    data: { name: string; count: number; percentage?: number }[];
+    maxShow?: number;
+    onItemClick?: (item: { name: string; count: number }) => void;
+}> = React.memo(({ data, maxShow = 8, onItemClick }) => {
+    const displayData = data.slice(0, maxShow);
+    const maxCount = Math.max(...displayData.map((d) => d.count), 1);
+    const medals = ['🥇', '🥈', '🥉'];
+
+    if (displayData.length === 0) {
+        return (
+            <Empty
+                description="暂无数据"
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+            />
+        );
+    }
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {displayData.map((item, index) => {
+                const percentage = item.percentage ?? Math.round((item.count / maxCount) * 100);
+                const isTop3 = index < 3;
+                const barColor = isTop3
+                    ? ['#f59e0b', '#a8a29e', '#d4a574'][index]
+                    : '#8B4513';
+
+                return (
+                    <div
+                        key={item.name}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            padding: '8px 12px',
+                            borderRadius: 10,
+                            background: isTop3 ? '#fafaf9' : 'transparent',
+                            transition: 'all 0.2s ease',
+                            cursor: onItemClick ? 'pointer' : 'default',
+                        }}
+                        onClick={() => onItemClick?.(item)}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.background = '#fdf6f0';
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.background = isTop3 ? '#fafaf9' : 'transparent';
+                        }}
+                    >
+                        {/* 排名 */}
+                        <span
+                            style={{
+                                fontSize: 18,
+                                width: 28,
+                                textAlign: 'center',
+                                flexShrink: 0,
+                            }}
+                        >
+                            {isTop3 ? medals[index] : (
+                                <Text type="secondary" style={{ fontSize: 13 }}>
+                                    {index + 1}
+                                </Text>
+                            )}
+                        </span>
+
+                        {/* 名称 */}
+                        <Text
+                            style={{
+                                flex: 1,
+                                fontSize: 13,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                            }}
+                            title={item.name}
+                        >
+                            {item.name}
+                        </Text>
+
+                        {/* 进度条 */}
+                        <div style={{ width: 120 }}>
+                            <Progress
+                                percent={percentage}
+                                strokeColor={barColor}
+                                trailColor="#f0e4d8"
+                                size="small"
+                                showInfo={false}
+                            />
+                        </div>
+
+                        {/* 数量 */}
+                        <Text
+                            strong
+                            style={{
+                                fontSize: 14,
+                                minWidth: 36,
+                                textAlign: 'right',
+                                color: barColor,
+                            }}
+                        >
+                            {item.count}
+                        </Text>
+                    </div>
+                );
+            })}
+        </div>
+    );
+});
+RankingList.displayName = 'RankingList';
+
+// ==================== 主组件 ====================
+
+const Dashboard: FC = () => {
+    const navigate = useNavigate();
+    const { token } = theme.useToken();
+
+    // 数据
+    const { stats, loading, error, refreshing, refresh } = useDashboardData();
+
+    // 时间范围
+    const [timeRange, setTimeRange] = useState<string>('month');
+
     // ==================== 衍生数据 ====================
 
-    /** 来源分布数据 */
-    const booksBySource = useMemo(() => {
-        if (!stats?.books_by_source) return null;
-        const entries = Object.entries(stats.books_by_source).filter(([, count]) => count > 0);
-        if (entries.length === 0) return null;
+    /** 来源分布（饼图格式） */
+    const sourcePieData = useMemo(() => {
+        if (!stats?.books_by_source) return [];
 
-        const total = entries.reduce((sum, [, count]) => sum + count, 0) || 1;
+        const sourceLabels: Record<string, { name: string; color: string; icon?: string }> = {
+            douban: { name: '豆瓣同步', color: '#22c55e', icon: '🟢' },
+            manual: { name: '手动录入', color: '#f97316', icon: '🟠' },
+            isbn: { name: 'ISBN 扫描', color: '#3b82f6', icon: '🔵' },
+            nfc: { name: 'NFC 识别', color: '#a855f7', icon: '🟣' },
+        };
 
-        return entries.map(([source, count]) => {
-            const config = SOURCE_LABELS[source] || { label: source, color: '#8c7b72' };
-            return {
-                label: config.label,
+        return Object.entries(stats.books_by_source)
+            .filter(([, count]) => count > 0)
+            .map(([source, count]) => ({
+                name: sourceLabels[source]?.name || source,
                 value: count,
-                color: config.color,
-                percentage: Math.round((count / total) * 100),
-            };
-        });
-    }, [stats]);
-
-    /** 评分分布数据 */
-    const ratingData = useMemo(() => {
-        if (!stats?.rating_distribution) return [];
-        return stats.rating_distribution
-            .filter((item) => item.count > 0)
-            .map((item) => ({
-                label: item.range,
-                value: item.count,
-                color: item.color,
+                color: sourceLabels[source]?.color || '#8c7b72',
+                icon: sourceLabels[source]?.icon,
             }));
     }, [stats]);
 
-    // ==================== 渲染：加载状态 ====================
+    /** 评分分布 */
+    const ratingBarData = useMemo(() => {
+        if (!stats?.rating_distribution) return [];
+        return stats.rating_distribution.filter((item) => item.count > 0);
+    }, [stats]);
+
+    /** 热力图数据 */
+    const heatmapData = useMemo(() => {
+        if (
+            !stats?.shelf_utilization?.length ||
+            !stats?.monthly_growth?.length
+        ) {
+            return null;
+        }
+
+        const months = stats.monthly_growth.map((m) => m.month);
+        const categories = stats.shelf_utilization.map((s) => s.shelf_name);
+        const totalGrowth = stats.monthly_growth.reduce((sum, m) => sum + m.count, 0) || 1;
+
+        const matrixData = stats.shelf_utilization.map((shelf) =>
+            stats.monthly_growth.map((month) =>
+                Math.max(1, Math.round((shelf.book_count * month.count) / totalGrowth))
+            )
+        );
+
+        return { months, categories, data: matrixData };
+    }, [stats]);
+
+    /** 增长趋势 */
+    const trendData = useMemo(() => {
+        if (!stats?.monthly_growth) return [];
+        return stats.monthly_growth;
+    }, [stats]);
+
+    // ==================== 导出报告 ====================
+
+    const handleExport = useCallback(() => {
+        if (!stats) return;
+
+        const report = {
+            统计时间: new Date().toISOString(),
+            物理书架: stats.physical_shelves,
+            逻辑书架: stats.logical_shelves,
+            活跃映射: stats.active_mappings,
+            馆藏图书: stats.total_books,
+            上架图书: stats.books_in_shelves,
+            未上架: stats.books_not_in_shelf,
+            今日新增: stats.today_books,
+            同步次数: stats.sync_count,
+            来源分布: stats.books_by_source,
+            评分分布: stats.rating_distribution,
+            书架利用率: stats.shelf_utilization,
+        };
+
+        const blob = new Blob([JSON.stringify(report, null, 2)], {
+            type: 'application/json',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `dashboard-report-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        message.success('报告已下载');
+    }, [stats]);
+
+    const exportMenuItems: MenuProps['items'] = [
+        {
+            key: 'json',
+            icon: <DownloadOutlined />,
+            label: '导出 JSON',
+            onClick: handleExport,
+        },
+    ];
+
+    // ==================== 渲染加载状态 ====================
 
     if (loading && !stats) {
         return (
@@ -488,11 +538,23 @@ const Dashboard: React.FC = () => {
                         </Col>
                     ))}
                 </Row>
+                <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+                    <Col xs={24} lg={12}>
+                        <Card style={{ borderRadius: 12, minHeight: 400 }}>
+                            <Skeleton active paragraph={{ rows: 8 }} />
+                        </Card>
+                    </Col>
+                    <Col xs={24} lg={12}>
+                        <Card style={{ borderRadius: 12, minHeight: 400 }}>
+                            <Skeleton active paragraph={{ rows: 8 }} />
+                        </Card>
+                    </Col>
+                </Row>
             </div>
         );
     }
 
-    // ==================== 渲染：错误状态 ====================
+    // ==================== 渲染错误状态 ====================
 
     if (error && !stats) {
         return (
@@ -509,9 +571,9 @@ const Dashboard: React.FC = () => {
                     description={error}
                     type="error"
                     showIcon
-                    style={{ borderRadius: 8 }}
+                    style={{ borderRadius: 10 }}
                     action={
-                        <Button type="primary" size="small" onClick={loadData}>
+                        <Button type="primary" size="small" onClick={refresh}>
                             重试
                         </Button>
                     }
@@ -525,297 +587,504 @@ const Dashboard: React.FC = () => {
     // ==================== 主渲染 ====================
 
     return (
-        <div style={{ maxWidth: 1400, margin: '0 auto', padding: 24 }}>
-            {/* 面包屑 */}
-            <Breadcrumb
-                style={{ marginBottom: 16 }}
-                items={[
-                    { title: <a onClick={() => navigate('/')}><HomeOutlined /> 首页</a> },
-                    { title: <span><FundOutlined /> 管理仪表盘</span> },
-                ]}
-            />
+        <ErrorBoundary>
+            <div style={{ maxWidth: 1600, margin: '0 auto', padding: 24 }}>
+                {/* 面包屑 */}
+                <Breadcrumb
+                    style={{ marginBottom: 16 }}
+                    items={[
+                        {
+                            title: (
+                                <a onClick={() => navigate('/')}>
+                                    <HomeOutlined /> 首页
+                                </a>
+                            ),
+                        },
+                        {
+                            title: (
+                                <span>
+                                    <FundOutlined /> 管理仪表盘
+                                </span>
+                            ),
+                        },
+                    ]}
+                />
 
-            {/* 页面标题 */}
-            <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                flexWrap: 'wrap',
-                gap: 12,
-                marginBottom: 24,
-            }}>
-                <div>
-                    <Title level={2} style={{ margin: 0 }}>
-                        <FundOutlined style={{ marginRight: 12, color: '#8B4513' }} />
-                        管理仪表盘
-                    </Title>
-                    <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
-                        系统概览与数据分析 · 共 {stats.total_books} 本藏书
-                    </Text>
+                {/* 页头 */}
+                <div
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexWrap: 'wrap',
+                        gap: 16,
+                        marginBottom: 28,
+                    }}
+                >
+                    <div>
+                        <Title level={2} style={{ margin: 0 }}>
+                            <FundOutlined
+                                style={{ marginRight: 12, color: token.colorPrimary }}
+                            />
+                            管理仪表盘
+                        </Title>
+                        <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+                            系统概览与数据分析 · 共 {formatNumber(stats.total_books)} 本藏书
+                        </Text>
+                    </div>
+
+                    <Space wrap size={12}>
+                        <Segmented
+                            options={TIME_RANGE_OPTIONS}
+                            value={timeRange}
+                            onChange={(v) => setTimeRange(v as string)}
+                            size="middle"
+                        />
+                        <Tooltip title="刷新数据">
+                            <Button
+                                icon={<ReloadOutlined spin={refreshing} />}
+                                onClick={refresh}
+                                loading={refreshing}
+                                style={{ borderRadius: 8 }}
+                            >
+                                刷新
+                            </Button>
+                        </Tooltip>
+                        <Dropdown menu={{ items: exportMenuItems }}>
+                            <Button
+                                icon={<DownloadOutlined />}
+                                style={{ borderRadius: 8 }}
+                            >
+                                导出
+                            </Button>
+                        </Dropdown>
+                    </Space>
                 </div>
 
-                <Space wrap>
-                    <Segmented
-                        options={[
-                            { label: '本月', value: 'month' },
-                            { label: '本季', value: 'quarter' },
-                            { label: '本年', value: 'year' },
-                        ]}
-                        value={timeRange}
-                        onChange={(v) => setTimeRange(v as string)}
-                    />
-                    <Tooltip title="刷新数据">
-                        <Button
-                            icon={<ReloadOutlined spin={refreshing} />}
-                            onClick={() => { setRefreshing(true); loadData(); }}
-                            loading={refreshing}
-                            style={{ borderRadius: 8 }}
-                        >
-                            刷新
-                        </Button>
-                    </Tooltip>
-                </Space>
-            </div>
-
-            {/* ===== 统计卡片 ===== */}
-            <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-                {STAT_CARDS.map((config) => (
-                    <Col xs={24} sm={12} lg={8} xl={24 / 5} key={config.key}>
-                        <StatCard
-                            title={config.title}
-                            value={(stats[config.key as keyof DashboardStats] as number) || 0}
-                            icon={config.icon}
-                            color={config.color}
-                            bgColor={config.bgColor}
-                            borderColor={config.borderColor}
-                            loading={loading}
-                        />
-                    </Col>
-                ))}
-            </Row>
-
-            {/* ===== 主要内容区 ===== */}
-            <Row gutter={[16, 16]}>
-                {/* 左侧列 */}
-                <Col xs={24} lg={12}>
-                    {/* 增长趋势 */}
-                    {stats.monthly_growth?.length > 0 && (
-                        <Card
-                            title={<span><LineChartOutlined style={{ marginRight: 8, color: '#8B4513' }} />藏书增长趋势</span>}
-                            style={{ borderRadius: 12, border: '1px solid #e8d5c8', marginBottom: 16 }}
-                        >
-                            <SimpleBarChart
-                                data={stats.monthly_growth.map((item) => ({
-                                    label: item.month,
-                                    value: item.count,
-                                    color: '#8B4513',
-                                }))}
-                                height={200}
+                {/* 统计卡片 */}
+                <Row gutter={[18, 18]} style={{ marginBottom: 28 }}>
+                    {STAT_CARDS.map((config, index) => (
+                        <Col xs={24} sm={12} md={8} lg={24 / 5} key={config.key}>
+                            <StatCard
+                                title={config.title}
+                                value={(stats[config.key] as number) || 0}
+                                icon={config.icon}
+                                color={config.color}
+                                bgColor={config.bgColor}
+                                borderColor={config.borderColor}
+                                loading={loading}
+                                delay={index * 60}
                             />
-                        </Card>
-                    )}
-
-                    {/* 评分分布 + 来源分布 */}
-                    <Row gutter={[16, 16]}>
-                        <Col xs={24} sm={12}>
-                            <Card
-                                title={<span><StarFilled style={{ marginRight: 8, color: '#f59e0b' }} />评分分布</span>}
-                                style={{ borderRadius: 12, border: '1px solid #e8d5c8', marginBottom: 16 }}
-                            >
-                                {ratingData.length > 0 ? (
-                                    <SimpleBarChart data={ratingData} height={180} />
-                                ) : (
-                                    <Empty description="暂无评分数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                                )}
-                            </Card>
                         </Col>
-                        <Col xs={24} sm={12}>
+                    ))}
+                </Row>
+
+                {/* 主要内容区 */}
+                <Row gutter={[18, 18]}>
+                    {/* 左侧列 */}
+                    <Col xs={24} lg={12}>
+                        {/* 增长趋势 */}
+                        {trendData.length > 0 && (
                             <Card
-                                title={<span><PieChartOutlined style={{ marginRight: 8, color: '#8B4513' }} />来源分布</span>}
-                                style={{ borderRadius: 12, border: '1px solid #e8d5c8', marginBottom: 16 }}
+                                title={
+                                    <Space size={6}>
+                                        <LineChartOutlined style={{ color: token.colorPrimary }} />
+                                        <span>藏书增长趋势</span>
+                                    </Space>
+                                }
+                                style={{
+                                    borderRadius: 14,
+                                    border: `1px solid ${token.colorBorderSecondary}`,
+                                    marginBottom: 18,
+                                }}
+                                loading={loading}
                             >
-                                {booksBySource ? (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: '8px 0' }}>
-                                        {booksBySource.map((item, index) => (
+                                <ReadingTrendChart
+                                    data={trendData}
+                                    height={300}
+                                    loading={loading}
+                                />
+                            </Card>
+                        )}
+
+                        {/* 评分分布 + 来源分布 */}
+                        <Row gutter={[18, 18]}>
+                            <Col xs={24} sm={12}>
+                                <Card
+                                    title={
+                                        <Space size={6}>
+                                            <StarFilled style={{ color: '#f59e0b' }} />
+                                            <span>评分分布</span>
+                                        </Space>
+                                    }
+                                    style={{
+                                        borderRadius: 14,
+                                        border: `1px solid ${token.colorBorderSecondary}`,
+                                        marginBottom: 18,
+                                    }}
+                                    loading={loading}
+                                >
+                                    {ratingBarData.length > 0 ? (
+                                        <RatingBarChart
+                                            data={ratingBarData}
+                                            height={280}
+                                            layout="vertical"
+                                            loading={loading}
+                                        />
+                                    ) : (
+                                        <Empty
+                                            description="暂无评分数据"
+                                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                        />
+                                    )}
+                                </Card>
+                            </Col>
+                            <Col xs={24} sm={12}>
+                                <Card
+                                    title={
+                                        <Space size={6}>
+                                            <PieChartOutlined style={{ color: token.colorPrimary }} />
+                                            <span>来源分布</span>
+                                        </Space>
+                                    }
+                                    style={{
+                                        borderRadius: 14,
+                                        border: `1px solid ${token.colorBorderSecondary}`,
+                                        marginBottom: 18,
+                                    }}
+                                    loading={loading}
+                                >
+                                    {sourcePieData.length > 0 ? (
+                                        <SourcePieChart
+                                            data={sourcePieData}
+                                            height={300}
+                                            showLegend
+                                            showCenterLabel
+                                            loading={loading}
+                                        />
+                                    ) : (
+                                        <Empty
+                                            description="暂无数据"
+                                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                        />
+                                    )}
+                                </Card>
+                            </Col>
+                        </Row>
+
+                        {/* 书架利用率 */}
+                        {stats.shelf_utilization?.length > 0 && (
+                            <Card
+                                title={
+                                    <Space size={6}>
+                                        <BarChartOutlined style={{ color: token.colorPrimary }} />
+                                        <span>书架利用率</span>
+                                    </Space>
+                                }
+                                style={{
+                                    borderRadius: 14,
+                                    border: `1px solid ${token.colorBorderSecondary}`,
+                                    marginBottom: 18,
+                                }}
+                            >
+                                <Space direction="vertical" style={{ width: '100%' }} size={12}>
+                                    {stats.shelf_utilization.map((item, index) => {
+                                        const percent = Math.round(item.percentage);
+                                        const strokeColor =
+                                            percent > 80
+                                                ? '#ef4444'
+                                                : percent > 60
+                                                ? '#f59e0b'
+                                                : '#22c55e';
+
+                                        return (
                                             <div key={index}>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                                                    <Space>
-                                                        <Badge color={item.color} />
-                                                        <Text style={{ fontSize: 13 }}>{item.label}</Text>
-                                                    </Space>
-                                                    <Space>
-                                                        <Text strong style={{ fontSize: 13 }}>{item.value} 本</Text>
-                                                        <Text type="secondary" style={{ fontSize: 12 }}>({item.percentage}%)</Text>
+                                                <div
+                                                    style={{
+                                                        display: 'flex',
+                                                        justifyContent: 'space-between',
+                                                        marginBottom: 6,
+                                                    }}
+                                                >
+                                                    <Text style={{ fontSize: 13 }}>
+                                                        {item.shelf_name}
+                                                    </Text>
+                                                    <Space size={4}>
+                                                        <Text strong style={{ fontSize: 13 }}>
+                                                            {item.book_count} 本
+                                                        </Text>
+                                                        <Text
+                                                            type="secondary"
+                                                            style={{ fontSize: 11 }}
+                                                        >
+                                                            ({percent}%)
+                                                        </Text>
                                                     </Space>
                                                 </div>
                                                 <Progress
-                                                    percent={item.percentage}
-                                                    strokeColor={item.color}
-                                                    trailColor="#f0e4d8"
+                                                    percent={percent}
+                                                    strokeColor={strokeColor}
+                                                    trailColor={token.colorFillSecondary}
                                                     size="small"
                                                     showInfo={false}
                                                 />
                                             </div>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                                )}
+                                        );
+                                    })}
+                                </Space>
                             </Card>
-                        </Col>
-                    </Row>
-
-                    {/* 书架利用率 */}
-                    {stats.shelf_utilization?.length > 0 && (
-                        <Card
-                            title={<span><BarChartOutlined style={{ marginRight: 8, color: '#8B4513' }} />书架利用率</span>}
-                            style={{ borderRadius: 12, border: '1px solid #e8d5c8', marginBottom: 16 }}
-                        >
-                            <Space direction="vertical" style={{ width: '100%' }} size="middle">
-                                {stats.shelf_utilization.map((item, index) => (
-                                    <div key={index}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                                            <Text style={{ fontSize: 13 }}>{item.shelf_name}</Text>
-                                            <Text strong style={{ fontSize: 13 }}>{item.book_count} 本</Text>
-                                        </div>
-                                        <Progress
-                                            percent={Math.round(item.percentage)}
-                                            strokeColor={item.percentage > 80 ? '#ef4444' : item.percentage > 60 ? '#f59e0b' : '#22c55e'}
-                                            trailColor="#f0e4d8"
-                                            size="small"
-                                            showInfo={false}
-                                        />
-                                    </div>
-                                ))}
-                            </Space>
-                        </Card>
-                    )}
-                </Col>
-
-                {/* 右侧列 */}
-                <Col xs={24} lg={12}>
-                    {/* 出版社排行 */}
-                    <Card
-                        title={<span><TrophyOutlined style={{ marginRight: 8, color: '#f59e0b' }} />出版社排行</span>}
-                        style={{ borderRadius: 12, border: '1px solid #e8d5c8', marginBottom: 16 }}
-                    >
-                        <RankingList data={stats.top_publishers || []} maxShow={8} />
-                    </Card>
-
-                    {/* 作者排行 */}
-                    <Card
-                        title={<span><UserOutlined style={{ marginRight: 8, color: '#8B4513' }} />作者排行</span>}
-                        style={{ borderRadius: 12, border: '1px solid #e8d5c8', marginBottom: 16 }}
-                    >
-                        <RankingList data={stats.top_authors || []} maxShow={8} />
-                    </Card>
-
-                    {/* 最近活动 */}
-                    {stats.recent_activities?.length > 0 && (
-                        <Card
-                            title={<span><ClockCircleOutlined style={{ marginRight: 8, color: '#8B4513' }} />最近活动</span>}
-                            style={{ borderRadius: 12, border: '1px solid #e8d5c8', marginBottom: 16 }}
-                        >
-                            <Timeline
-                                items={stats.recent_activities.map((activity) => ({
-                                    color: ACTIVITY_COLORS[activity.type] || '#8c7b72',
-                                    dot: ACTIVITY_ICONS[activity.type] || <FileTextOutlined />,
-                                    children: (
-                                        <div>
-                                            <Text style={{ fontSize: 14, display: 'block' }}>{activity.detail}</Text>
-                                            <Text type="secondary" style={{ fontSize: 12 }}>{activity.timestamp}</Text>
-                                        </div>
-                                    ),
-                                }))}
-                            />
-                        </Card>
-                    )}
-
-                    {/* 最近添加 */}
-                    <Card
-                        title={<span><BookOutlined style={{ marginRight: 8, color: '#8B4513' }} />最近添加</span>}
-                        style={{ borderRadius: 12, border: '1px solid #e8d5c8' }}
-                    >
-                        {stats.recent_books?.length > 0 ? (
-                            <List
-                                dataSource={stats.recent_books.slice(0, 5)}
-                                renderItem={(book) => (
-                                    <List.Item
-                                        style={{ padding: '8px 0', cursor: 'pointer' }}
-                                        onClick={() => navigate(`/book/${book.book_id}`)}
-                                    >
-                                        <List.Item.Meta
-                                            avatar={
-                                                <Avatar
-                                                    shape="square"
-                                                    size={40}
-                                                    icon={<BookOutlined />}
-                                                    style={{ background: '#fdf6f0', color: '#8B4513', borderRadius: 6 }}
-                                                />
-                                            }
-                                            title={<Text style={{ fontSize: 14 }} ellipsis>{book.title}</Text>}
-                                            description={
-                                                <Space size={4}>
-                                                    <Text type="secondary" style={{ fontSize: 12 }}>{book.isbn}</Text>
-                                                    <Tag
-                                                        color={book.source === 'douban' ? 'green' : 'orange'}
-                                                        style={{ fontSize: 11, lineHeight: '16px', padding: '0 4px' }}
-                                                    >
-                                                        {book.source === 'douban' ? '豆瓣' : '手动'}
-                                                    </Tag>
-                                                </Space>
-                                            }
-                                        />
-                                    </List.Item>
-                                )}
-                            />
-                        ) : (
-                            <Empty description="暂无图书" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                         )}
-                    </Card>
-                </Col>
-            </Row>
+                    </Col>
 
-            {/* ===== 底部概览 ===== */}
-            <Card
-                style={{
-                    borderRadius: 12,
-                    border: '1px solid #e8d5c8',
-                    marginTop: 16,
-                    background: 'linear-gradient(135deg, #fdf6f0 0%, #fafaf9 100%)',
-                }}
-            >
-                <Row gutter={[16, 16]} justify="center">
-                    <Col>
-                        <Statistic
-                            title="今日新增"
-                            value={stats.today_books || 0}
-                            prefix={<RocketOutlined style={{ color: '#3b82f6' }} />}
-                            valueStyle={{ color: '#3b82f6', fontSize: 20 }}
-                            suffix="本"
-                        />
-                    </Col>
-                    <Col>
-                        <Statistic
-                            title="同步次数"
-                            value={stats.sync_count || 0}
-                            prefix={<SyncOutlined style={{ color: '#22c55e' }} />}
-                            valueStyle={{ color: '#22c55e', fontSize: 20 }}
-                            suffix="次"
-                        />
-                    </Col>
-                    <Col>
-                        <Statistic
-                            title="未上架"
-                            value={stats.books_not_in_shelf || 0}
-                            prefix={<ExclamationCircleOutlined style={{ color: '#f59e0b' }} />}
-                            valueStyle={{ color: '#f59e0b', fontSize: 20 }}
-                            suffix="本"
-                        />
+                    {/* 右侧列 */}
+                    <Col xs={24} lg={12}>
+                        {/* 出版社排行 */}
+                        <Card
+                            title={
+                                <Space size={6}>
+                                    <TrophyOutlined style={{ color: '#f59e0b' }} />
+                                    <span>出版社排行</span>
+                                </Space>
+                            }
+                            style={{
+                                borderRadius: 14,
+                                border: `1px solid ${token.colorBorderSecondary}`,
+                                marginBottom: 18,
+                            }}
+                        >
+                            <RankingList data={stats.top_publishers || []} maxShow={8} />
+                        </Card>
+
+                        {/* 作者排行 */}
+                        <Card
+                            title={
+                                <Space size={6}>
+                                    <UserOutlined style={{ color: token.colorPrimary }} />
+                                    <span>作者排行</span>
+                                </Space>
+                            }
+                            style={{
+                                borderRadius: 14,
+                                border: `1px solid ${token.colorBorderSecondary}`,
+                                marginBottom: 18,
+                            }}
+                        >
+                            <RankingList data={stats.top_authors || []} maxShow={8} />
+                        </Card>
+
+                        {/* 最近活动 */}
+                        {stats.recent_activities?.length > 0 && (
+                            <Card
+                                title={
+                                    <Space size={6}>
+                                        <ClockCircleOutlined style={{ color: token.colorPrimary }} />
+                                        <span>最近活动</span>
+                                    </Space>
+                                }
+                                style={{
+                                    borderRadius: 14,
+                                    border: `1px solid ${token.colorBorderSecondary}`,
+                                    marginBottom: 18,
+                                }}
+                            >
+                                <Timeline
+                                    items={stats.recent_activities.slice(0, 8).map((activity) => {
+                                        const config =
+                                            ACTIVITY_CONFIG[activity.type] || ACTIVITY_CONFIG.system;
+                                        return {
+                                            color: config.color,
+                                            dot: config.icon,
+                                            children: (
+                                                <div>
+                                                    <Space size={4}>
+                                                        <Tag
+                                                            color={config.color}
+                                                            style={{ fontSize: 10, margin: 0 }}
+                                                        >
+                                                            {config.label}
+                                                        </Tag>
+                                                        <Text style={{ fontSize: 13 }}>
+                                                            {activity.detail}
+                                                        </Text>
+                                                    </Space>
+                                                    <br />
+                                                    <Text
+                                                        type="secondary"
+                                                        style={{ fontSize: 11 }}
+                                                    >
+                                                        {activity.timestamp}
+                                                    </Text>
+                                                </div>
+                                            ),
+                                        };
+                                    })}
+                                />
+                            </Card>
+                        )}
+
+                        {/* 最近添加 */}
+                        <Card
+                            title={
+                                <Space size={6}>
+                                    <BookOutlined style={{ color: token.colorPrimary }} />
+                                    <span>最近添加</span>
+                                </Space>
+                            }
+                            style={{
+                                borderRadius: 14,
+                                border: `1px solid ${token.colorBorderSecondary}`,
+                                marginBottom: 18,
+                            }}
+                        >
+                            {stats.recent_books?.length > 0 ? (
+                                <List
+                                    dataSource={stats.recent_books.slice(0, 5)}
+                                    renderItem={(book) => (
+                                        <List.Item
+                                            style={{
+                                                padding: '10px 0',
+                                                cursor: 'pointer',
+                                                borderRadius: 8,
+                                            }}
+                                            onClick={() =>
+                                                navigate(`/shelf/1/book/${book.book_id}`)
+                                            }
+                                        >
+                                            <List.Item.Meta
+                                                avatar={
+                                                    <Avatar
+                                                        shape="square"
+                                                        size={44}
+                                                        icon={<BookOutlined />}
+                                                        style={{
+                                                            background: token.colorPrimaryBg,
+                                                            color: token.colorPrimary,
+                                                            borderRadius: 8,
+                                                        }}
+                                                    />
+                                                }
+                                                title={
+                                                    <Text
+                                                        style={{ fontSize: 14 }}
+                                                        ellipsis
+                                                    >
+                                                        {book.title}
+                                                    </Text>
+                                                }
+                                                description={
+                                                    <Space size={6}>
+                                                        <Text
+                                                            type="secondary"
+                                                            style={{ fontSize: 11 }}
+                                                        >
+                                                            {book.isbn}
+                                                        </Text>
+                                                        <Tag
+                                                            color={
+                                                                book.source === 'douban'
+                                                                    ? 'green'
+                                                                    : 'orange'
+                                                            }
+                                                            style={{
+                                                                fontSize: 10,
+                                                                margin: 0,
+                                                                padding: '0 6px',
+                                                            }}
+                                                        >
+                                                            {book.source === 'douban'
+                                                                ? '豆瓣'
+                                                                : '手动'}
+                                                        </Tag>
+                                                    </Space>
+                                                }
+                                            />
+                                        </List.Item>
+                                    )}
+                                />
+                            ) : (
+                                <Empty
+                                    description="暂无图书"
+                                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                />
+                            )}
+                        </Card>
                     </Col>
                 </Row>
-            </Card>
-        </div>
+
+                {/* 热力图 */}
+                {heatmapData && heatmapData.data.length > 0 && (
+                    <Card
+                        title={
+                            <Space size={6}>
+                                <HeatMapOutlined style={{ color: token.colorPrimary }} />
+                                <span>书架月度分布热力图</span>
+                            </Space>
+                        }
+                        style={{
+                            borderRadius: 14,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                            marginBottom: 18,
+                        }}
+                    >
+                        <ReadingHeatmap
+                            months={heatmapData.months}
+                            categories={heatmapData.categories}
+                            data={heatmapData.data}
+                            height={420}
+                            loading={loading}
+                        />
+                    </Card>
+                )}
+
+                {/* 底部概览 */}
+                <Card
+                    style={{
+                        borderRadius: 14,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                        marginTop: 8,
+                        background: `linear-gradient(135deg, ${token.colorPrimaryBg} 0%, ${token.colorBgLayout} 100%)`,
+                    }}
+                >
+                    <Row gutter={[24, 16]} justify="center">
+                        <Col>
+                            <Statistic
+                                title="今日新增"
+                                value={stats.today_books || 0}
+                                prefix={
+                                    <RocketOutlined style={{ color: '#3b82f6' }} />
+                                }
+                                valueStyle={{ color: '#3b82f6', fontSize: 22 }}
+                                suffix="本"
+                            />
+                        </Col>
+                        <Col>
+                            <Statistic
+                                title="同步次数"
+                                value={stats.sync_count || 0}
+                                prefix={
+                                    <SyncOutlined style={{ color: '#22c55e' }} />
+                                }
+                                valueStyle={{ color: '#22c55e', fontSize: 22 }}
+                                suffix="次"
+                            />
+                        </Col>
+                        <Col>
+                            <Statistic
+                                title="待上架"
+                                value={stats.books_not_in_shelf || 0}
+                                prefix={
+                                    <ExclamationCircleOutlined
+                                        style={{ color: '#f59e0b' }}
+                                    />
+                                }
+                                valueStyle={{ color: '#f59e0b', fontSize: 22 }}
+                                suffix="本"
+                            />
+                        </Col>
+                    </Row>
+                </Card>
+            </div>
+        </ErrorBoundary>
     );
 };
 

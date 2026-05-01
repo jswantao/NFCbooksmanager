@@ -2,110 +2,143 @@
 """
 图片代理服务
 
-提供图书封面图片的代理访问功能。
+提供图书封面图片的代理访问功能，支持本地缓存。
 
 核心端点：
-- GET /proxy : 代理获取豆瓣图片并缓存
-
-为什么需要图片代理：
-1. 豆瓣图片可能禁止直接跨域引用（Referer 检查）
-2. 部分网络环境无法直接访问豆瓣 CDN
-3. 统一添加缓存控制头，提升前端加载速度
-
-安全限制：
-- 仅允许代理豆瓣 CDN 域名（douban.com / doubanio.com）
-- 防止被滥用为开放代理
-- 请求超时 30 秒
-- 返回时添加浏览器缓存头（24 小时）
+- GET /proxy         : 代理获取豆瓣图片并缓存
+- GET /cache/stats   : 查看图片缓存统计
+- DELETE /cache/clear: 清空图片缓存
 """
 
+import hashlib
+import mimetypes
+import time
 from io import BytesIO
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from loguru import logger  # ⬅ 改用 loguru
+
+from app.core.config import settings
 
 router = APIRouter()
 
-# 允许代理的图片域名白名单
+# ==================== 常量 ====================
+
 ALLOWED_DOMAINS = ["douban.com", "doubanio.com"]
-
-# 请求豆瓣图片时使用的 Referer（绕过防盗链检查）
 DOUBAN_REFERER = "https://book.douban.com/"
-
-# 代理请求超时时间（秒）
 PROXY_TIMEOUT = 30
-
-# 浏览器缓存时长（秒）= 24 小时
 BROWSER_CACHE_MAX_AGE = 86400
 
 
-@router.get("/proxy", summary="代理获取豆瓣图片")
+# ==================== 缓存工具函数 ====================
+
+def _get_cache_file_path(url: str) -> Path:
+    """根据图片 URL 计算本地缓存文件路径"""
+    cache_dir = Path(settings.IMAGE_CACHE_DIR)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+    parsed_url = httpx.URL(url)
+    url_suffix = Path(parsed_url.path).suffix
+
+    if url_suffix and len(url_suffix) <= 10:
+        filename = f"{url_hash}{url_suffix}"
+    else:
+        filename = url_hash
+
+    return cache_dir / filename
+
+
+def _is_cache_fresh(file_path: Path, max_age_seconds: int) -> bool:
+    """检查缓存文件是否在有效期内"""
+    if not file_path.exists():
+        return False
+    file_mtime = file_path.stat().st_mtime
+    return (time.time() - file_mtime) <= max_age_seconds
+
+
+# ==================== 代理端点 ====================
+
+@router.get("/proxy", summary="代理获取豆瓣图片（带本地缓存）")
 async def proxy_image(
-    url: str = Query(
-        ...,
-        description="要代理的图片 URL（仅限豆瓣 CDN）",
-    ),
-) -> StreamingResponse:
-    """
-    代理获取豆瓣图书封面图片
-    
-    处理流程：
-    1. 验证 URL 是否属于允许的域名
-    2. 使用模拟浏览器头（Referer + User-Agent）发起请求
-    3. 成功：返回图片流 + 缓存控制头
-    4. 失败：返回相应的 HTTP 错误状态码
-    
-    错误处理：
-    - 400: URL 不属于允许的域名
-    - 404: 豆瓣图片不存在
-    - 502: 豆瓣服务器错误
-    - 504: 请求豆瓣超时
-    - 500: 其他未知错误
-    
-    Args:
-        url: 豆瓣图片完整 URL
-    
-    Returns:
-        图片流响应（带 Content-Type 和 Cache-Control 头）
-    
-    Raises:
-        HTTPException 400: 域名不在白名单
-        HTTPException 404: 图片不存在
-        HTTPException 502: 上游服务器错误
-        HTTPException 504: 请求超时
-    """
-    # 域名白名单校验
+    url: str = Query(..., description="要代理的图片 URL"),
+):
+    """代理获取豆瓣图书封面图片，支持本地缓存"""
+    # 1. 域名白名单校验
     if not url or not any(domain in url for domain in ALLOWED_DOMAINS):
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的图片源，仅允许代理: {', '.join(ALLOWED_DOMAINS)}",
+            detail=f"不支持的图片源: {', '.join(ALLOWED_DOMAINS)}",
         )
-    
+
+    # 2. 检查本地缓存
+    if settings.IMAGE_CACHE_ENABLED:
+        cache_path = _get_cache_file_path(url)
+
+        if _is_cache_fresh(cache_path, settings.IMAGE_CACHE_MAX_AGE):
+            media_type, _ = mimetypes.guess_type(str(cache_path))
+            content_type = media_type or "image/jpeg"
+
+            logger.debug(f"图片缓存命中 [{cache_path.name}]")
+
+            return FileResponse(
+                path=str(cache_path),
+                media_type=content_type,
+                headers={
+                    "Cache-Control": f"public, max-age={BROWSER_CACHE_MAX_AGE}",
+                },
+            )
+
+    # 3. 请求豆瓣
     try:
         async with httpx.AsyncClient(
             timeout=PROXY_TIMEOUT,
             follow_redirects=True,
         ) as client:
-            # 模拟浏览器访问，绕过防盗链
             response = await client.get(
                 url,
                 headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
+                    "User-Agent": settings.DOUBAN_USER_AGENT,
                     "Referer": DOUBAN_REFERER,
                 },
             )
-            
+
             if response.status_code == 200:
-                # 成功获取图片，返回流式响应
                 content_type = response.headers.get(
-                    "content-type",
-                    "image/jpeg",
+                    "content-type", "image/jpeg"
                 )
+
+                # 4. 保存缓存
+                if settings.IMAGE_CACHE_ENABLED:
+                    try:
+                        cache_path = _get_cache_file_path(url)
+
+                        if not cache_path.suffix:
+                            clean_type = (
+                                content_type.split(';')[0].strip()
+                            )
+                            ext = mimetypes.guess_extension(clean_type)
+                            if ext:
+                                cache_path = cache_path.with_suffix(ext)
+
+                        # 原子写入
+                        temp_path = cache_path.with_suffix(
+                            (cache_path.suffix or '') + ".tmp"
+                        )
+                        with open(temp_path, 'wb') as f:
+                            f.write(response.content)
+                        temp_path.replace(cache_path)
+
+                        logger.debug(
+                            f"图片已缓存 [{cache_path.name}] "
+                            f"({len(response.content) / 1024:.1f} KB)"
+                        )
+                    except Exception as e:
+                        logger.warning(f"缓存写入失败: {e}")
+
                 return StreamingResponse(
                     BytesIO(response.content),
                     media_type=content_type,
@@ -113,27 +146,88 @@ async def proxy_image(
                         "Cache-Control": f"public, max-age={BROWSER_CACHE_MAX_AGE}",
                     },
                 )
-            
-            # 根据状态码返回对应错误
+
             if response.status_code == 404:
                 raise HTTPException(status_code=404, detail="图片不存在")
-            
-            # 其他非 200 状态码
+
             raise HTTPException(
                 status_code=502,
-                detail=f"图片源返回错误 (状态码: {response.status_code})",
+                detail=f"图片源错误 ({response.status_code})",
             )
-            
+
     except httpx.TimeoutException:
-        raise HTTPException(
-            status_code=504,
-            detail=f"请求图片超时（超过 {PROXY_TIMEOUT} 秒）",
-        )
+        raise HTTPException(status_code=504, detail="请求超时")
     except HTTPException:
-        # 重新抛出已处理的 HTTP 异常
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"图片代理错误: {str(e)[:200]}",
-        )
+        logger.error(f"图片代理错误: {e}")
+        raise HTTPException(status_code=500, detail=str(e)[:200])
+
+
+# ==================== 缓存管理 ====================
+
+@router.get("/cache/stats", summary="查看图片缓存统计")
+async def get_cache_stats():
+    """获取图片缓存统计信息"""
+    if not settings.IMAGE_CACHE_ENABLED:
+        return {"enabled": False, "message": "缓存未启用"}
+
+    cache_dir = Path(settings.IMAGE_CACHE_DIR)
+
+    if not cache_dir.exists():
+        return {
+            "enabled": True,
+            "cache_dir": str(cache_dir),
+            "file_count": 0,
+            "total_size": "0 B",
+            "max_age_days": settings.IMAGE_CACHE_MAX_AGE // 86400,
+        }
+
+    files = [
+        f for f in cache_dir.iterdir()
+        if f.is_file() and not f.name.endswith('.tmp')
+    ]
+    total_bytes = sum(f.stat().st_size for f in files)
+
+    if total_bytes < 1024:
+        size_str = f"{total_bytes} B"
+    elif total_bytes < 1024 * 1024:
+        size_str = f"{total_bytes / 1024:.1f} KB"
+    else:
+        size_str = f"{total_bytes / (1024 * 1024):.1f} MB"
+
+    return {
+        "enabled": True,
+        "cache_dir": str(cache_dir),
+        "file_count": len(files),
+        "total_size": size_str,
+        "max_age_days": settings.IMAGE_CACHE_MAX_AGE // 86400,
+    }
+
+
+@router.delete("/cache/clear", summary="清空图片缓存")
+async def clear_image_cache():
+    """清空所有本地缓存的图片文件"""
+    if not settings.IMAGE_CACHE_ENABLED:
+        return {"success": False, "message": "缓存未启用", "deleted_count": 0}
+
+    cache_dir = Path(settings.IMAGE_CACHE_DIR)
+
+    if not cache_dir.exists():
+        return {"success": True, "message": "目录不存在", "deleted_count": 0}
+
+    deleted_count = 0
+    for file_path in cache_dir.iterdir():
+        if file_path.is_file():
+            try:
+                file_path.unlink()
+                deleted_count += 1
+            except Exception as e:
+                logger.warning(f"删除失败 [{file_path.name}]: {e}")
+
+    logger.info(f"缓存已清空，删除 {deleted_count} 个文件")
+    return {
+        "success": True,
+        "message": f"已清空 {deleted_count} 个文件",
+        "deleted_count": deleted_count,
+    }

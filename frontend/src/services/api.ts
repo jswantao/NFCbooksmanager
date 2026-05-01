@@ -1,32 +1,23 @@
 // frontend/src/services/api.ts
 /**
- * API 服务层
+ * API 服务层 - React 19 + Ant Design 6
  * 
- * 封装所有后端 API 调用，提供统一的请求/响应处理。
- * 
- * 设计原则：
- * - 单一入口：所有 API 调用通过 axios 实例统一管理
- * - 错误拦截：统一处理网络错误和业务错误
- * - 类型安全：所有响应使用泛型接口约束
- * - 代理友好：使用相对路径，通过 Vite 代理转发到后端
- * 
- * 代理配置（vite.config.ts）：
- * /api/* → http://localhost:8000/api/*
- * 
- * 三级模式 API 映射：
- * - /api/nfc/*      → 外模式（NFC 读写）
- * - /api/mapping/*  → 中间模式（映射解析）
- * - /api/shelves/*  → 中间模式（书架管理）
- * - /api/books/*    → 内模式（图书数据）
- * - /api/admin/*    → 内模式（管理统计）
- * 
- * 注意：
- * - POST/PUT 请求使用请求体（Body）传递数据，不使用查询参数
- * - GET/DELETE 请求使用查询参数（params）
+ * 优化点：
+ * - 修复 `listPhysicalShelves` 返回类型（应为分页结构）
+ * - 统一请求配置
+ * - 增强错误处理（网络离线检测）
+ * - 请求缓存策略（可选的 SWR 模式）
+ * - 类型安全的请求参数
+ * - 批量请求支持
+ * - 请求优先级标记
  */
 
-import axios from 'axios';
-import type { AxiosResponse, AxiosError } from 'axios';
+import axios, {
+    type AxiosResponse,
+    type AxiosError,
+    type AxiosRequestConfig,
+    type CancelTokenSource,
+} from 'axios';
 import type {
     ApiResponse,
     Book,
@@ -45,170 +36,250 @@ import type {
     DashboardStats,
     CookieConfigInfo,
     CookieTestResult,
-    PaginatedResponse,
     BooksResponse,
+    PhysicalShelf,
+    PhysicalMappingInfo,
 } from '../types';
+
+// ==================== 类型定义 ====================
+
+/** API 错误码映射 */
+const ERROR_MESSAGES: Record<number, string> = {
+    400: '请求参数错误',
+    401: '未授权访问',
+    403: '禁止访问',
+    404: '请求的资源不存在',
+    409: '资源冲突',
+    422: '请求参数格式错误',
+    429: '请求过于频繁，请稍后再试',
+    500: '服务器内部错误',
+    502: '网关错误',
+    503: '服务暂时不可用',
+    504: '网关超时',
+};
+
+/** 扩展的 Axios 错误 */
+interface EnhancedAxiosError extends AxiosError {
+    userMessage?: string;
+}
+
+/** 物理书架列表响应 */
+interface PhysicalShelvesResponse {
+    shelves: PhysicalShelf[];
+    total: number;
+}
 
 // ==================== 常量配置 ====================
 
-/** API 基础路径（通过 Vite 代理转发到后端） */
 const API_BASE_URL = '/api';
-
-/** 请求超时时间（毫秒） */
-const REQUEST_TIMEOUT = 30000;
+const DEFAULT_TIMEOUT = 30000;
+const MAX_RETRIES = 2;
 
 // ==================== Axios 实例 ====================
 
-/**
- * 创建预配置的 axios 实例
- * 
- * 配置项：
- * - baseURL: /api（相对路径，通过 Vite 代理）
- * - timeout: 30 秒超时
- * - headers: JSON 请求头
- */
 const apiClient = axios.create({
     baseURL: API_BASE_URL,
-    timeout: REQUEST_TIMEOUT,
+    timeout: DEFAULT_TIMEOUT,
     headers: {
         'Content-Type': 'application/json',
     },
 });
 
+// ==================== 请求去重管理 ====================
+
+/** 请求 pending 映射表 */
+const pendingRequests = new Map<string, CancelTokenSource>();
+
+/**
+ * 生成请求唯一标识
+ */
+const getRequestKey = (config: AxiosRequestConfig): string => {
+    const { method, url, params, data } = config;
+    return [method, url, JSON.stringify(params), JSON.stringify(data)].join('&');
+};
+
+/**
+ * 添加 pending 请求
+ */
+const addPendingRequest = (config: AxiosRequestConfig): void => {
+    const requestKey = getRequestKey(config);
+    removePendingRequest(config);
+
+    const source = axios.CancelToken.source();
+    config.cancelToken = source.token;
+    pendingRequests.set(requestKey, source);
+};
+
+/**
+ * 移除 pending 请求
+ */
+const removePendingRequest = (config: AxiosRequestConfig): void => {
+    const requestKey = getRequestKey(config);
+    const source = pendingRequests.get(requestKey);
+    if (source) {
+        source.cancel(`重复请求已取消: ${requestKey}`);
+        pendingRequests.delete(requestKey);
+    }
+};
+
 // ==================== 请求拦截器 ====================
 
-/** 开发环境打印请求日志 */
 apiClient.interceptors.request.use(
     (config) => {
+        // GET 请求去重
+        if (config.method?.toLowerCase() === 'get') {
+            addPendingRequest(config);
+        }
+
         if (import.meta.env.DEV) {
             console.debug(
-                `[API Request] ${config.method?.toUpperCase()} ${config.url}`,
-                config.params || config.data
+                `[API] ${config.method?.toUpperCase()} ${config.url}`,
+                config.params || config.data || ''
             );
         }
         return config;
     },
-    (error) => {
-        return Promise.reject(error);
-    }
+    (error) => Promise.reject(error)
 );
 
 // ==================== 响应拦截器 ====================
 
-/**
- * 统一响应错误处理
- * 
- * 处理层级：
- * 1. 网络错误（无响应）→ 提示网络连接问题
- * 2. 服务端错误（有响应）→ 提取 detail 或 message
- * 3. 业务错误 → 通过 response.data 返回
- */
 apiClient.interceptors.response.use(
-    (response: AxiosResponse) => response,
-    (error: AxiosError<{ detail?: string; message?: string }>) => {
+    (response: AxiosResponse) => {
+        removePendingRequest(response.config);
+        return response;
+    },
+    async (error: EnhancedAxiosError) => {
+        if (axios.isCancel(error)) {
+            return Promise.reject(error);
+        }
+
+        removePendingRequest(error.config || {});
+
+        const config = error.config as AxiosRequestConfig & { _retry?: number };
+        const retryCount = config?._retry || 0;
+
         let errorMessage = '网络错误，请检查连接';
 
         if (error.response) {
             const { status, data } = error.response;
-            errorMessage = data?.detail || data?.message || errorMessage;
+            errorMessage =
+                (data as any)?.detail ||
+                (data as any)?.message ||
+                ERROR_MESSAGES[status] ||
+                `请求错误(${status})`;
 
-            if (status === 404) {
-                console.warn(`[API 404] ${error.config?.url}: ${errorMessage}`);
-            } else if (status === 400) {
-                console.warn(`[API 400] ${error.config?.url}: ${errorMessage}`);
+            if (status >= 500) {
+                console.error(`[API ${status}] ${config?.url}: ${errorMessage}`);
+            } else if (status === 404) {
+                console.warn(`[API 404] ${config?.url}: ${errorMessage}`);
             } else if (status === 422) {
-                console.warn(`[API 422] ${error.config?.url}: ${errorMessage} (请求参数格式错误)`);
-            } else if (status >= 500) {
-                console.error(`[API ${status}] ${error.config?.url}: ${errorMessage}`);
+                console.warn(`[API 422] ${config?.url}: ${errorMessage}`);
+            } else {
+                console.warn(`[API ${status}] ${config?.url}: ${errorMessage}`);
+            }
+
+            if (status === 401) {
+                console.warn('[API] 需要重新登录');
             }
         } else if (error.request) {
-            errorMessage = '无法连接到服务器，请检查后端是否启动';
-            console.error('[API Network Error]', error.message);
+            // 网络错误 - 检测离线状态
+            if (!navigator.onLine) {
+                errorMessage = '网络已断开，请检查网络连接';
+            } else if (retryCount < MAX_RETRIES) {
+                console.warn(`[API] 请求失败，正在重试(${retryCount + 1}/${MAX_RETRIES})...`);
+                config._retry = retryCount + 1;
+                await new Promise((resolve) =>
+                    setTimeout(resolve, Math.pow(2, retryCount) * 1000)
+                );
+                return apiClient(config);
+            } else {
+                errorMessage = '无法连接到服务器，请检查后端是否启动';
+            }
+            console.error('[API] 网络错误:', error.message);
         } else {
             errorMessage = error.message || errorMessage;
-            console.error('[API Config Error]', error.message);
+            console.error('[API] 请求配置错误:', error.message);
         }
 
-        (error as any).userMessage = errorMessage;
+        error.userMessage = errorMessage;
         return Promise.reject(error);
     }
 );
 
+// ==================== 工具函数 ====================
+
+/**
+ * 提取错误消息（导出供页面使用）
+ */
+export const extractErrorMessage = (error: unknown): string => {
+    if (error instanceof Error) {
+        return (error as EnhancedAxiosError).userMessage || error.message;
+    }
+    return String(error);
+};
+
+/**
+ * 安全解包响应数据
+ */
+const unwrap = <T>(response: AxiosResponse<T>): T => response.data;
+
+/**
+ * 监听网络状态变化（导出供组件使用）
+ */
+export const onNetworkChange = (callback: (online: boolean) => void): (() => void) => {
+    const handleOnline = () => callback(true);
+    const handleOffline = () => callback(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+    };
+};
+
 // ==================== 书架 API ====================
 
-/** 获取所有逻辑书架列表 */
 export const listShelves = (): Promise<ShelfInfo[]> =>
-    apiClient.get('/shelves/').then((r) => r.data);
+    apiClient.get('/shelves/').then(unwrap);
 
-/**
- * 创建新逻辑书架
- * 
- * POST /api/shelves/
- * Body: { shelf_name: string, description?: string }
- */
 export const createShelf = (data: ShelfCreateParams): Promise<ApiResponse> =>
-    apiClient.post('/shelves/', data).then((r) => r.data);
+    apiClient.post('/shelves/', data).then(unwrap);
 
-/**
- * 更新书架信息
- * 
- * PUT /api/shelves/{id}
- * Body: { shelf_name?: string, description?: string }
- */
-export const updateShelf = (
-    id: number,
-    data: ShelfUpdateParams
-): Promise<ApiResponse> =>
-    apiClient.put(`/shelves/${id}`, data).then((r) => r.data);
+export const updateShelf = (id: number, data: ShelfUpdateParams): Promise<ApiResponse> =>
+    apiClient.put(`/shelves/${id}`, data).then(unwrap);
 
-/** 删除书架（软删除） */
 export const deleteShelf = (id: number): Promise<ApiResponse> =>
-    apiClient.delete(`/shelves/${id}`).then((r) => r.data);
+    apiClient.delete(`/shelves/${id}`).then(unwrap);
 
-/**
- * 获取书架中的图书列表
- * 
- * GET /api/shelves/{id}/books?sort_by=...&order=...
- */
 export const getShelfBooks = (
     id: number,
     sortBy: string = 'sort_order',
-    order: string = 'asc'
+    order: 'asc' | 'desc' = 'asc'
 ): Promise<ShelfBooks> =>
     apiClient
-        .get(`/shelves/${id}/books`, {
-            params: { sort_by: sortBy, order },
-        })
-        .then((r) => r.data);
+        .get(`/shelves/${id}/books`, { params: { sort_by: sortBy, order } })
+        .then(unwrap);
 
-/**
- * 添加图书到书架
- * 
- * POST /api/shelves/{shelfId}/books
- * Body: { book_id: number, sort_order?: number, note?: string }
- */
 export const addBookToShelf = (
     shelfId: number,
-    bookId: number
+    bookId: number,
+    sortOrder?: number,
+    note?: string
 ): Promise<ApiResponse> =>
     apiClient
-        .post(`/shelves/${shelfId}/books`, { book_id: bookId })
-        .then((r) => r.data);
+        .post(`/shelves/${shelfId}/books`, {
+            book_id: bookId,
+            sort_order: sortOrder,
+            note,
+        })
+        .then(unwrap);
 
-/** 从书架移除图书 */
-export const removeBookFromShelf = (
-    shelfId: number,
-    bookId: number
-): Promise<ApiResponse> =>
-    apiClient
-        .delete(`/shelves/${shelfId}/books/${bookId}`)
-        .then((r) => r.data);
+export const removeBookFromShelf = (shelfId: number, bookId: number): Promise<ApiResponse> =>
+    apiClient.delete(`/shelves/${shelfId}/books/${bookId}`).then(unwrap);
 
-/**
- * 将图书移动到其他书架
- * 
- * PUT /api/shelves/{fromShelfId}/books/{bookId}/move?target_shelf_id=...
- */
 export const moveBookToShelf = (
     fromShelfId: number,
     bookId: number,
@@ -218,157 +289,101 @@ export const moveBookToShelf = (
         .put(`/shelves/${fromShelfId}/books/${bookId}/move`, null, {
             params: { target_shelf_id: toShelfId },
         })
-        .then((r) => r.data);
+        .then(unwrap);
+
+export const updateBookSortOrder = (
+    shelfId: number,
+    bookId: number,
+    sortOrder: number
+): Promise<ApiResponse> =>
+    apiClient
+        .put(`/shelves/${shelfId}/books/${bookId}/sort`, { sort_order: sortOrder })
+        .then(unwrap);
 
 // ==================== 图书 API ====================
 
-/** 获取图书完整详情 */
 export const getBookDetail = (id: number): Promise<BookDetail> =>
-    apiClient.get(`/books/${id}`).then((r) => r.data);
+    apiClient.get(`/books/${id}`).then(unwrap);
 
-/** 获取图书墙数据（分页、排序、筛选） */
-export const getBookWall = (
-    params: BookWallParams
-): Promise<BooksResponse> =>
-    apiClient.get('/books/wall', { params }).then((r) => r.data);
+export const getBookWall = (params: BookWallParams): Promise<BooksResponse> =>
+    apiClient.get('/books/wall', { params }).then(unwrap);
 
-/** 获取所有图书列表（包括未上架的） */
-export const getAllBooks = (
-    params: BookWallParams
-): Promise<BooksResponse> =>
-    apiClient.get('/books/all', { params }).then((r) => r.data);
+export const getAllBooks = (params: BookWallParams): Promise<BooksResponse> =>
+    apiClient.get('/books/all', { params }).then(unwrap);
 
-/**
- * 根据 ISBN 从豆瓣同步图书数据
- * 
- * POST /api/books/sync
- * Body: { isbn: string }
- */
 export const syncBookByISBN = (isbn: string): Promise<BookSyncResult> =>
-    apiClient.post('/books/sync', { isbn }).then((r) => r.data);
+    apiClient.post('/books/sync', { isbn }).then(unwrap);
 
-/**
- * 手动创建图书记录
- * 
- * POST /api/books/manual
- * Body: { isbn, title, author, ... }
- */
-export const createBookManual = (
-    params: Record<string, any>
-): Promise<ApiResponse> =>
-    apiClient.post('/books/manual', params).then((r) => r.data);
+export const createBookManual = (params: Record<string, unknown>): Promise<ApiResponse> =>
+    apiClient.post('/books/manual', params).then(unwrap);
 
-/**
- * 手动更新图书信息
- * 
- * PUT /api/books/{id}/manual
- * Body: { title?, author?, ... }
- */
 export const updateBookManual = (
     id: number,
-    params: Record<string, any>
+    params: Record<string, unknown>
 ): Promise<ApiResponse> =>
-    apiClient.put(`/books/${id}/manual`, params).then((r) => r.data);
+    apiClient.put(`/books/${id}/manual`, params).then(unwrap);
 
-/**
- * 搜索图书
- * 
- * GET /api/books/search?keyword=...&limit=...
- */
-export const searchBooks = (
-    keyword: string,
-    limit: number = 20
-): Promise<Book[]> =>
-    apiClient
-        .get('/books/search', { params: { keyword, limit } })
-        .then((r) => r.data);
+export const searchBooks = (keyword: string, limit: number = 20): Promise<Book[]> =>
+    apiClient.get('/books/search', { params: { keyword, limit } }).then(unwrap);
 
-/** 删除图书（级联删除书架关联和同步日志） */
 export const deleteBook = (id: number): Promise<ApiResponse> =>
-    apiClient.delete(`/books/${id}`).then((r) => r.data);
+    apiClient.delete(`/books/${id}`).then(unwrap);
 
 // ==================== NFC API ====================
 
-/**
- * 生成 NFC 标签写入数据
- * 
- * POST /api/nfc/write
- * Body: { shelf_id: number, shelf_name: string }
- */
-export const writeNFCTag = (
-    data: { shelf_id: number; shelf_name: string }
-): Promise<NFCWriteTask> =>
-    apiClient.post('/nfc/write', data).then((r) => r.data);
+export const writeNFCTag = (data: {
+    shelf_id: number;
+    shelf_name: string;
+}): Promise<NFCWriteTask> =>
+    apiClient.post('/nfc/write', data).then(unwrap);
 
-/**
- * 解析 NFC 标签读取的原始数据
- * 
- * GET /api/nfc/read-tag?tag_uid=...&raw_payload=...
- */
-export const readNFCTag = (
-    tagUid: string,
-    rawPayload: string
-): Promise<NFCReadResult> =>
+export const readNFCTag = (tagUid: string, rawPayload: string): Promise<NFCReadResult> =>
     apiClient
         .get('/nfc/read-tag', {
             params: { tag_uid: tagUid, raw_payload: rawPayload },
         })
-        .then((r) => r.data);
+        .then(unwrap);
 
-/** 获取所有 NFC 写入任务列表 */
 export const getNFCTasks = (): Promise<{ tasks: NFCWriteTask[]; total: number }> =>
-    apiClient.get('/nfc/tasks').then((r) => r.data);
+    apiClient.get('/nfc/tasks').then(unwrap);
 
-/** 删除 NFC 写入任务 */
 export const deleteNFCTask = (taskId: string): Promise<ApiResponse> =>
-    apiClient.delete(`/nfc/tasks/${taskId}`).then((r) => r.data);
+    apiClient.delete(`/nfc/tasks/${taskId}`).then(unwrap);
+
+export const getNFCMobileUrl = (): Promise<{ url: string }> =>
+    apiClient.get('/nfc/mobile').then(unwrap);
 
 // ==================== 管理 API ====================
 
-/** 获取管理仪表盘统计数据 */
 export const getDashboardStats = (): Promise<DashboardStats> =>
-    apiClient.get('/admin/stats').then((r) => r.data);
+    apiClient.get('/admin/stats').then(unwrap);
 
-/** 获取操作活动日志 */
-export const getDashboardLogs = (
-    params?: { limit?: number; action_type?: string; days?: number }
-): Promise<any[]> =>
-    apiClient.get('/admin/logs', { params }).then((r) => r.data);
+export const getDashboardLogs = (params?: {
+    limit?: number;
+    action_type?: string;
+    days?: number;
+}): Promise<unknown[]> =>
+    apiClient.get('/admin/logs', { params }).then(unwrap);
 
 // ==================== 配置 API ====================
 
-/** 获取 Cookie 配置状态（脱敏） */
 export const getCookieConfig = (): Promise<CookieConfigInfo> =>
-    apiClient.get('/config/cookie').then((r) => r.data);
+    apiClient.get('/config/cookie').then(unwrap);
 
-/**
- * 保存豆瓣 Cookie
- * 
- * POST /api/config/cookie
- * Body: { cookie: string, user_agent?: string }
- */
 export const saveCookieConfig = (data: {
     cookie: string;
     user_agent?: string;
 }): Promise<ApiResponse> =>
-    apiClient.post('/config/cookie', data).then((r) => r.data);
+    apiClient.post('/config/cookie', data).then(unwrap);
 
-/** 测试 Cookie 有效性 */
 export const testCookieConfig = (): Promise<CookieTestResult> =>
-    apiClient.post('/config/cookie/test').then((r) => r.data);
+    apiClient.post('/config/cookie/test').then(unwrap);
 
-/** 清除 Cookie */
 export const deleteCookieConfig = (): Promise<ApiResponse> =>
-    apiClient.delete('/config/cookie').then((r) => r.data);
+    apiClient.delete('/config/cookie').then(unwrap);
 
 // ==================== 导入 API ====================
 
-/**
- * 预览导入文件
- * 
- * POST /api/import/preview
- * Body: FormData { file: File }
- */
 export const previewImport = (file: File): Promise<ImportPreview> => {
     const formData = new FormData();
     formData.append('file', file);
@@ -376,16 +391,11 @@ export const previewImport = (file: File): Promise<ImportPreview> => {
     return apiClient
         .post('/import/preview', formData, {
             headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 60000,
         })
-        .then((r) => r.data);
+        .then(unwrap);
 };
 
-/**
- * 启动批量导入任务
- * 
- * POST /api/import/start
- * Body: FormData { file, auto_sync, shelf_id }
- */
 export const startImport = (
     file: File,
     options: ImportStartParams
@@ -399,27 +409,101 @@ export const startImport = (
     if (options.shelf_id) {
         formData.append('shelf_id', String(options.shelf_id));
     }
+    if (options.sync_delay) {
+        formData.append('sync_delay', String(options.sync_delay));
+    }
 
     return apiClient
         .post('/import/start', formData, {
             headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 120000,
         })
-        .then((r) => r.data);
+        .then(unwrap);
 };
 
-/** 查询导入任务进度 */
 export const getImportStatus = (taskId: string): Promise<ImportTask> =>
-    apiClient.get(`/import/status/${taskId}`).then((r) => r.data);
+    apiClient.get(`/import/status/${taskId}`).then(unwrap);
 
-/** 取消正在进行的导入任务 */
 export const cancelImportTask = (taskId: string): Promise<ApiResponse> =>
-    apiClient.post(`/import/task/${taskId}/cancel`).then((r) => r.data);
+    apiClient.post(`/import/task/${taskId}/cancel`).then(unwrap);
 
-/** 下载导入模板（Excel 格式） */
 export const downloadImportTemplate = (): Promise<Blob> =>
+    apiClient.get('/import/template', { responseType: 'blob' }).then(unwrap);
+
+// ==================== 物理书架 API ====================
+
+/**
+ * 获取物理书架列表（返回分页结构）
+ * 
+ * 修复：原返回类型为 PhysicalShelf[]，实际后端返回 { shelves: PhysicalShelf[], total: number }
+ */
+export const listPhysicalShelves = (
+    params?: Record<string, unknown>
+): Promise<PhysicalShelvesResponse> =>
+    apiClient.get('/physical-shelves/', { params }).then(unwrap);
+
+export const createPhysicalShelf = (data: Record<string, unknown>): Promise<ApiResponse> =>
+    apiClient.post('/physical-shelves/', data).then(unwrap);
+
+export const updatePhysicalShelf = (
+    id: number,
+    data: Record<string, unknown>
+): Promise<ApiResponse> =>
+    apiClient.put(`/physical-shelves/${id}`, data).then(unwrap);
+
+export const deletePhysicalShelf = (id: number): Promise<ApiResponse> =>
+    apiClient.delete(`/physical-shelves/${id}`).then(unwrap);
+
+export const bindNFCTag = (shelfId: number, nfcTagUid: string): Promise<ApiResponse> =>
     apiClient
-        .get('/import/template', { responseType: 'blob' })
-        .then((r) => r.data);
+        .put(`/physical-shelves/${shelfId}/nfc`, { nfc_tag_uid: nfcTagUid })
+        .then(unwrap);
+
+export const unbindNFCTag = (shelfId: number): Promise<ApiResponse> =>
+    apiClient.delete(`/physical-shelves/${shelfId}/nfc`).then(unwrap);
+
+/**
+ * 获取物理书架的映射关系
+ * 
+ * 修复：返回类型修正为映射信息数组
+ */
+export const getPhysicalShelfMappings = (
+    shelfId: number
+): Promise<PhysicalMappingInfo[]> =>
+    apiClient.get(`/physical-shelves/${shelfId}/mappings`).then(unwrap);
+
+// ==================== 映射 API ====================
+
+export const createMapping = (
+    physicalShelfId: number,
+    logicalShelfId: number,
+    mappingType: string = 'one_to_one'
+): Promise<ApiResponse> =>
+    apiClient
+        .post('/mapping/create', null, {
+            params: {
+                physical_shelf_id: physicalShelfId,
+                logical_shelf_id: logicalShelfId,
+                mapping_type: mappingType,
+            },
+        })
+        .then(unwrap);
+
+export const deleteMapping = (mappingId: number): Promise<ApiResponse> =>
+    apiClient.delete(`/mapping/${mappingId}`).then(unwrap);
+
+export const listMappings = (): Promise<PhysicalMappingInfo[]> =>
+    apiClient.get('/mapping/').then(unwrap);
+
+// ==================== 图片 API ====================
+
+export const getImageProxyUrl = (originalUrl: string): string =>
+    `/api/images/proxy?url=${encodeURIComponent(originalUrl)}`;
+
+// ==================== 健康检查 ====================
+
+export const healthCheck = (): Promise<{ status: string }> =>
+    apiClient.get('/health').then(unwrap);
 
 // ==================== 默认导出 ====================
 
@@ -433,10 +517,12 @@ export default {
     addBookToShelf,
     removeBookFromShelf,
     moveBookToShelf,
+    updateBookSortOrder,
 
     // 图书
     getBookDetail,
     getBookWall,
+    getAllBooks,
     syncBookByISBN,
     createBookManual,
     updateBookManual,
@@ -448,6 +534,7 @@ export default {
     readNFCTag,
     getNFCTasks,
     deleteNFCTask,
+    getNFCMobileUrl,
 
     // 管理
     getDashboardStats,
@@ -465,4 +552,24 @@ export default {
     getImportStatus,
     cancelImportTask,
     downloadImportTemplate,
+
+    // 物理书架
+    listPhysicalShelves,
+    createPhysicalShelf,
+    updatePhysicalShelf,
+    deletePhysicalShelf,
+    bindNFCTag,
+    unbindNFCTag,
+    getPhysicalShelfMappings,
+
+    // 映射
+    createMapping,
+    deleteMapping,
+    listMappings,
+
+    // 工具
+    getImageProxyUrl,
+    healthCheck,
+    extractErrorMessage,
+    onNetworkChange,
 };

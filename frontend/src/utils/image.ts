@@ -1,217 +1,302 @@
 // frontend/src/utils/image.ts
 /**
- * 图片处理工具函数
+ * 图片处理工具函数 - React 19 + Ant Design 6
  * 
- * 处理图书封面图片的 URL 生成、代理检测和占位图生成。
- * 
- * 设计说明：
- * - 豆瓣图片通过后端代理访问（/api/images/proxy），避免跨域和防盗链问题
- * - 非豆瓣图片直接使用原始 URL
- * - 无封面时自动生成 SVG 占位图，支持唯一颜色和书名/作者显示
+ * 优化点：
+ * - 更丰富的占位图生成
+ * - 图片预加载
+ * - 封面尺寸适配策略
+ * - 颜色提取（用于骨架屏/模糊背景）
+ * - WebP 支持检测
  */
+
+// ==================== 常量 ====================
+
+/** 占位图尺寸 */
+const PLACEHOLDER_WIDTH = 300;
+const PLACEHOLDER_HEIGHT = 400;
+
+/** 占位图色板 - 温暖的文学色调 */
+const PLACEHOLDER_COLORS = [
+    '#1a365d', '#2d3748', '#276749', '#9b2c2c',
+    '#6b46c1', '#c05621', '#2b6cb0', '#2c7a7b',
+    '#744210', '#553c9a', '#22543d', '#991b1b',
+    '#4a5568', '#285e61', '#7b341e', '#434190',
+] as const;
+
+/** 封面尺寸映射 */
+const DOUBAN_COVER_SIZES = {
+    s: { path: '/s/', width: 100, height: 140 },
+    m: { path: '/m/', width: 200, height: 280 },
+    l: { path: '/l/', width: 400, height: 560 },
+} as const;
+
+// ==================== 封面 URL 处理 ====================
+
+/**
+ * 判断是否为豆瓣图片 URL
+ */
+const isDoubanUrl = (url: string): boolean => {
+    return url.includes('douban.com') || url.includes('doubanio.com');
+};
 
 /**
  * 获取可用的图书封面 URL
  * 
- * 处理逻辑：
- * 1. URL 为空 → 返回空字符串（由调用方使用占位图）
- * 2. 豆瓣 CDN 图片 → 通过后端代理访问
- * 3. 其他来源图片 → 直接返回原始 URL
+ * 豆瓣图片通过后端代理访问，避免防盗链和混合内容问题
  * 
- * 为什么代理豆瓣图片：
- * - 豆瓣 CDN 有 Referer 校验（防盗链）
- * - 部分网络环境无法直接访问豆瓣
- * - 代理层可添加缓存控制头
- * 
- * @param url - 原始封面 URL（可能为空）
- * @returns 可直接用于 <img src> 的 URL
- * 
- * @example
- * getCoverUrl('https://img2.doubanio.com/view/subject/l/public/s2768378.jpg')
- * // → '/api/images/proxy?url=https%3A%2F%2Fimg2.doubanio.com%2F...'
- * 
- * getCoverUrl('https://example.com/cover.jpg')
- * // → 'https://example.com/cover.jpg'
- * 
- * getCoverUrl(undefined)
- * // → ''
+ * @param url - 原始封面 URL
+ * @param size - 封面尺寸，默认 'm'
+ * @returns 可用的封面 URL
  */
-export const getCoverUrl = (url?: string): string => {
-    // 空 URL 处理
+export const getCoverUrl = (url?: string, size: 's' | 'm' | 'l' = 'm'): string => {
     if (!url) return '';
-    
-    // 豆瓣 CDN 图片通过代理访问
-    if (url.includes('douban.com') || url.includes('doubanio.com')) {
-        return `/api/images/proxy?url=${encodeURIComponent(url)}`;
+
+    // 已经是 data URI 或本地 URL，直接返回
+    if (url.startsWith('data:') || url.startsWith('/')) return url;
+
+    // 豆瓣图片通过代理
+    if (isDoubanUrl(url)) {
+        const sizedUrl = getDoubanCoverSize(url, size);
+        return `/api/images/proxy?url=${encodeURIComponent(sizedUrl)}`;
     }
-    
-    // 其他来源直接使用
+
     return url;
 };
 
 /**
- * 可用的占位图生成色板
+ * 获取豆瓣封面特定尺寸的 URL
  * 
- * 基于书名长度取模选择颜色，确保：
- * - 同书名始终得到同颜色（稳定性）
- * - 不同书架得到不同颜色（可辨识性）
- * - 颜色搭配深沉且有质感（符合书房氛围）
+ * @param url - 豆瓣封面 URL
+ * @param size - 目标尺寸
+ * @returns 调整后的 URL
  */
-const PLACEHOLDER_COLORS = [
-    '#1a365d',  // 深蓝
-    '#2d3748',  // 灰蓝
-    '#276749',  // 深绿
-    '#9b2c2c',  // 深红
-    '#6b46c1',  // 紫色
-    '#c05621',  // 橙色
-    '#2b6cb0',  // 蓝色
-    '#2c7a7b',  // 青色
-] as const;
+export const getDoubanCoverSize = (
+    url: string,
+    size: 's' | 'm' | 'l' = 'm'
+): string => {
+    if (!isDoubanUrl(url)) return url;
+
+    const sizeConfig = DOUBAN_COVER_SIZES[size];
+    // 替换 URL 中的尺寸路径
+    let result = url;
+    for (const [, config] of Object.entries(DOUBAN_COVER_SIZES)) {
+        result = result.replace(config.path, sizeConfig.path);
+    }
+    return result;
+};
 
 /**
- * 封面占位图尺寸常量
+ * 获取最佳封面尺寸配置
+ * 根据容器宽度选择合适的封面尺寸
+ * 
+ * @param containerWidth - 容器宽度
+ * @returns 推荐的尺寸配置
  */
-const PLACEHOLDER_WIDTH = 300;
-const PLACEHOLDER_HEIGHT = 400;
-const PLACEHOLDER_BORDER_RADIUS = 8;
+export const getOptimalCoverSize = (
+    containerWidth: number
+): 's' | 'm' | 'l' => {
+    if (containerWidth <= 100) return 's';
+    if (containerWidth <= 200) return 'm';
+    return 'l';
+};
+
+// ==================== 占位图生成 ====================
+
+/** 占位图选项 */
+interface PlaceholderOptions {
+    width?: number;
+    height?: number;
+    showIcon?: boolean;
+    iconSize?: number;
+}
 
 /**
  * 生成 SVG 格式的图书封面占位图
  * 
- * 占位图设计：
- * - 渐变背景色（基于书名取模选择颜色）
- * - 内边框装饰线
- * - 书名（粗体，20px）
- * - 作者（半透明，14px）
- * - 分隔线
- * - 📚 emoji（大尺寸，半透明）
- * 
- * 尺寸：300×400 像素（约 3:4 比例，模拟真实图书封面）
- * 格式：data:image/svg+xml 内联 URI（无需额外网络请求）
- * 
- * @param title - 图书标题（用于确定颜色和显示文字）
- * @param author - 图书作者（可选，用于显示文字）
+ * @param title - 图书标题
+ * @param author - 图书作者
+ * @param options - 占位图选项
  * @returns SVG data URI 字符串
- * 
- * @example
- * getPlaceholderCover('三体', '刘慈欣')
- * // → 'data:image/svg+xml,%3Csvg%20xmlns%3D%22...'
  */
 export const getPlaceholderCover = (
     title?: string,
-    author?: string
+    author?: string,
+    options: PlaceholderOptions = {}
 ): string => {
-    // 确定颜色（基于书名长度取模，确保稳定性）
+    const {
+        width = PLACEHOLDER_WIDTH,
+        height = PLACEHOLDER_HEIGHT,
+        showIcon = true,
+        iconSize = 48,
+    } = options;
+
     const colorIndex = (title?.length || 0) % PLACEHOLDER_COLORS.length;
-    const primaryColor = PLACEHOLDER_COLORS[colorIndex];
-    
-    // 截取显示文字（防止过长）
-    const displayTitle = title?.substring(0, 10) || '未知书名';
-    const displayAuthor = author || '未知作者';
-    
-    // SVG 渐变 ID（使用名称长度确保唯一性）
-    const gradientId = `pg-${displayTitle.length}`;
-    
-    // 构建 SVG 字符串
-    // 注意：使用模板字符串构建 SVG，避免 JSX 依赖
-    const svgContent = `
-<svg xmlns="http://www.w3.org/2000/svg" 
-     width="${PLACEHOLDER_WIDTH}" 
-     height="${PLACEHOLDER_HEIGHT}" 
-     viewBox="0 0 ${PLACEHOLDER_WIDTH} ${PLACEHOLDER_HEIGHT}">
-    
-    <!-- 渐变定义 -->
-    <defs>
-        <linearGradient id="${gradientId}" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="${primaryColor}" stop-opacity="0.95"/>
-            <stop offset="100%" stop-color="${primaryColor}dd" stop-opacity="0.85"/>
-        </linearGradient>
-    </defs>
-    
-    <!-- 背景矩形 -->
-    <rect width="${PLACEHOLDER_WIDTH}" 
-          height="${PLACEHOLDER_HEIGHT}" 
-          fill="url(#${gradientId})" 
-          rx="${PLACEHOLDER_BORDER_RADIUS}"/>
-    
-    <!-- 内边框装饰 -->
-    <rect x="12" y="12" 
-          width="${PLACEHOLDER_WIDTH - 24}" 
-          height="${PLACEHOLDER_HEIGHT - 24}" 
-          fill="none" 
-          stroke="rgba(255,255,255,0.15)" 
-          stroke-width="1.5" 
-          rx="4"/>
-    
-    <!-- 书名 -->
-    <text x="${PLACEHOLDER_WIDTH / 2}" 
-          y="160" 
-          text-anchor="middle" 
-          fill="#fff" 
-          font-size="20" 
-          font-family="Arial, 'PingFang SC', sans-serif" 
-          font-weight="bold">
-        ${displayTitle}
-    </text>
-    
-    <!-- 作者 -->
-    <text x="${PLACEHOLDER_WIDTH / 2}" 
-          y="195" 
-          text-anchor="middle" 
-          fill="rgba(255,255,255,0.85)" 
-          font-size="14" 
-          font-family="Arial, 'PingFang SC', sans-serif">
-        ${displayAuthor}
-    </text>
-    
-    <!-- 分隔线 -->
-    <rect x="${PLACEHOLDER_WIDTH / 2 - 90}" 
-          y="215" 
-          width="180" 
-          height="1" 
-          fill="rgba(255,255,255,0.2)"/>
-    
-    <!-- 中央图标 -->
-    <text x="${PLACEHOLDER_WIDTH / 2}" 
-          y="290" 
-          text-anchor="middle" 
-          fill="rgba(255,255,255,0.5)" 
-          font-size="48">
-        📚
-    </text>
+    const color = PLACEHOLDER_COLORS[colorIndex];
+    const gradientId = `pg-${title?.length || 0}-${width}`;
+    const centerX = width / 2;
+
+    // 安全转义 SVG 文本
+    const escapeXml = (str: string): string => {
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    };
+
+    const bookTitle = escapeXml(title?.substring(0, 12) || '未知书名');
+    const bookAuthor = escapeXml(author?.substring(0, 10) || '未知作者');
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+<defs>
+    <linearGradient id="${gradientId}" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="${color}" stop-opacity="0.95"/>
+        <stop offset="100%" stop-color="${color}dd" stop-opacity="0.8"/>
+    </linearGradient>
+</defs>
+<rect width="${width}" height="${height}" fill="url(#${gradientId})" rx="8"/>
+<rect x="12" y="12" width="${width - 24}" height="${height - 24}" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="1.5" rx="4"/>
+${
+    showIcon
+        ? `<text x="${centerX}" y="${height * 0.55}" text-anchor="middle" fill="rgba(255,255,255,0.4)" font-size="${iconSize}">📚</text>`
+        : ''
+}
+<text x="${centerX}" y="${height * 0.35}" text-anchor="middle" fill="#fff" font-size="${Math.max(width * 0.06, 14)}" font-family="'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-weight="600">${bookTitle}</text>
+<text x="${centerX}" y="${height * 0.42}" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="${Math.max(width * 0.04, 12)}" font-family="'PingFang SC', 'Microsoft YaHei', Arial, sans-serif">${bookAuthor}</text>
+${
+    !showIcon
+        ? `<line x1="${width * 0.2}" y1="${height * 0.5}" x2="${width * 0.8}" y2="${height * 0.5}" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>`
+        : ''
+}
 </svg>`;
 
-    // 编码为 data URI
-    return `data:image/svg+xml,${encodeURIComponent(svgContent.trim())}`;
+    return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 };
+
+/**
+ * 生成纯色占位图（用于骨架屏背景）
+ */
+export const getSolidPlaceholder = (
+    width: number = 300,
+    height: number = 400,
+    color: string = '#f0e6db'
+): string => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+<rect width="${width}" height="${height}" fill="${color}" rx="8"/>
+</svg>`;
+    return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+};
+
+// ==================== 图片加载处理 ====================
 
 /**
  * 处理图片加载失败的回退
  * 
- * 当封面图片加载失败时，替换为占位图。
- * 用于 <img onError> 事件处理。
- * 
  * @param event - 图片错误事件
  * @param title - 图书标题
  * @param author - 图书作者
- * 
- * @example
- * <img src={getCoverUrl(book.cover_url)} 
- *      onError={(e) => handleImageError(e, book.title, book.author)} />
  */
 export const handleImageError = (
-    event: React.SyntheticEvent<HTMLImageElement, Event>,
+    event: React.SyntheticEvent<HTMLImageElement>,
     title?: string,
     author?: string
 ): void => {
     const img = event.currentTarget;
-    
+
     // 防止无限回退循环
     if (img.src.startsWith('data:image/svg+xml')) return;
-    
-    // 设置为占位图
-    img.src = getPlaceholderCover(title, author);
-    
-    // 添加错误后样式（可选）
-    img.style.opacity = '0.8';
+
+    // 设置占位图
+    img.src = getPlaceholderCover(title, author, {
+        width: img.naturalWidth || 300,
+        height: img.naturalHeight || 400,
+    });
+
+    // 添加类名标记
+    img.classList.add('placeholder-cover');
+};
+
+/**
+ * 预加载单张图片
+ * 
+ * @param src - 图片 URL
+ * @returns 加载成功返回 true
+ */
+export const preloadImage = (src: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+        if (!src) {
+            resolve(false);
+            return;
+        }
+
+        const img = new Image();
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+        img.src = src;
+    });
+};
+
+/**
+ * 批量预加载图片
+ * 
+ * @param urls - 图片 URL 数组
+ * @param concurrency - 并发数，默认 3
+ * @returns 加载结果数组
+ */
+export const preloadImages = async (
+    urls: string[],
+    concurrency: number = 3
+): Promise<boolean[]> => {
+    const results: boolean[] = [];
+    const validUrls = urls.filter(Boolean);
+
+    for (let i = 0; i < validUrls.length; i += concurrency) {
+        const batch = validUrls.slice(i, i + concurrency);
+        const batchResults = await Promise.all(batch.map(preloadImage));
+        results.push(...batchResults);
+    }
+
+    return results;
+};
+
+// ==================== 颜色处理 ====================
+
+/**
+ * 从占位图色板中提取颜色（用于生成一致的封面背景色）
+ * 
+ * @param key - 用于确定颜色的键（如书名）
+ * @returns HEX 颜色值
+ */
+export const getCoverColor = (key?: string): string => {
+    if (!key) return PLACEHOLDER_COLORS[0];
+    const index = key.length % PLACEHOLDER_COLORS.length;
+    return PLACEHOLDER_COLORS[index];
+};
+
+// ==================== 图片格式检测 ====================
+
+/**
+ * 检测浏览器是否支持 WebP
+ * 使用惰性检测，只检测一次
+ */
+let webpSupported: boolean | null = null;
+
+export const isWebPSupported = (): Promise<boolean> => {
+    if (webpSupported !== null) return Promise.resolve(webpSupported);
+
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            webpSupported = img.width > 0 && img.height > 0;
+            resolve(webpSupported!);
+        };
+        img.onerror = () => {
+            webpSupported = false;
+            resolve(false);
+        };
+        // 1x1 WebP 图片
+        img.src = 'data:image/webp;base64,UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoCAAEAAQAcJaQAA3AA/v3AgAA=';
+    });
 };

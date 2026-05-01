@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>生成 PWA 图标</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        canvas { border: 1px solid #ccc; margin: 10px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>书房管理系统 PWA 图标生成器</h1>
+    <p>点击按钮生成并下载图标文件</p>
+    <canvas id="c192" width="192" height="192"></canvas>
+    <canvas id="c512" width="512" height="512"></canvas>
+    <br>
+    <button onclick="generateIcons()">生成并下载图标</button>
+
+    <script>
+        function drawIcon(canvas, size) {
+            const ctx = canvas.getContext('2d');
+            
+            // 背景
+            const gradient = ctx.createLinearGradient(0, 0, size, size);
+            gradient.addColorStop(0, '#8B4513');
+            gradient.addColorStop(1, '#a0522d');
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.roundRect(0, 0, size, size, size * 0.2);
+            ctx.fill();
+            
+            // 书籍 emoji
+            ctx.font = `${size * 0.55}px serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('📚', size / 2, size / 2);
+        }
+        
+        function generateIcons() {
+            drawIcon(document.getElementById('c192'), 192);
+            drawIcon(document.getElementById('c512'), 512);
+            
+            // 下载 192px
+            const link192 = document.createElement('a');
+            link192.download = 'icon-192.png';
+            link192.href = document.getElementById('c192').toDataURL();
+            link192.click();
+            
+            // 下载 512px
+            setTimeout(() => {
+                const link512 = document.createElement('a');
+                link512.download = 'icon-512.png';
+                link512.href = document.getElementById('c512').toDataURL();
+                link512.click();
+            }, 500);
+            
+            alert('图标已生成！请将下载的文件放入 public/ 目录');
+        }
+    </script>
+</body>
+</html>

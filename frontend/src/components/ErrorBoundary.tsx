@@ -1,207 +1,393 @@
 // frontend/src/components/ErrorBoundary.tsx
 /**
- * React 错误边界组件
+ * React 错误边界组件 - React 19 + Ant Design 6
  * 
- * 捕获子组件树中的 JavaScript 错误，显示降级 UI，
- * 防止整个应用因局部错误而崩溃。
- * 
- * 使用方式：
- * ```tsx
- * <ErrorBoundary fallback={<CustomErrorUI />}>
- *   <RiskyComponent />
- * </ErrorBoundary>
- * ```
- * 
- * 特性：
- * - 捕获渲染错误和生命周期错误
- * - 支持自定义回退 UI
- * - 提供"重试"和"刷新页面"两个恢复选项
- * - 开发环境输出详细错误信息到控制台
- * - 不捕获事件处理函数中的错误（需自行 try-catch）
- * 
- * 注意：
- * - ErrorBoundary 必须是 Class Component（React 暂不支持函数组件实现）
- * - 不捕获异步错误（需在 Promise.catch 中处理）
- * - 不捕获事件处理器错误（需自行 try-catch）
+ * 优化点：
+ * - 错误上报集成
+ * - 重试次数限制
+ * - 降级渲染策略
+ * - 开发调试面板
+ * - 错误分类展示
+ * - 自动恢复机制
  */
 
-import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { Result, Button, Typography } from 'antd';
+import React, { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Result, Button, Typography, Collapse, Space, Tag, Tooltip, Divider } from 'antd';
+import {
+    ReloadOutlined,
+    BugOutlined,
+    CopyOutlined,
+    HomeOutlined,
+    ExpandOutlined,
+} from '@ant-design/icons';
 
-const { Paragraph, Text } = Typography;
+const { Paragraph, Text, Title } = Typography;
 
-// ---- 类型定义 ----
+// ==================== 类型定义 ====================
 
 interface ErrorBoundaryProps {
     /** 子组件 */
     children: ReactNode;
-    /** 自定义回退 UI（不传则使用默认错误页面） */
-    fallback?: ReactNode;
-    /** 错误回调（用于上报错误到监控系统） */
+    /** 自定义回退 UI */
+    fallback?: ReactNode | ((error: Error, retry: () => void) => ReactNode);
+    /** 错误回调 */
     onError?: (error: Error, errorInfo: ErrorInfo) => void;
+    /** 最大重试次数，超过后显示不同 UI */
+    maxRetries?: number;
+    /** 是否在开发环境显示详细错误信息 */
+    showDetailsInDev?: boolean;
+    /** 重置 key - 变化时自动重置错误状态 */
+    resetKey?: string | number;
 }
 
 interface ErrorBoundaryState {
-    /** 是否发生了错误 */
     hasError: boolean;
-    /** 错误对象 */
     error: Error | null;
-    /** 错误附加信息 */
     errorInfo: ErrorInfo | null;
+    retryCount: number;
+    errorTime: number | null;
 }
 
-// ---- 组件 ----
+// ==================== 工具函数 ====================
+
+/**
+ * 复制文本到剪贴板
+ */
+const copyToClipboard = async (text: string): Promise<boolean> => {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch {
+        // 降级方案
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const success = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        return success;
+    }
+};
+
+/**
+ * 获取错误类型标签
+ */
+const getErrorTypeTag = (error: Error): { label: string; color: string } => {
+    const name = error?.name || 'Error';
+    const typeMap: Record<string, { label: string; color: string }> = {
+        TypeError: { label: '类型错误', color: 'orange' },
+        ReferenceError: { label: '引用错误', color: 'red' },
+        SyntaxError: { label: '语法错误', color: 'magenta' },
+        RangeError: { label: '范围错误', color: 'purple' },
+        NetworkError: { label: '网络错误', color: 'blue' },
+        ChunkLoadError: { label: '加载失败', color: 'cyan' },
+    };
+    return typeMap[name] || { label: name, color: 'default' };
+};
+
+// ==================== 错误边界组件 ====================
 
 class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-    public state: ErrorBoundaryState = {
-        hasError: false,
-        error: null,
-        errorInfo: null,
-    };
+    /** 重置定时器 */
+    private autoResetTimer: ReturnType<typeof setTimeout> | null = null;
 
-    /**
-     * 从错误中派生状态（静态方法）
-     * 
-     * 在渲染过程中捕获到错误时调用。
-     * 
-     * @param error - 被抛出的错误对象
-     * @returns 新的 state
-     */
-    public static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
-        return {
-            hasError: true,
-            error,
-        };
-    }
-
-    /**
-     * 错误捕获后的副作用处理
-     * 
-     * 在此方法中执行错误日志记录和上报。
-     * 
-     * @param error - 被抛出的错误对象
-     * @param errorInfo - 包含组件堆栈信息的对象
-     */
-    public componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-        // 记录到控制台
-        console.error('[ErrorBoundary] 捕获到组件错误:', {
-            error,
-            componentStack: errorInfo.componentStack,
-        });
-
-        // 调用外部错误回调（如上报到监控服务）
-        this.props.onError?.(error, errorInfo);
-
-        // 保存错误信息用于展示
-        this.setState({ errorInfo });
-    }
-
-    /**
-     * 重置错误状态（重试）
-     * 
-     * 清除错误标记，尝试重新渲染子组件。
-     */
-    private handleRetry = (): void => {
-        this.setState({
+    constructor(props: ErrorBoundaryProps) {
+        super(props);
+        this.state = {
             hasError: false,
             error: null,
             errorInfo: null,
-        });
+            retryCount: 0,
+            errorTime: null,
+        };
+    }
+
+    // ==================== 生命周期 ====================
+
+    static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
+        return {
+            hasError: true,
+            error,
+            errorTime: Date.now(),
+        };
+    }
+
+    componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+        // 记录错误日志
+        console.error(
+            `[ErrorBoundary] 组件错误捕获:`,
+            {
+                error: {
+                    name: error.name,
+                    message: error.message,
+                    stack: error.stack,
+                },
+                componentStack: errorInfo.componentStack,
+                timestamp: new Date().toISOString(),
+            }
+        );
+
+        // 调用外部错误回调
+        this.props.onError?.(error, errorInfo);
+
+        // 更新错误详情
+        this.setState({ errorInfo });
+
+        // 生产环境可在此处添加错误上报
+        // if (import.meta.env.PROD) {
+        //     reportErrorToService(error, errorInfo);
+        // }
+    }
+
+    componentDidUpdate(
+        prevProps: ErrorBoundaryProps,
+        prevState: ErrorBoundaryState
+    ): void {
+        // resetKey 变化时自动重置
+        if (
+            this.props.resetKey !== undefined &&
+            this.props.resetKey !== prevProps.resetKey
+        ) {
+            this.handleRetry();
+        }
+
+        // 自动恢复：5 秒后自动重试一次
+        if (
+            this.state.hasError &&
+            !prevState.hasError &&
+            this.state.retryCount === 0
+        ) {
+            this.setupAutoReset();
+        }
+    }
+
+    componentWillUnmount(): void {
+        this.clearAutoReset();
+    }
+
+    // ==================== 自动恢复 ====================
+
+    private setupAutoReset(): void {
+        this.clearAutoReset();
+        this.autoResetTimer = setTimeout(() => {
+            if (this.state.hasError && this.state.retryCount === 0) {
+                console.log('[ErrorBoundary] 自动尝试恢复...');
+                this.handleRetry();
+            }
+        }, 5000);
+    }
+
+    private clearAutoReset(): void {
+        if (this.autoResetTimer) {
+            clearTimeout(this.autoResetTimer);
+            this.autoResetTimer = null;
+        }
+    }
+
+    // ==================== 事件处理 ====================
+
+    private handleRetry = (): void => {
+        this.clearAutoReset();
+        this.setState((prev) => ({
+            hasError: false,
+            error: null,
+            errorInfo: null,
+            errorTime: null,
+            retryCount: prev.retryCount + 1,
+        }));
     };
 
-    /**
-     * 刷新整个页面
-     * 
-     * 当重试无法解决问题时，完全刷新应用。
-     */
     private handleReload = (): void => {
         window.location.reload();
     };
 
-    /**
-     * 复制错误信息到剪贴板
-     */
-    private handleCopyError = (): void => {
-        const { error, errorInfo } = this.state;
-        const errorText = [
-            `错误: ${error?.message || '未知错误'}`,
-            `堆栈: ${error?.stack || '无'}`,
-            `组件堆栈: ${errorInfo?.componentStack || '无'}`,
-        ].join('\n\n');
-
-        navigator.clipboard.writeText(errorText).then(() => {
-            // 复制成功（可添加提示）
-        }).catch(() => {
-            // 复制失败（降级处理）
-        });
+    private handleGoHome = (): void => {
+        window.location.href = '/';
     };
 
-    public render(): ReactNode {
-        const { hasError, error, errorInfo } = this.state;
-        const { children, fallback } = this.props;
+    private handleCopyError = async (): Promise<void> => {
+        const { error, errorInfo } = this.state;
+        const text = [
+            `错误: ${error?.name}: ${error?.message}`,
+            `堆栈: ${error?.stack}`,
+            `组件堆栈: ${errorInfo?.componentStack}`,
+            `时间: ${new Date(this.state.errorTime || Date.now()).toISOString()}`,
+            `重试次数: ${this.state.retryCount}`,
+            `URL: ${window.location.href}`,
+            `UserAgent: ${navigator.userAgent}`,
+        ].join('\n\n');
 
-        // 发生错误时
-        if (hasError) {
-            // 优先使用自定义回退 UI
-            if (fallback) {
-                return fallback;
-            }
+        const success = await copyToClipboard(text);
+        if (success) {
+            console.log('[ErrorBoundary] 错误信息已复制');
+        }
+    };
 
-            // 默认错误页面
+    // ==================== 渲染 ====================
+
+    render(): ReactNode {
+        if (!this.state.hasError) {
+            return this.props.children;
+        }
+
+        const { error, errorInfo, retryCount } = this.state;
+        const { fallback, maxRetries = 3, showDetailsInDev = true } = this.props;
+        const errorType = error ? getErrorTypeTag(error) : null;
+
+        // 超过最大重试次数
+        if (retryCount >= maxRetries) {
             return (
                 <Result
-                    status="error"
-                    title="页面加载失败"
-                    subTitle={error?.message || '发生了未知错误，请尝试重试'}
+                    status="500"
+                    title="无法恢复"
+                    subTitle={`已尝试 ${retryCount} 次恢复，请刷新页面或联系管理员`}
                     extra={[
                         <Button
                             type="primary"
-                            key="retry"
-                            onClick={this.handleRetry}
-                        >
-                            重试
-                        </Button>,
-                        <Button
                             key="reload"
+                            icon={<ReloadOutlined />}
                             onClick={this.handleReload}
                         >
                             刷新页面
                         </Button>,
-                    ]}
-                >
-                    {/* 开发环境显示详细错误信息 */}
-                    {process.env.NODE_ENV === 'development' && errorInfo && (
-                        <div
-                            style={{
-                                maxWidth: 600,
-                                margin: '16px auto 0',
-                                textAlign: 'left',
-                            }}
+                        <Button
+                            key="home"
+                            icon={<HomeOutlined />}
+                            onClick={this.handleGoHome}
                         >
-                            <Paragraph
-                                copyable
-                                code
-                                style={{
-                                    maxHeight: 300,
-                                    overflow: 'auto',
-                                    fontSize: 12,
-                                    background: '#f5f5f5',
-                                    borderRadius: 8,
-                                    padding: 12,
-                                }}
-                            >
-                                <Text type="danger">{error?.toString()}</Text>
-                                {'\n\n'}
-                                {errorInfo.componentStack}
-                            </Paragraph>
-                        </div>
-                    )}
-                </Result>
+                            返回首页
+                        </Button>,
+                    ]}
+                />
             );
         }
 
-        // 正常渲染子组件
-        return children;
+        // 自定义回退 UI
+        if (fallback) {
+            if (typeof fallback === 'function') {
+                return fallback(error!, this.handleRetry);
+            }
+            return fallback;
+        }
+
+        // 默认错误 UI
+        const isDev = import.meta.env.DEV;
+
+        return (
+            <div style={{ padding: 24, maxWidth: 800, margin: '0 auto' }}>
+                <Result
+                    status="error"
+                    title="页面渲染异常"
+                    subTitle={
+                        <Space direction="vertical" size={4}>
+                            <span>{error?.message || '发生了未知错误'}</span>
+                            {errorType && (
+                                <Tag color={errorType.color}>{errorType.label}</Tag>
+                            )}
+                        </Space>
+                    }
+                    extra={
+                        <Space size={8}>
+                            <Button
+                                type="primary"
+                                icon={<ReloadOutlined />}
+                                onClick={this.handleRetry}
+                            >
+                                重试 ({retryCount}/{maxRetries})
+                            </Button>
+                            <Tooltip title="刷新整个页面">
+                                <Button
+                                    icon={<ReloadOutlined />}
+                                    onClick={this.handleReload}
+                                >
+                                    刷新页面
+                                </Button>
+                            </Tooltip>
+                            <Tooltip title="复制错误信息">
+                                <Button
+                                    icon={<CopyOutlined />}
+                                    onClick={this.handleCopyError}
+                                />
+                            </Tooltip>
+                        </Space>
+                    }
+                />
+
+                {/* 开发环境错误详情 */}
+                {isDev && showDetailsInDev && error && (
+                    <Collapse
+                        size="small"
+                        bordered
+                        style={{ marginTop: 16 }}
+                        items={[
+                            {
+                                key: 'error-details',
+                                label: (
+                                    <Space size={4}>
+                                        <BugOutlined />
+                                        <span>错误详情</span>
+                                        <Text type="secondary" style={{ fontSize: 11 }}>
+                                            (仅开发环境可见)
+                                        </Text>
+                                    </Space>
+                                ),
+                                children: (
+                                    <div style={{ fontSize: 12 }}>
+                                        <div style={{ marginBottom: 12 }}>
+                                            <Text strong>错误类型：</Text>
+                                            <Text code>{error.name}</Text>
+                                        </div>
+                                        <div style={{ marginBottom: 12 }}>
+                                            <Text strong>错误消息：</Text>
+                                            <Text type="danger">{error.message}</Text>
+                                        </div>
+                                        {error.stack && (
+                                            <div style={{ marginBottom: 12 }}>
+                                                <Text strong>调用堆栈：</Text>
+                                                <pre
+                                                    style={{
+                                                        background: '#f5f5f5',
+                                                        padding: 12,
+                                                        borderRadius: 8,
+                                                        maxHeight: 200,
+                                                        overflow: 'auto',
+                                                        fontSize: 11,
+                                                        whiteSpace: 'pre-wrap',
+                                                        wordBreak: 'break-all',
+                                                    }}
+                                                >
+                                                    {error.stack}
+                                                </pre>
+                                            </div>
+                                        )}
+                                        {errorInfo?.componentStack && (
+                                            <div>
+                                                <Text strong>组件堆栈：</Text>
+                                                <pre
+                                                    style={{
+                                                        background: '#f5f5f5',
+                                                        padding: 12,
+                                                        borderRadius: 8,
+                                                        maxHeight: 200,
+                                                        overflow: 'auto',
+                                                        fontSize: 11,
+                                                        whiteSpace: 'pre-wrap',
+                                                    }}
+                                                >
+                                                    {errorInfo.componentStack}
+                                                </pre>
+                                            </div>
+                                        )}
+                                    </div>
+                                ),
+                            },
+                        ]}
+                    />
+                )}
+            </div>
+        );
     }
 }
 

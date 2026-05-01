@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     - NFC 安全：NFC_ENCRYPTION_KEY
     - 图片缓存：IMAGE_CACHE_ENABLED, IMAGE_CACHE_DIR, IMAGE_CACHE_MAX_AGE
     - 导入限制：IMPORT_MAX_FILE_SIZE, IMPORT_MAX_ROWS
-    - 日志：LOG_LEVEL, LOG_FILE
+    - 日志：LOG_LEVEL, LOG_FILE, LOG_FORMAT, LOG_ROTATION, LOG_RETENTION
     """
 
     # ---- pydantic-settings 配置 ----
@@ -157,7 +157,7 @@ class Settings(BaseSettings):
         description="单次导入最大行数限制"
     )
 
-    # ==================== 日志配置 ====================
+    # ==================== 日志配置（增强版） ====================
     LOG_LEVEL: str = Field(
         "INFO",
         description="日志级别：DEBUG / INFO / WARNING / ERROR / CRITICAL"
@@ -165,6 +165,30 @@ class Settings(BaseSettings):
     LOG_FILE: str = Field(
         "./logs/app.log",
         description="日志文件路径"
+    )
+    LOG_FORMAT: str = Field(
+        "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}",
+        description="日志格式，使用 loguru 格式语法"
+    )
+    LOG_ROTATION: str = Field(
+        "10 MB",
+        description="日志文件轮转大小，支持 '10 MB'、'1 day'、'00:00' 等格式"
+    )
+    LOG_RETENTION: str = Field(
+        "7 days",
+        description="日志文件保留时间，支持 '7 days'、'1 week'、'30 days' 等格式"
+    )
+    LOG_DIAGNOSE: bool = Field(
+        True,
+        description="是否在异常日志中包含变量诊断信息（开发环境建议开启）"
+    )
+    LOG_BACKTRACE: bool = Field(
+        True,
+        description="是否在错误日志中包含完整堆栈回溯"
+    )
+    LOG_ENQUEUE: bool = Field(
+        True,
+        description="是否使用消息队列进行多进程安全写入（生产环境建议开启）"
     )
 
     # ==================== 配置持久化 ====================
@@ -204,6 +228,32 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return v.lower() in ('true', '1', 'yes', 'on')
         return bool(v)
+
+    @field_validator('IMAGE_CACHE_MAX_AGE', mode='before')
+    @classmethod
+    def parse_cache_max_age(cls, v):
+        """
+        缓存有效期解析验证器
+        
+        支持：
+        - 数字（秒）：604800
+        - 字符串（天）：'7d', '7days', '1w'
+        """
+        if isinstance(v, str):
+            v = v.strip().lower()
+            if v.endswith('d') or v.endswith('days'):
+                try:
+                    days = int(v.rstrip('days').rstrip('d'))
+                    return days * 86400
+                except ValueError:
+                    pass
+            elif v.endswith('w') or v.endswith('weeks'):
+                try:
+                    weeks = int(v.rstrip('weeks').rstrip('w'))
+                    return weeks * 604800
+                except ValueError:
+                    pass
+        return int(v) if v else 604800
 
     # ==================== 计算属性 ====================
 
@@ -255,6 +305,34 @@ class Settings(BaseSettings):
             .replace("sqlite:///", "")
         )
 
+    @property
+    def log_level_int(self) -> int:
+        """
+        日志级别转换为整数
+        
+        用于 loguru 等日志库的级别设置。
+        """
+        level_map = {
+            "TRACE": 5,
+            "DEBUG": 10,
+            "INFO": 20,
+            "SUCCESS": 25,
+            "WARNING": 30,
+            "ERROR": 40,
+            "CRITICAL": 50,
+        }
+        return level_map.get(self.LOG_LEVEL.upper(), 20)
+
+    @property
+    def image_cache_dir_path(self) -> Path:
+        """图片缓存目录的 Path 对象"""
+        return Path(self.IMAGE_CACHE_DIR)
+
+    @property
+    def logs_dir_path(self) -> Path:
+        """日志目录的 Path 对象"""
+        return Path(self.LOG_FILE).parent
+
     # ==================== 配置持久化方法 ====================
 
     def save_to_file(self, data: Optional[Dict[str, Any]] = None) -> bool:
@@ -284,10 +362,13 @@ class Settings(BaseSettings):
                 "douban_user_agent": self.DOUBAN_USER_AGENT,
             }
 
-            # 写入 JSON 文件
-            with open(config_path, 'w', encoding='utf-8') as f:
+            # 原子写入：先写临时文件，再替换
+            temp_path = config_path.with_suffix('.tmp')
+            with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(save_data, f, ensure_ascii=False, indent=2)
 
+            # 原子替换
+            temp_path.replace(config_path)
             return True
         except Exception as e:
             print(f"[Config] ❌ 配置保存失败: {e}")
@@ -313,9 +394,15 @@ class Settings(BaseSettings):
 
             # 加载运行时可修改的配置项
             self.DOUBAN_COOKIE = data.get("douban_cookie", self.DOUBAN_COOKIE)
-            self.DOUBAN_USER_AGENT = data.get("douban_user_agent", self.DOUBAN_USER_AGENT)
+            self.DOUBAN_USER_AGENT = data.get(
+                "douban_user_agent",
+                self.DOUBAN_USER_AGENT
+            )
 
-            print(f"[Config] ✅ 配置文件加载成功 | Cookie: {'已配置' if self.douban_configured else '未配置'}")
+            print(
+                f"[Config] ✅ 配置文件加载成功 | "
+                f"Cookie: {'已配置' if self.douban_configured else '未配置'}"
+            )
             return True
         except json.JSONDecodeError as e:
             print(f"[Config] ⚠️  配置文件 JSON 格式错误: {e}")
@@ -406,6 +493,25 @@ class Settings(BaseSettings):
         else:
             return f"{cookie[:30]}...{cookie[-30:]}"
 
+    def get_log_config(self) -> Dict[str, Any]:
+        """
+        获取日志配置字典
+        
+        用于 loguru 的配置，整合所有日志相关参数。
+        
+        Returns:
+            日志配置字典
+        """
+        return {
+            "level": self.LOG_LEVEL,
+            "format": self.LOG_FORMAT,
+            "rotation": self.LOG_ROTATION,
+            "retention": self.LOG_RETENTION,
+            "diagnose": self.LOG_DIAGNOSE,
+            "backtrace": self.LOG_BACKTRACE,
+            "enqueue": self.LOG_ENQUEUE,
+        }
+
 
 # ==================== 全局单例 ====================
 
@@ -439,8 +545,9 @@ def validate_config_on_startup() -> None:
     
     按顺序执行：
     1. 创建必要的目录（日志、图片缓存）
-    2. 检查安全配置（SECRET_KEY、NFC_ENCRYPTION_KEY 是否使用默认值）
-    3. 输出配置摘要信息
+    2. 配置 loguru 日志系统
+    3. 检查安全配置（SECRET_KEY、NFC_ENCRYPTION_KEY 是否使用默认值）
+    4. 输出配置摘要信息
     
     警告级别：
     - SECRET_KEY 使用默认值 → ⚠️ 安全警告
@@ -448,16 +555,18 @@ def validate_config_on_startup() -> None:
     - Cookie 未配置 → 💡 功能提示
     - Cookie 已配置 → ✅ 正常
     """
-    # 确保必要目录存在
-    directories_to_create = ["./logs"]
+    # ---- 1. 创建必要目录 ----
+    directories_to_create = [
+        settings.logs_dir_path,
+    ]
     if settings.IMAGE_CACHE_ENABLED:
-        directories_to_create.append(settings.IMAGE_CACHE_DIR)
+        directories_to_create.append(settings.image_cache_dir_path)
 
     for directory in directories_to_create:
-        Path(directory).mkdir(parents=True, exist_ok=True)
+        directory.mkdir(parents=True, exist_ok=True)
         print(f"[Config] 📁 目录已就绪: {directory}")
 
-    # 安全检查
+    # ---- 2. 安全检查 ----
     warnings = []
     if settings.SECRET_KEY == "change-me":
         warnings.append("SECRET_KEY 使用默认值，请在生产环境中修改")
@@ -467,12 +576,28 @@ def validate_config_on_startup() -> None:
     for warning in warnings:
         print(f"[Config] ⚠️  {warning}")
 
-    # 输出配置摘要
+    # ---- 3. 输出配置摘要 ----
     print(f"[Config] {'='*50}")
     print(f"[Config] 📋 {settings.APP_NAME} v{settings.APP_VERSION}")
-    print(f"[Config]    • 运行模式: {'🔧 开发' if settings.DEBUG else '🚀 生产'}")
+    print(
+        f"[Config]    • 运行模式: "
+        f"{'🔧 开发' if settings.DEBUG else '🚀 生产'}"
+    )
     print(f"[Config]    • 数据库: {settings.database_path}")
-    print(f"[Config]    • 豆瓣 Cookie: {'✅ 已配置' if settings.douban_configured else '💡 未配置（豆瓣同步功能不可用）'}")
-    print(f"[Config]    • 图片缓存: {'✅ 启用' if settings.IMAGE_CACHE_ENABLED else '❌ 禁用'}")
-    print(f"[Config]    • 日志级别: {settings.LOG_LEVEL}")
+    print(
+        f"[Config]    • 豆瓣 Cookie: "
+        f"{'✅ 已配置' if settings.douban_configured else '💡 未配置（豆瓣同步功能不可用）'}"
+    )
+    print(
+        f"[Config]    • 图片缓存: "
+        f"{'✅ 启用' if settings.IMAGE_CACHE_ENABLED else '❌ 禁用'}"
+        f"{' | 目录: ' + settings.IMAGE_CACHE_DIR if settings.IMAGE_CACHE_ENABLED else ''}"
+        f"{' | 有效期: ' + str(settings.IMAGE_CACHE_MAX_AGE // 86400) + '天' if settings.IMAGE_CACHE_ENABLED else ''}"
+    )
+    print(
+        f"[Config]    • 日志: 级别={settings.LOG_LEVEL} | "
+        f"文件={settings.LOG_FILE} | "
+        f"轮转={settings.LOG_ROTATION} | "
+        f"保留={settings.LOG_RETENTION}"
+    )
     print(f"[Config] {'='*50}")

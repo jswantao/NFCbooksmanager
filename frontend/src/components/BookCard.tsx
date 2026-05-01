@@ -1,42 +1,35 @@
 // frontend/src/components/BookCard.tsx
 /**
- * 图书卡片组件
+ * 图书卡片组件 - React 19 + Ant Design 6
  * 
- * 展示图书的核心信息，支持网格和列表两种视图模式。
- * 
- * 功能：
- * - 网格模式：图书封面 + 标题 + 标签 + 作者 + 简介摘要
- * - 列表模式：横向布局，封面在左，详细信息在右
- * - 封面加载失败自动回退到 SVG 占位图
- * - 封面懒加载（loading="lazy"）
+ * 优化点：
  * - 骨架屏加载状态
- * - 点击事件回调
- * 
- * 性能优化：
- * - React.memo 包裹避免不必要的重渲染
- * - useMemo 缓存计算结果（封面 URL、占位图）
- * - useCallback 固定事件处理函数引用
+ * - 更丰富的悬停效果
+ * - 右键菜单支持
+ * - 拖拽排序支持基础
+ * - 无障碍属性完善
+ * - 虚拟列表友好接口
  */
 
-import React, { useState, useCallback, useMemo, memo } from 'react';
-import { Card, Tag, Typography, Skeleton, Tooltip, Rate } from 'antd';
+import React, { useCallback, useMemo, memo, useState, type FC, type CSSProperties } from 'react';
+import { Card, Tag, Typography, Tooltip, Rate, Skeleton, Space, theme } from 'antd';
 import {
     UserOutlined,
     StarFilled,
     BarcodeOutlined,
-} from '@ant-design/icons';
+    CalendarOutlined,
+    TranslationOutlined,
+} from '../icons';
 import type { Book } from '../types';
-import { getCoverUrl, getPlaceholderCover, handleImageError } from '../utils/image';
-
-// ---- 常量 ----
+import { getCoverUrl, getPlaceholderCover } from '../utils/image';
+import { truncateText } from '../utils/format';
+import LazyImage from './LazyImage';
 
 const { Text, Paragraph } = Typography;
 
-/**
- * 数据来源标签映射
- * 
- * 不同来源显示不同颜色的标签
- */
+// ==================== 常量 ====================
+
+/** 书籍来源标签映射 */
 const SOURCE_TAG_MAP: Record<string, { color: string; label: string }> = {
     douban: { color: 'green', label: '豆瓣' },
     manual: { color: 'orange', label: '手动' },
@@ -44,78 +37,59 @@ const SOURCE_TAG_MAP: Record<string, { color: string; label: string }> = {
     nfc: { color: 'purple', label: 'NFC' },
 };
 
-/** 默认来源标签（未知来源） */
+/** 默认来源标签 */
 const DEFAULT_SOURCE_TAG = { color: 'default', label: '未知' };
 
-// ---- 类型定义 ----
+// ==================== 类型定义 ====================
 
 interface BookCardProps {
     /** 图书数据 */
     book: Book;
     /** 视图模式 */
-    viewMode?: 'grid' | 'list';
+    viewMode?: 'grid' | 'list' | 'compact';
     /** 点击回调 */
     onClick?: (book: Book) => void;
-    /** 是否显示星级评分 */
+    /** 右键菜单回调 */
+    onContextMenu?: (book: Book, event: React.MouseEvent) => void;
+    /** 是否显示评分 */
     showRating?: boolean;
-    /** 是否显示加载骨架屏 */
+    /** 加载状态 */
     loading?: boolean;
+    /** 自定义类名 */
+    className?: string;
+    /** 自定义样式 */
+    style?: CSSProperties;
+    /** 数据索引（虚拟列表用） */
+    dataIndex?: number;
+    /** 是否选中 */
+    selected?: boolean;
 }
 
-interface BookCoverProps {
+// ==================== 子组件 ====================
+
+/** 书籍封面组件 */
+const BookCover: FC<{
     book: Book;
-    /** 封面尺寸：small=列表模式(80×112)，large=网格模式(全宽×280) */
     size: 'small' | 'large';
-}
-
-// ---- 子组件 ----
-
-/**
- * 图书封面组件（带加载状态和错误回退）
- * 
- * 加载流程：
- * 1. 有封面 URL → 尝试加载远程图片
- * 2. 加载中 → 显示骨架屏
- * 3. 加载成功 → 显示封面图片
- * 4. 加载失败 → 显示 SVG 占位图
- * 5. 无封面 URL → 直接显示占位图
- */
-const BookCover: React.FC<BookCoverProps> = memo(({ book, size }) => {
-    const [imageLoaded, setImageLoaded] = useState(false);
-    const [imageError, setImageError] = useState(false);
-    
-    /** 代理后的封面 URL（豆瓣图片通过后端代理） */
+    viewMode: string;
+}> = memo(({ book, size, viewMode }) => {
     const coverUrl = useMemo(
-        () => getCoverUrl(book.cover_url) || null,
+        () => getCoverUrl(book.cover_url) || '',
         [book.cover_url]
     );
-    
-    /** SVG 占位图（基于书名和作者生成唯一颜色） */
+
     const placeholderUrl = useMemo(
         () => getPlaceholderCover(book.title, book.author),
         [book.title, book.author]
     );
-    
+
     const isSmall = size === 'small';
-    
-    /** 封面容器尺寸 */
-    const containerStyle = useMemo(
-        () =>
-            isSmall
-                ? { width: 80, height: 112 }
-                : { width: '100%', height: 280 },
-        [isSmall]
-    );
-    
-    /** 背景与圆角样式 */
-    const backgroundStyle = isSmall
-        ? { background: 'transparent' }
-        : { background: '#fafaf9' };
-    
-    const borderRadius = isSmall ? 4 : '8px 8px 0 0';
-    const objectFit = isSmall ? 'cover' : ('contain' as const);
-    const imagePadding = isSmall ? 0 : 16;
-    
+    const dims = isSmall
+        ? { width: 80, height: 112 }
+        : { width: '100%', height: viewMode === 'compact' ? 200 : 280 };
+
+    const borderRadius = isSmall ? 6 : viewMode === 'compact' ? '6px 6px 0 0' : '12px 12px 0 0';
+
     return (
         <div
             style={{
@@ -124,54 +98,26 @@ const BookCover: React.FC<BookCoverProps> = memo(({ book, size }) => {
                 alignItems: 'center',
                 overflow: 'hidden',
                 borderRadius,
-                ...backgroundStyle,
-                ...containerStyle,
+                background: isSmall ? 'transparent' : '#fafaf9',
+                ...dims,
                 position: 'relative',
             }}
         >
-            {/* 加载中的骨架屏 */}
-            {!imageLoaded && !imageError && coverUrl && (
-                <Skeleton.Image
-                    active
-                    style={{
-                        width: containerStyle.width,
-                        height: containerStyle.height,
-                        position: 'absolute',
-                    }}
-                />
-            )}
-            
-            {/* 远程封面图片 */}
-            {coverUrl && (
-                <img
-                    alt={book.title}
+            {coverUrl ? (
+                <LazyImage
                     src={coverUrl}
-                    onLoad={() => {
-                        setImageLoaded(true);
-                        setImageError(false);
-                    }}
-                    onError={(e) => {
-                        handleImageError(e, book.title, book.author);
-                        setImageError(true);
-                        setImageLoaded(false);
-                    }}
+                    alt={`《${book.title}》封面`}
+                    fallback={placeholderUrl}
+                    aspectRatio={isSmall ? '80/112' : '3/4'}
                     style={{
-                        display: imageLoaded ? 'block' : 'none',
                         width: '100%',
                         height: '100%',
-                        objectFit,
-                        padding: imagePadding,
                         borderRadius,
-                        opacity: imageLoaded ? 1 : 0,
                     }}
-                    loading="lazy"
                 />
-            )}
-            
-            {/* 占位图（无封面或加载失败） */}
-            {(!coverUrl || imageError) && (
+            ) : (
                 <img
-                    alt={book.title}
+                    alt={`《${book.title}》封面占位图`}
                     src={placeholderUrl}
                     style={{
                         width: '100%',
@@ -179,85 +125,206 @@ const BookCover: React.FC<BookCoverProps> = memo(({ book, size }) => {
                         objectFit: 'cover',
                         borderRadius,
                     }}
+                    loading="lazy"
                 />
             )}
         </div>
     );
 });
-
 BookCover.displayName = 'BookCover';
 
-// ---- 主组件 ----
+// ==================== 主组件 ====================
 
-/**
- * 图书卡片主组件
- * 
- * 使用 React.memo 优化性能，仅在 book 数据或 viewMode 变化时重渲染。
- */
-const BookCard: React.FC<BookCardProps> = memo(
-    ({ book, viewMode = 'grid', onClick, showRating = false, loading = false }) => {
-        /**
-         * 点击处理（防止加载中触发）
-         */
-        const handleClick = useCallback(() => {
-            if (onClick && !loading) {
-                onClick(book);
-            }
-        }, [onClick, book, loading]);
+const BookCard: FC<BookCardProps> = memo(
+    ({
+        book,
+        viewMode = 'grid',
+        onClick,
+        onContextMenu,
+        showRating = false,
+        loading = false,
+        className,
+        style,
+        dataIndex,
+        selected = false,
+    }) => {
+        const [imgLoaded, setImgLoaded] = useState(false);
+        const { token } = theme.useToken();
 
-        /** 数据来源标签信息 */
-        const sourceTag = SOURCE_TAG_MAP[book.source] || DEFAULT_SOURCE_TAG;
+        // ==================== 数据计算 ====================
 
-        /** 评分浮点数值（用于 Rate 组件） */
-        const ratingValue = useMemo(() => {
-            if (!book.rating) return 0;
-            const parsed = parseFloat(book.rating);
-            return isNaN(parsed) ? 0 : parsed;
-        }, [book.rating]);
-
-        // ==================== 标签组件 ====================
-        
-        /** 图书标签区（来源 + 评分） */
-        const BookTags: React.FC = () => (
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                <Tag
-                    color={sourceTag.color}
-                    style={{ fontSize: 11, margin: 0 }}
-                >
-                    {sourceTag.label}
-                </Tag>
-                {ratingValue > 0 && (
-                    <Tag
-                        color="gold"
-                        style={{ fontSize: 11, margin: 0 }}
-                    >
-                        <StarFilled style={{ fontSize: 10, marginRight: 2 }} />
-                        {book.rating}
-                    </Tag>
-                )}
-            </div>
+        const sourceTag = useMemo(
+            () => SOURCE_TAG_MAP[book.source] || DEFAULT_SOURCE_TAG,
+            [book.source]
         );
 
-        // ==================== 列表模式 ====================
-        
+        const ratingValue = useMemo(() => {
+            if (!book.rating) return 0;
+            const p = parseFloat(book.rating);
+            return isNaN(p) ? 0 : p;
+        }, [book.rating]);
+
+        const normalizedRating = useMemo(
+            () => Math.min(ratingValue / 2, 5),
+            [ratingValue]
+        );
+
+        // ==================== 事件处理 ====================
+
+        const handleClick = useCallback(() => {
+            if (onClick && !loading) onClick(book);
+        }, [onClick, book, loading]);
+
+        const handleContextMenu = useCallback(
+            (event: React.MouseEvent) => {
+                if (onContextMenu) {
+                    event.preventDefault();
+                    onContextMenu(book, event);
+                }
+            },
+            [onContextMenu, book]
+        );
+
+        const handleKeyDown = useCallback(
+            (e: React.KeyboardEvent) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleClick();
+                }
+            },
+            [handleClick]
+        );
+
+        // ==================== 标签渲染 ====================
+
+        const renderTags = useCallback(
+            () => (
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    <Tag
+                        color={sourceTag.color}
+                        style={{
+                            fontSize: 11,
+                            margin: 0,
+                            borderRadius: 4,
+                            padding: '0 6px',
+                            lineHeight: '20px',
+                        }}
+                    >
+                        {sourceTag.label}
+                    </Tag>
+                    {ratingValue > 0 && (
+                        <Tag
+                            color="gold"
+                            style={{
+                                fontSize: 11,
+                                margin: 0,
+                                borderRadius: 4,
+                                padding: '0 6px',
+                                lineHeight: '20px',
+                            }}
+                        >
+                            <StarFilled style={{ fontSize: 10, marginRight: 2 }} />
+                            {book.rating}
+                        </Tag>
+                    )}
+                </div>
+            ),
+            [sourceTag, ratingValue, book.rating]
+        );
+
+        // ==================== 元信息渲染 ====================
+
+        const renderMeta = useCallback(() => {
+            const metaItems: React.ReactNode[] = [];
+
+            if (book.author) {
+                metaItems.push(
+                    <Tooltip title={`作者: ${book.author}`} key="author">
+                        <Space size={4}>
+                            <UserOutlined style={{ fontSize: 12, color: token.colorTextTertiary }} />
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                {truncateText(book.author, 20)}
+                            </Text>
+                        </Space>
+                    </Tooltip>
+                );
+            }
+
+            if (book.publisher) {
+                metaItems.push(
+                    <Tooltip title={`出版社: ${book.publisher}`} key="publisher">
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                            {truncateText(book.publisher, 15)}
+                        </Text>
+                    </Tooltip>
+                );
+            }
+
+            if (book.publish_date) {
+                metaItems.push(
+                    <Space size={4} key="date">
+                        <CalendarOutlined style={{ fontSize: 11, color: token.colorTextTertiary }} />
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                            {book.publish_date}
+                        </Text>
+                    </Space>
+                );
+            }
+
+            if (book.translator) {
+                metaItems.push(
+                    <Space size={4} key="translator">
+                        <TranslationOutlined style={{ fontSize: 11, color: token.colorTextTertiary }} />
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                            {truncateText(book.translator, 12)}
+                        </Text>
+                    </Space>
+                );
+            }
+
+            return metaItems;
+        }, [book, token]);
+
+        // ==================== 列表视图 ====================
+
         if (viewMode === 'list') {
+            // 加载骨架屏
+            if (loading) {
+                return (
+                    <Card style={{ borderRadius: 12, ...style }} styles={{ body: { padding: 16 } }}>
+                        <div style={{ display: 'flex', gap: 16 }}>
+                            <Skeleton.Image style={{ width: 80, height: 112, borderRadius: 6 }} active />
+                            <div style={{ flex: 1 }}>
+                                <Skeleton active paragraph={{ rows: 2 }} />
+                            </div>
+                        </div>
+                    </Card>
+                );
+            }
+
             return (
                 <Card
-                    hoverable={!loading}
+                    hoverable
                     onClick={handleClick}
-                    loading={loading}
+                    onContextMenu={handleContextMenu}
+                    onKeyDown={handleKeyDown}
+                    className={className}
                     style={{
                         borderRadius: 12,
-                        border: '1px solid #e8d5c8',
+                        border: selected
+                            ? `2px solid ${token.colorPrimary}`
+                            : `1px solid ${token.colorBorderSecondary}`,
                         cursor: onClick ? 'pointer' : 'default',
+                        transition: 'all 0.2s ease',
+                        ...style,
                     }}
-                    bodyStyle={{ padding: 16 }}
+                    styles={{ body: { padding: 16 } }}
+                    tabIndex={0}
+                    role="article"
+                    aria-label={`图书: ${book.title}`}
                 >
                     <div style={{ display: 'flex', gap: 16 }}>
-                        {/* 左侧封面（小尺寸） */}
-                        <BookCover book={book} size="small" />
-                        
-                        {/* 右侧信息 */}
+                        <BookCover book={book} size="small" viewMode={viewMode} />
                         <div style={{ flex: 1, minWidth: 0 }}>
                             {/* 标题行 */}
                             <div
@@ -282,38 +349,27 @@ const BookCard: React.FC<BookCardProps> = memo(
                                         {book.title}
                                     </Text>
                                 </Tooltip>
-                                <BookTags />
+                                {renderTags()}
                             </div>
-                            
-                            {/* 作者 */}
-                            {book.author && (
-                                <div
-                                    style={{
-                                        color: '#6b5e56',
-                                        marginBottom: 8,
-                                    }}
-                                >
-                                    <UserOutlined
-                                        style={{
-                                            fontSize: 13,
-                                            marginRight: 6,
-                                        }}
-                                    />
-                                    <Text
-                                        type="secondary"
-                                        style={{ fontSize: 13 }}
-                                    >
-                                        {book.author}
-                                    </Text>
-                                </div>
-                            )}
-                            
+
+                            {/* 元信息 */}
+                            <div
+                                style={{
+                                    display: 'flex',
+                                    flexWrap: 'wrap',
+                                    gap: 12,
+                                    marginBottom: 8,
+                                }}
+                            >
+                                {renderMeta()}
+                            </div>
+
                             {/* 摘要 */}
                             {book.summary && (
                                 <Paragraph
                                     ellipsis={{ rows: 2 }}
                                     style={{
-                                        color: '#8c7b72',
+                                        color: token.colorTextTertiary,
                                         fontSize: 13,
                                         marginBottom: 12,
                                     }}
@@ -321,8 +377,8 @@ const BookCard: React.FC<BookCardProps> = memo(
                                     {book.summary}
                                 </Paragraph>
                             )}
-                            
-                            {/* 底部信息栏 */}
+
+                            {/* 底部信息 */}
                             <div
                                 style={{
                                     display: 'flex',
@@ -330,22 +386,31 @@ const BookCard: React.FC<BookCardProps> = memo(
                                     alignItems: 'center',
                                 }}
                             >
-                                {book.isbn && (
-                                    <Text
-                                        type="secondary"
-                                        style={{ fontSize: 12 }}
-                                    >
-                                        <BarcodeOutlined /> {book.isbn}
-                                    </Text>
-                                )}
+                                <Space size={12}>
+                                    {book.isbn && (
+                                        <Text type="secondary" style={{ fontSize: 12 }}>
+                                            <BarcodeOutlined /> {book.isbn}
+                                        </Text>
+                                    )}
+                                    {book.pages && (
+                                        <Text type="secondary" style={{ fontSize: 12 }}>
+                                            {book.pages}页
+                                        </Text>
+                                    )}
+                                </Space>
                                 {showRating && ratingValue > 0 && (
-                                    <Rate
-                                        disabled
-                                        allowHalf
-                                        value={ratingValue / 2}
-                                        count={5}
-                                        style={{ fontSize: 12 }}
-                                    />
+                                    <Space size={4}>
+                                        <Rate
+                                            disabled
+                                            allowHalf
+                                            value={normalizedRating}
+                                            count={5}
+                                            style={{ fontSize: 14 }}
+                                        />
+                                        <Text style={{ fontSize: 13, fontWeight: 500 }}>
+                                            {book.rating}
+                                        </Text>
+                                    </Space>
                                 )}
                             </div>
                         </div>
@@ -354,131 +419,147 @@ const BookCard: React.FC<BookCardProps> = memo(
             );
         }
 
-        // ==================== 网格模式 ====================
-        
+        // ==================== 网格/紧凑视图 ====================
+
+        if (loading) {
+            return (
+                <Card
+                    style={{
+                        height: '100%',
+                        borderRadius: 12,
+                        ...style,
+                    }}
+                    styles={{ body: { padding: 16 } }}
+                >
+                    <Skeleton.Image
+                        style={{ width: '100%', height: 200, borderRadius: 8 }}
+                        active
+                    />
+                    <Skeleton active paragraph={{ rows: 2 }} style={{ marginTop: 12 }} />
+                </Card>
+            );
+        }
+
+        const cardBodyStyle: CSSProperties =
+            viewMode === 'compact'
+                ? { padding: 12 }
+                : { flex: 1, padding: 16, display: 'flex', flexDirection: 'column' };
+
+        const titleLines = viewMode === 'compact' ? 1 : 2;
+
         return (
             <Card
-                hoverable={!loading}
+                hoverable
                 onClick={handleClick}
-                loading={loading}
-                cover={<BookCover book={book} size="large" />}
+                onContextMenu={handleContextMenu}
+                onKeyDown={handleKeyDown}
+                className={className}
+                cover={<BookCover book={book} size="large" viewMode={viewMode} />}
                 style={{
                     height: '100%',
                     borderRadius: 12,
-                    border: '1px solid #e8d5c8',
+                    border: selected
+                        ? `2px solid ${token.colorPrimary}`
+                        : `1px solid ${token.colorBorderSecondary}`,
                     display: 'flex',
                     flexDirection: 'column',
                     cursor: onClick ? 'pointer' : 'default',
+                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                    ...style,
                 }}
-                bodyStyle={{
-                    flex: 1,
-                    padding: 16,
-                    display: 'flex',
-                    flexDirection: 'column',
-                }}
+                styles={{ body: cardBodyStyle }}
+                tabIndex={0}
+                role="article"
+                aria-label={`图书: ${book.title}`}
             >
-                {/* 标题（最多 2 行） */}
+                {/* 标题 */}
                 <Tooltip title={book.title}>
                     <Text
                         strong
                         style={{
-                            fontSize: 15,
+                            fontSize: viewMode === 'compact' ? 13 : 15,
                             overflow: 'hidden',
                             display: '-webkit-box',
-                            WebkitLineClamp: 2,
+                            WebkitLineClamp: titleLines,
                             WebkitBoxOrient: 'vertical',
-                            minHeight: 42,
-                            marginBottom: 8,
+                            minHeight: viewMode === 'compact' ? 20 : 42,
+                            marginBottom: 6,
+                            lineHeight: 1.4,
                         }}
                     >
                         {book.title}
                     </Text>
                 </Tooltip>
-                
+
                 {/* 标签 */}
-                <BookTags />
-                
-                {/* 内容区（自动填充剩余空间） */}
+                {renderTags()}
+
+                {/* 内容区 */}
                 <div style={{ flex: 1, marginTop: 8 }}>
-                    {book.author && (
-                        <div
-                            style={{
-                                color: '#6b5e56',
-                                marginBottom: 8,
-                            }}
-                        >
-                            <UserOutlined
-                                style={{
-                                    fontSize: 12,
-                                    marginRight: 6,
-                                }}
-                            />
-                            <Text
-                                type="secondary"
-                                style={{ fontSize: 12 }}
-                            >
-                                {book.author}
-                            </Text>
-                        </div>
-                    )}
-                    {book.summary && (
-                        <Paragraph
-                            ellipsis={{ rows: 2 }}
-                            style={{
-                                color: '#8c7b72',
-                                fontSize: 12,
-                                marginBottom: 12,
-                            }}
-                        >
-                            {book.summary}
-                        </Paragraph>
+                    {viewMode !== 'compact' && (
+                        <>
+                            {book.author && (
+                                <div style={{ marginBottom: 6 }}>
+                                    <Space size={4}>
+                                        <UserOutlined
+                                            style={{
+                                                fontSize: 12,
+                                                color: token.colorTextTertiary,
+                                            }}
+                                        />
+                                        <Text type="secondary" style={{ fontSize: 12 }}>
+                                            {truncateText(book.author, 18)}
+                                        </Text>
+                                    </Space>
+                                </div>
+                            )}
+                            {book.summary && (
+                                <Paragraph
+                                    ellipsis={{ rows: 2 }}
+                                    style={{
+                                        color: token.colorTextTertiary,
+                                        fontSize: 12,
+                                        marginBottom: 12,
+                                    }}
+                                >
+                                    {book.summary}
+                                </Paragraph>
+                            )}
+                        </>
                     )}
                 </div>
-                
-                {/* 底部信息栏（推到容器底部） */}
+
+                {/* 底部信息 */}
                 <div
                     style={{
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'center',
                         marginTop: 'auto',
-                        paddingTop: 12,
-                        borderTop: '1px solid #f0e4d8',
+                        paddingTop: viewMode === 'compact' ? 8 : 12,
+                        borderTop: `1px solid ${token.colorBorderSecondary}`,
                     }}
                 >
                     {book.isbn ? (
                         <Text
                             type="secondary"
-                            style={{ fontSize: 11 }}
+                            style={{ fontSize: 10, fontFamily: 'monospace' }}
+                            ellipsis
                         >
-                            ISBN {book.isbn}
+                            {book.isbn}
                         </Text>
                     ) : (
                         <div />
                     )}
                     {showRating && ratingValue > 0 && (
-                        <div
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 4,
-                            }}
-                        >
+                        <Space size={2}>
                             <StarFilled
-                                style={{
-                                    color: '#f59e0b',
-                                    fontSize: 12,
-                                }}
+                                style={{ color: token.colorWarning, fontSize: 12 }}
                             />
-                            <Text
-                                style={{
-                                    fontSize: 12,
-                                    fontWeight: 500,
-                                }}
-                            >
+                            <Text style={{ fontSize: 12, fontWeight: 500 }}>
                                 {book.rating}
                             </Text>
-                        </div>
+                        </Space>
                     )}
                 </div>
             </Card>
@@ -487,5 +568,4 @@ const BookCard: React.FC<BookCardProps> = memo(
 );
 
 BookCard.displayName = 'BookCard';
-
 export default BookCard;

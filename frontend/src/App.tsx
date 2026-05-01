@@ -1,286 +1,296 @@
 // frontend/src/App.tsx
 /**
- * 应用根组件
+ * 应用根组件 - React 19 + Ant Design 6
  * 
- * 职责：
- * 1. 配置 Ant Design 主题（品牌色、圆角等）
- * 2. 定义前端路由表（React Router v6）
- * 3. 实现页面懒加载（减少首屏体积）
- * 4. 处理路由切换时的滚动复位
- * 5. 提供 404 页面
- * 
- * 路由架构：
- * /                          → NFC 扫描首页
- * /write                     → NFC 写入页
- * /search                    → 图书搜索
- * /shelf/:id                 → 书架详情
- * /shelf/:shelfId/book/:bookId → 图书详情
- * /wall                      → 图书封面墙
- * /import                    → 批量导入
- * /books/add                 → 手动添加图书
- * /books/edit/:id            → 编辑图书
- * /settings/cookie           → Cookie 配置
- * /admin                     → 管理仪表盘
- * /admin/shelves             → 书架管理
+ * 优化点：
+ * - 路由级代码分割
+ * - 页面切换动画
+ * - 全局状态管理
+ * - 路由预加载
  */
-
-import React, { lazy, Suspense, useEffect, useMemo } from 'react';
-import { ConfigProvider, Layout, theme, App as AntApp, FloatButton, Spin } from 'antd';
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
-import zhCN from 'antd/locale/zh_CN';
-
-// 全局组件
+import React, { lazy, Suspense, useEffect, useMemo, useCallback, type FC, type ComponentType } from 'react';
+import { Layout, FloatButton, Spin, Result, Button } from 'antd';
+import { HomeOutlined } from '@ant-design/icons';
+import {
+    BrowserRouter,
+    Routes,
+    Route,
+    useLocation,
+    useParams,
+    useNavigate,
+    type RouteObject,
+} from 'react-router-dom';
 import AppHeader from './components/AppHeader';
-
-// ---- 页面懒加载 ----
-// 使用 React.lazy 分割代码，仅在路由命中时加载对应页面
-// Webpack/Vite 会自动生成独立的 chunk 文件
-
-/** NFC 扫描页面（首页） - 外模式入口 */
-const NFCReader = lazy(() => import('./pages/NFCReader'));
-
-/** NFC 写入页面 - 外模式写入 */
-const NFCWriter = lazy(() => import('./pages/NFCWriter'));
-
-/** 图书搜索页面 */
-const BookSearch = lazy(() => import('./pages/BookSearch'));
-
-/** 图书详情页面 */
-const BookDetail = lazy(() => import('./pages/BookDetail'));
-
-/** 书架视图页面 - 中间模式展示 */
-const ShelfView = lazy(() => import('./pages/ShelfView'));
-
-/** 图书封面墙页面 */
-const BookCoverWall = lazy(() => import('./pages/BookCoverWall'));
-
-/** 批量导入页面 */
-const BatchImport = lazy(() => import('./pages/BatchImport'));
-
-/** 手动添加图书页面 */
-const BookManualAdd = lazy(() => import('./pages/BookManualAdd'));
-
-/** 编辑图书页面 */
-const BookManualEdit = lazy(() => import('./pages/BookManualEdit'));
-
-/** Cookie 配置页面 */
-const CookieConfig = lazy(() => import('./pages/CookieConfig'));
-
-/** 管理仪表盘页面 */
-const Dashboard = lazy(() => import('./pages/Dashboard'));
-
-/** 书架管理页面 */
-const ShelfManager = lazy(() => import('./pages/ShelfManager'));
-
-const AllBooksManager = lazy(() => import('./pages/AllBooksManager'));
-
-// ---- 常量 ----
+import ErrorBoundary from './components/ErrorBoundary';
+import { useTheme } from './theme/ThemeContext';
 
 const { Content } = Layout;
 
-const BookDetailRedirect: React.FC = () => {
-    const { id } = useParams<{ id: string }>();
-    const navigate = useNavigate();
+// ==================== 页面懒加载 ====================
+// 使用动态导入 + prefetch 提示
+const pages = {
+    HomePage: lazy(() => import(/* webpackPrefetch: true */ './pages/HomePage')),
+    NFCOperator: lazy(() => import('./pages/NFCOperator')),
+    BookSearch: lazy(() => import(/* webpackPrefetch: true */ './pages/BookSearch')),
+    BookDetail: lazy(() => import('./pages/BookDetail')),
+    ShelfView: lazy(() => import('./pages/ShelfView')),
+    BookCoverWall: lazy(() => import('./pages/BookCoverWall')),
+    BatchImport: lazy(() => import('./pages/BatchImport')),
+    BookManualAdd: lazy(() => import('./pages/BookManualAdd')),
+    BookManualEdit: lazy(() => import('./pages/BookManualEdit')),
+    CookieConfig: lazy(() => import('./pages/CookieConfig')),
+    Dashboard: lazy(() => import('./pages/Dashboard')),
+    ShelfManager: lazy(() => import('./pages/ShelfManager')),
+    AllBooksManager: lazy(() => import('./pages/AllBooksManager')),
+    PhysicalShelfManager: lazy(() => import('./pages/PhysicalShelfManager')),
+} as const;
 
-    useEffect(() => {
-        // 重定向到默认书架路径
-        navigate(`/shelf/1/book/${id}`, { replace: true });
-    }, [id, navigate]);
-
-    return (
-        <div style={{ 
-            display: 'flex', 
-            justifyContent: 'center', 
-            alignItems: 'center', 
-            minHeight: 400 
-        }}>
-            <Spin size="large" tip="正在跳转..." />
-        </div>
-    );
-};
-
-
-/** 路由配置表 */
+// ==================== 类型定义 ====================
 interface RouteConfig {
     path: string;
-    component: React.LazyExoticComponent<React.ComponentType<any>>;
+    component: ComponentType<any>;
+    preload?: boolean;
+    meta?: {
+        title?: string;
+        wide?: boolean;
+    };
 }
 
+// ==================== 路由配置 ====================
 const routes: RouteConfig[] = [
-    { path: '/', component: NFCReader },
-    { path: '/write', component: NFCWriter },
-    { path: '/search', component: BookSearch },
-    { path: '/shelf/:id', component: ShelfView },
-    { path: '/shelf/:shelfId/book/:bookId', component: BookDetail },
-    { path: '/wall', component: BookCoverWall },
-    { path: '/import', component: BatchImport },
-    { path: '/books/add', component: BookManualAdd },
-    { path: '/books/edit/:id', component: BookManualEdit },
-    { path: '/settings/cookie', component: CookieConfig },
-    { path: '/admin', component: Dashboard },
-    { path: '/admin/shelves', component: ShelfManager },
-    { path: '/admin/books', component: AllBooksManager },
-    { path: '/book/:id', component: BookDetailRedirect },
+    { path: '/', component: pages.HomePage, preload: true, meta: { title: '首页' } },
+    { path: '/operate', component: pages.NFCOperator, meta: { title: 'NFC 操作' } },
+    { path: '/search', component: pages.BookSearch, meta: { title: '搜索图书' } },
+    { path: '/shelf/:id', component: pages.ShelfView, preload: true, meta: { title: '书架视图' } },
+    { path: '/shelf/:shelfId/book/:bookId', component: pages.BookDetail, meta: { title: '图书详情' } },
+    { path: '/wall', component: pages.BookCoverWall, meta: { title: '封面墙' } },
+    { path: '/import', component: pages.BatchImport, meta: { title: '批量导入' } },
+    { path: '/books/add', component: pages.BookManualAdd, meta: { title: '添加图书' } },
+    { path: '/books/edit/:id', component: pages.BookManualEdit, meta: { title: '编辑图书' } },
+    { path: '/settings/cookie', component: pages.CookieConfig, meta: { title: 'Cookie 配置' } },
+    { path: '/admin', component: pages.Dashboard, meta: { title: '管理后台', wide: true } },
+    { path: '/admin/shelves', component: pages.ShelfManager, meta: { title: '书架管理', wide: true } },
+    { path: '/admin/books', component: pages.AllBooksManager, meta: { title: '图书管理', wide: true } },
+    { path: '/admin/physical-shelves', component: pages.PhysicalShelfManager, meta: { title: '物理书架', wide: true } },
 ];
 
-// ---- 组件 ----
+// ==================== 通用组件 ====================
 
-/** 页面加载中占位 */
-const PageLoading: React.FC = () => (
+/** 页面加载占位 - 骨架屏效果 */
+const PageLoading: FC<{ message?: string }> = ({ message = '页面加载中...' }) => (
     <div
         style={{
             display: 'flex',
+            flexDirection: 'column',
             justifyContent: 'center',
             alignItems: 'center',
             minHeight: 400,
+            gap: 16,
         }}
+        role="status"
+        aria-label={message}
     >
-        <Spin size="large" tip="页面加载中..." />
+        <Spin size="large" />
+        <span style={{ color: '#8c7b72', fontSize: 14 }}>{message}</span>
     </div>
 );
 
-/**
- * 路由切换时自动滚动到顶部
- * 
- * 监听 pathname 变化，每次路由切换执行 window.scrollTo(0, 0)
- */
-const ScrollToTop: React.FC = () => {
+/** 路由切换时自动滚动到顶部 */
+const ScrollToTop: FC = () => {
     const { pathname } = useLocation();
-
+    
     useEffect(() => {
-        window.scrollTo(0, 0);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     }, [pathname]);
-
-    // 不渲染任何 UI
+    
     return null;
 };
 
 /** 404 页面 */
-const NotFoundPage: React.FC = () => (
-    <div
-        style={{
-            textAlign: 'center',
-            padding: '80px 24px',
-            color: '#8c7b72',
-        }}
-    >
-        <div style={{ fontSize: 72, opacity: 0.3, marginBottom: 16 }}>📚</div>
-        <h2 style={{ fontSize: 24, color: '#2c1810', marginBottom: 8 }}>
-            页面未找到
-        </h2>
-        <p style={{ marginBottom: 16, color: '#8c7b72' }}>
-            您访问的页面不存在或已被移除
-        </p>
-        <a href="/" style={{ color: '#8B4513', fontWeight: 500 }}>
-            ← 返回首页
-        </a>
-    </div>
-);
-
-/**
- * Ant Design 主题配置
- * 
- * 品牌色：#8B4513（马鞍棕色，书房氛围）
- * 设计理念：温暖、沉稳、知识感
- */
-const appTheme = {
-    algorithm: theme.defaultAlgorithm,
-    token: {
-        // 品牌色
-        colorPrimary: '#8B4513',
-        colorPrimaryBg: '#fdf6f0',
-        colorPrimaryHover: '#a0522d',
-        
-        // 功能色
-        colorSuccess: '#52c41a',
-        colorWarning: '#faad14',
-        colorError: '#ff4d4f',
-        
-        // 基础色
-        colorTextBase: '#2c1810',
-        colorBgLayout: '#fdf8f4',
-        
-        // 圆角
-        borderRadius: 8,
-    },
+const NotFoundPage: FC = () => {
+    const navigate = useNavigate();
+    
+    return (
+        <Result
+            icon={<span style={{ fontSize: 72, opacity: 0.3 }}>📚</span>}
+            title="页面未找到"
+            subTitle="您访问的页面不存在或已被移除"
+            extra={
+                <Button
+                    type="primary"
+                    icon={<HomeOutlined />}
+                    onClick={() => navigate('/')}
+                    style={{ background: '#8B4513', borderColor: '#8B4513' }}
+                >
+                    返回首页
+                </Button>
+            }
+        />
+    );
 };
 
-/**
- * 应用主体内容组件
- * 
- * 必须在 BrowserRouter 内部使用（使用 useLocation hook）
- */
-const AppContent: React.FC = () => {
-    const location = useLocation();
+/** 图书详情重定向组件 */
+const BookDetailRedirect: FC = () => {
+    const { id } = useParams<{ id: string }>();
+    const navigate = useNavigate();
+    
+    useEffect(() => {
+        if (id) {
+            navigate(`/shelf/1/book/${id}`, { replace: true });
+        }
+    }, [id, navigate]);
+    
+    return <PageLoading message="正在跳转到图书详情..." />;
+};
 
-    // 宽屏页面判断（管理后台、图书编辑页使用更宽的布局）
+/** 错误边界包装器 */
+const RouteErrorBoundary: FC<{ children: React.ReactNode; routePath: string }> = ({ 
+    children, 
+    routePath 
+}) => (
+    <ErrorBoundary
+        fallback={
+            <Result
+                status="error"
+                title="页面加载失败"
+                subTitle={`路由 ${routePath} 发生了错误，请尝试刷新页面`}
+                extra={
+                    <Button
+                        type="primary"
+                        onClick={() => window.location.reload()}
+                    >
+                        刷新页面
+                    </Button>
+                }
+            />
+        }
+    >
+        {children}
+    </ErrorBoundary>
+);
+
+// ==================== 主应用内容 ====================
+const AppContent: FC<{ onLoad?: () => void }> = ({ onLoad }) => {
+    const location = useLocation();
+    const { currentTheme } = useTheme();
+    
+    // 应用加载后执行回调（预加载等）
+    useEffect(() => {
+        onLoad?.();
+    }, [onLoad]);
+    
+    // 判断是否为宽布局（管理页面）
     const isWideLayout = useMemo(
-        () =>
-            location.pathname.startsWith('/admin') ||
-            location.pathname.startsWith('/books/'),
+        () => {
+            const widePaths = ['/admin', '/books/', '/import'];
+            return widePaths.some(path => location.pathname.startsWith(path));
+        },
         [location.pathname]
     );
-
+    
+    // 获取当前路由标题
+    const currentRouteTitle = useMemo(() => {
+        for (const route of routes) {
+            // 简单路径匹配
+            const routePattern = route.path.replace(/:\w+/g, '[^/]+');
+            const regex = new RegExp(`^${routePattern}$`);
+            if (regex.test(location.pathname)) {
+                return route.meta?.title;
+            }
+        }
+        return undefined;
+    }, [location.pathname]);
+    
+    // 更新页面标题
+    useEffect(() => {
+        const title = currentRouteTitle 
+            ? `${currentRouteTitle} - 书房管理系统` 
+            : '书房管理系统 - NFC 智能图书管理';
+        document.title = title;
+    }, [currentRouteTitle]);
+    
+    // 页面切换动画 key
+    const pageKey = useMemo(() => {
+        // 提取路由的基础路径作为 key
+        const basePath = location.pathname.split('/').slice(0, 3).join('/');
+        return basePath || 'home';
+    }, [location.pathname]);
+    
     return (
-        <Layout style={{ minHeight: '100vh', background: '#fdf8f4' }}>
-            {/* 顶部导航栏 */}
-            <AppHeader />
-
-            {/* 主内容区 */}
+        <Layout
+            style={{
+                minHeight: '100vh',
+                background: currentTheme.cssVariables?.['--app-bg'] || '#fdf8f4',
+                transition: 'background 0.3s ease',
+            }}
+        >
+            <AppHeader currentTitle={currentRouteTitle} />
             <Content
                 style={{
                     maxWidth: isWideLayout ? 1600 : 1400,
                     margin: '0 auto',
                     width: '100%',
                     padding: '24px 24px 48px',
-                    minHeight: 'calc(100vh - 64px)', // 减去 Header 高度
+                    minHeight: 'calc(100vh - 64px)',
                 }}
             >
-                {/* 路由出口 + 懒加载边界 */}
-                <Suspense fallback={<PageLoading />}>
+                {/* 使用 key 触发页面切换动画 */}
+                <div
+                    key={pageKey}
+                    style={{
+                        animation: 'page-fade-in 0.3s ease-out',
+                    }}
+                >
                     <Routes>
                         {routes.map((route) => (
                             <Route
                                 key={route.path}
                                 path={route.path}
-                                element={<route.component />}
+                                element={
+                                    <RouteErrorBoundary routePath={route.path}>
+                                        <Suspense fallback={<PageLoading />}>
+                                            <route.component />
+                                        </Suspense>
+                                    </RouteErrorBoundary>
+                                }
                             />
                         ))}
-
-                        {/* 404 兜底路由 */}
+                        <Route path="/book/:id" element={<BookDetailRedirect />} />
                         <Route path="*" element={<NotFoundPage />} />
                     </Routes>
-                </Suspense>
+                </div>
             </Content>
-
-            {/* 返回顶部按钮 */}
+            
+            {/* 回到顶部按钮 */}
             <FloatButton.BackTop
                 style={{ right: 40, bottom: 40 }}
                 visibilityHeight={400}
+                duration={400}
             />
+            
+            {/* 页面切换动画样式 */}
+            <style>{`
+                @keyframes page-fade-in {
+                    from {
+                        opacity: 0;
+                        transform: translateY(8px);
+                    }
+                    to {
+                        opacity: 1;
+                        transform: translateY(0);
+                    }
+                }
+            `}</style>
         </Layout>
     );
 };
 
-/**
- * 应用根组件
- * 
- * Provider 层级：
- * ConfigProvider（Ant Design 主题）
- *   → AntApp（静态方法上下文）
- *     → BrowserRouter（路由）
- *       → ScrollToTop（路由监听）
- *       → AppContent（布局 + 路由出口）
- */
-const App: React.FC = () => (
-    <ConfigProvider locale={zhCN} theme={appTheme}>
-        <AntApp>
-            <BrowserRouter>
-                <ScrollToTop />
-                <AppContent />
-            </BrowserRouter>
-        </AntApp>
-    </ConfigProvider>
+// ==================== 应用根组件 ====================
+const App: FC<{ onLoad?: () => void }> = ({ onLoad }) => (
+    <BrowserRouter>
+        <ScrollToTop />
+        <AppContent onLoad={onLoad} />
+    </BrowserRouter>
 );
 
 export default App;

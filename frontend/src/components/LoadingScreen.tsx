@@ -1,87 +1,162 @@
 // frontend/src/components/LoadingScreen.tsx
 /**
- * 加载屏幕组件
+ * 加载屏幕组件 - React 19 + Ant Design 6
  * 
- * 提供统一的全屏或区域加载状态展示。
- * 
- * 使用场景：
- * - 全屏模式（fullScreen=true）：页面初始加载、路由切换
- * - 区域模式（fullScreen=false）：列表加载、数据刷新
- * 
- * 特性：
- * - 全屏模式覆盖整个视口（fixed 定位）
- * - 半屏模式自适应容器高度
- * - 自定义加载提示文字
- * - 使用 Ant Design 的 Spin 和自定义图标
+ * 优化点：
+ * - 品牌化加载动画
+ * - 进度条支持
+ * - 加载超时处理
+ * - 自定义加载图标
+ * - 无障碍优化
  */
 
-import React from 'react';
-import { Spin, Typography } from 'antd';
-import { LoadingOutlined } from '@ant-design/icons';
+import React, { useEffect, useState, type FC } from 'react';
+import { Spin, Typography, Progress } from 'antd';
 
 const { Text } = Typography;
 
-// ---- 类型定义 ----
+// ==================== 类型定义 ====================
 
 interface LoadingScreenProps {
-    /** 加载提示文字 */
+    /** 提示文本 */
     tip?: string;
-    /** 是否全屏覆盖（fixed 定位） */
+    /** 是否全屏 */
     fullScreen?: boolean;
-    /** 自定义图标大小 */
+    /** 图标大小 */
     iconSize?: number;
+    /** 进度百分比（0-100），undefined 表示不确定进度 */
+    progress?: number;
+    /** 超时时间（毫秒），超时后显示额外提示 */
+    timeout?: number;
+    /** 自定义加载图标 */
+    icon?: React.ReactNode;
 }
 
-// ---- 常量 ----
+// ==================== 组件 ====================
 
-/** 默认图标大小 */
-const DEFAULT_ICON_SIZE = 36;
-
-/** 半屏模式最小高度 */
-const MIN_HEIGHT_SECTION = 400;
-
-// ---- 组件 ----
-
-const LoadingScreen: React.FC<LoadingScreenProps> = ({
+const LoadingScreen: FC<LoadingScreenProps> = ({
     tip = '加载中...',
     fullScreen = false,
-    iconSize = DEFAULT_ICON_SIZE,
+    iconSize = 40,
+    progress,
+    timeout = 15000,
+    icon,
 }) => {
-    /**
-     * 加载内容区域
-     */
-    const loadingContent = (
+    const [isTimeout, setIsTimeout] = useState(false);
+    const [elapsed, setElapsed] = useState(0);
+
+    // ==================== 超时检测 ====================
+
+    useEffect(() => {
+        if (timeout <= 0) return;
+
+        const timer = setTimeout(() => {
+            setIsTimeout(true);
+            console.warn(`[LoadingScreen] 加载超时 (${timeout}ms): ${tip}`);
+        }, timeout);
+
+        return () => clearTimeout(timer);
+    }, [timeout, tip]);
+
+    // ==================== 已用时间追踪 ====================
+
+    useEffect(() => {
+        const startTime = Date.now();
+        const interval = setInterval(() => {
+            setElapsed(Math.floor((Date.now() - startTime) / 1000));
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, []);
+
+    // ==================== 渲染 ====================
+
+    const content = (
         <div
             style={{
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
-                padding: '40px 0',
-                gap: 16,
-                minHeight: fullScreen ? '100vh' : MIN_HEIGHT_SECTION,
-                background: fullScreen ? '#fdf8f4' : 'transparent',
+                padding: '40px 24px',
+                gap: 20,
+                minHeight: fullScreen ? '100vh' : 400,
+                background: fullScreen
+                    ? 'linear-gradient(135deg, #fdf8f4 0%, #faf0e6 50%, #fdf8f4 100%)'
+                    : 'transparent',
+                transition: 'background 0.3s ease',
             }}
+            role="status"
+            aria-label={tip}
+            aria-live="polite"
         >
-            <Spin
-                indicator={
-                    <LoadingOutlined
-                        style={{ fontSize: iconSize }}
-                        spin
-                    />
-                }
-                size="large"
-            />
+            {/* 品牌图标 */}
+            <div
+                style={{
+                    fontSize: 64,
+                    animation: 'loading-pulse 2s ease-in-out infinite',
+                }}
+            >
+                📚
+            </div>
+
+            {/* 加载指示器 */}
+            {icon ? (
+                <div style={{ fontSize: iconSize }}>{icon}</div>
+            ) : (
+                <Spin size="large" />
+            )}
+
+            {/* 提示文本 */}
             <Text
                 type="secondary"
-                style={{ fontSize: 15 }}
+                style={{
+                    fontSize: 15,
+                    textAlign: 'center',
+                    maxWidth: 320,
+                }}
             >
                 {tip}
             </Text>
+
+            {/* 进度条 */}
+            {progress !== undefined && (
+                <div style={{ width: 240 }}>
+                    <Progress
+                        percent={Math.min(Math.max(progress, 0), 100)}
+                        size="small"
+                        showInfo
+                        strokeColor={{
+                            '0%': '#8B4513',
+                            '100%': '#a0522d',
+                        }}
+                    />
+                </div>
+            )}
+
+            {/* 超时提示 */}
+            {isTimeout && (
+                <div
+                    style={{
+                        marginTop: 8,
+                        padding: '8px 16px',
+                        background: '#fff3cd',
+                        borderRadius: 8,
+                        border: '1px solid #ffc107',
+                    }}
+                >
+                    <Text
+                        type="warning"
+                        style={{ fontSize: 13, textAlign: 'center', display: 'block' }}
+                    >
+                        加载时间较长（已等待 {elapsed} 秒），请检查网络连接或刷新页面
+                    </Text>
+                </div>
+            )}
         </div>
     );
 
-    // 全屏模式：fixed 定位覆盖整个视口
+    // 全屏模式
     if (fullScreen) {
         return (
             <div
@@ -89,19 +164,33 @@ const LoadingScreen: React.FC<LoadingScreenProps> = ({
                     position: 'fixed',
                     inset: 0,
                     zIndex: 9999,
-                    background: '#fdf8f4',
+                    background: 'linear-gradient(135deg, #fdf8f4 0%, #faf0e6 100%)',
                 }}
-                role="status"
-                aria-label={tip}
-                aria-live="polite"
             >
-                {loadingContent}
+                {content}
             </div>
         );
     }
 
-    // 区域模式
-    return loadingContent;
+    return content;
 };
+
+// ==================== 导出样式 ====================
+
+// 脉冲动画注入
+if (typeof document !== 'undefined') {
+    const styleId = 'loading-screen-styles';
+    if (!document.getElementById(styleId)) {
+        const style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = `
+            @keyframes loading-pulse {
+                0%, 100% { transform: scale(1); opacity: 0.8; }
+                50% { transform: scale(1.1); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+}
 
 export default LoadingScreen;

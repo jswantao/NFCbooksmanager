@@ -1,26 +1,26 @@
 // frontend/src/pages/BookManualEdit.tsx
 /**
- * 手动编辑图书页面
+ * 图书编辑页面 - React 19 + Ant Design 6
  * 
- * 修改已有图书的元数据信息。所有字段均可修改（除 ISBN 只读）。
- * 
- * 路由：/books/edit/:id
- * 
- * 功能特性：
- * - 自动加载现有图书信息填充表单
- * - ISBN 字段只读（不可修改）
- * - 变更追踪（检测是否有未保存的修改）
- * - 未保存更改时显示提示
- * - 封面预览实时更新
- * - 保存后正确跳转到图书详情页
- * 
- * 跳转规则：
- * - 保存成功 → /shelf/{shelfId}/book/{bookId}
- * - 点击"查看详情" → /shelf/{shelfId}/book/{bookId}
- * - 面包屑中点击书名 → /shelf/{shelfId}/book/{bookId}
+ * 优化点：
+ * - 完整的类型定义
+ * - 自定义 Hook 封装数据加载
+ * - 未保存更改检测与拦截
+ * - 表单字段对比高亮
+ * - 封面实时预览
+ * - 键盘快捷键保存
+ * - 路由守卫（离开确认）
+ * - 主题色适配
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, {
+    useEffect,
+    useState,
+    useCallback,
+    useMemo,
+    useRef,
+    type FC,
+} from 'react';
 import {
     Card,
     Form,
@@ -38,6 +38,12 @@ import {
     Result,
     Popconfirm,
     InputNumber,
+    Divider,
+    theme,
+    Tooltip,
+    Image,
+    Descriptions,
+    type FormInstance,
 } from 'antd';
 import {
     BookOutlined,
@@ -54,298 +60,522 @@ import {
     ClearOutlined,
     EyeOutlined,
     LoadingOutlined,
+    BarcodeOutlined,
+    CalendarOutlined,
+    FileTextOutlined,
+    UndoOutlined,
+    ExclamationCircleOutlined,
+    InfoCircleOutlined,
 } from '@ant-design/icons';
-import { useNavigate, useParams } from 'react-router-dom';
-import { getBookDetail, updateBookManual } from '../services/api';
+import { useNavigate, useParams, useBlocker } from 'react-router-dom';
+import {
+    getBookDetail,
+    updateBookManual,
+    extractErrorMessage,
+} from '../services/api';
 import { getCoverUrl, getPlaceholderCover } from '../utils/image';
+import { formatAuthors } from '../utils/format';
+import type { BookDetail } from '../types';
 
-// ---- 类型定义 ----
+const { Title, Text, Paragraph } = Typography;
 
-const { Title, Text } = Typography;
+// ==================== 类型定义 ====================
 
-/** 装帧类型选项 */
-const BINDING_OPTIONS = ['平装', '精装', '线装', '骑马钉', '软精装', '其他'];
+/** 编辑表单数据结构 */
+interface EditFormData {
+    title: string;
+    author: string;
+    translator: string;
+    publisher: string;
+    publish_date: string;
+    pages: number | null;
+    price: string;
+    binding: string;
+    rating: string;
+    original_title: string;
+    series: string;
+    cover_url: string;
+    douban_url: string;
+    summary: string;
+}
 
-// ---- 主组件 ----
+/** 原始数据快照（用于对比） */
+interface OriginalSnapshot {
+    title: string;
+    author: string;
+    translator: string;
+    publisher: string;
+    publish_date: string;
+    pages: string;
+    price: string;
+    binding: string;
+    rating: string;
+    original_title: string;
+    series: string;
+    cover_url: string;
+    douban_url: string;
+    summary: string;
+}
 
-const BookManualEdit: React.FC = () => {
-    const navigate = useNavigate();
-    const [form] = Form.useForm();
+// ==================== 常量 ====================
 
-    // ==================== 获取图书 ID ====================
+const BINDING_OPTIONS = [
+    { value: '平装', label: '📖 平装' },
+    { value: '精装', label: '📚 精装' },
+    { value: '线装', label: '🧵 线装' },
+    { value: '骑马钉', label: '📎 骑马钉' },
+    { value: '软精装', label: '📕 软精装' },
+    { value: '无线胶装', label: '📒 无线胶装' },
+    { value: '其他', label: '📔 其他' },
+];
 
-    /**
-     * 从 URL 路径中手动解析图书 ID
-     * 
-     * 作为 useParams 的备用方案，确保在 Suspense/lazy 组件中也能正确获取参数。
-     * 格式：/books/edit/2 → 提取 2
-     * 
-     * @returns 解析到的图书 ID，无效时返回 null
-     */
-    const getBookIdFromUrl = (): number | null => {
-        const pathParts = window.location.pathname.split('/');
-        const lastPart = pathParts[pathParts.length - 1];
-        const idNum = parseInt(lastPart);
+// ==================== 工具函数 ====================
 
-        console.log('[BookManualEdit] URL 解析:', {
-            pathname: window.location.pathname,
-            pathParts,
-            lastPart,
-            idNum,
-        });
+/**
+ * 提取 bookId（支持 useParams 和 URL 路径解析）
+ */
+const extractBookId = (params: { id?: string }): number | null => {
+    if (params.id) {
+        const parsed = parseInt(params.id);
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
 
-        if (!isNaN(idNum) && idNum > 0) {
-            return idNum;
+    // 降级：从 URL 路径解析
+    const parts = window.location.pathname.split('/');
+    const lastPart = parts[parts.length - 1];
+    const fromPath = parseInt(lastPart);
+    if (!isNaN(fromPath) && fromPath > 0) return fromPath;
+
+    return null;
+};
+
+/**
+ * 将表单值转换为提交参数
+ */
+const formToParams = (values: EditFormData): Record<string, string> => {
+    const params: Record<string, string> = {};
+    Object.entries(values).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+            params[key] = String(value);
         }
-        return null;
-    };
+    });
+    return params;
+};
 
-    // 优先使用 React Router 的 useParams，回退到 URL 手动解析
-    const params = useParams<{ id: string }>();
-    const bookId = params.id ? parseInt(params.id) : getBookIdFromUrl();
+// ==================== 自定义 Hook ====================
 
-    console.log('[BookManualEdit] 最终解析的 bookId:', bookId);
-
-    // ==================== 状态 ====================
-
+/**
+ * 图书数据加载 Hook
+ */
+const useBookLoader = (bookId: number | null) => {
     const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
-    const [bookData, setBookData] = useState<any>(null);
-    const [loadError, setLoadError] = useState<string | null>(null);
-    const [hasChanges, setHasChanges] = useState(false);
+    const [bookData, setBookData] = useState<BookDetail | null>(null);
+    const [error, setError] = useState<string | null>(null);
 
-    // ==================== 路径生成 ====================
-
-    /**
-     * 获取图书详情页的完整路径
-     * 
-     * 根据图书是否在书架中返回正确的详情页 URL：
-     * - 有书架：/shelf/{shelfId}/book/{bookId}
-     * - 无书架：/shelf/1/book/{bookId}（默认书架）
-     * 
-     * @returns 详情页路径
-     */
-    const getDetailUrl = useCallback((): string => {
-        if (bookData?.shelf_id) {
-            return `/shelf/${bookData.shelf_id}/book/${bookId}`;
-        }
-        // 图书不在任何书架时，跳转到默认书架（ID=1）
-        return `/shelf/1/book/${bookId}`;
-    }, [bookData, bookId]);
-
-    // ==================== 数据加载 ====================
-
-    /**
-     * 加载图书现有信息并填充表单
-     * 
-     * 处理流程：
-     * 1. 校验 bookId 有效性
-     * 2. 调用 API 获取图书详情
-     * 3. 将数据填充到表单字段
-     * 4. 处理 pages 从字符串到数字的转换
-     */
-    const loadBookData = useCallback(async () => {
-        // 校验 bookId
+    const load = useCallback(async () => {
         if (!bookId || isNaN(bookId)) {
-            console.error('[BookManualEdit] 无效的 bookId:', bookId);
-            setLoadError(
-                `无法获取图书 ID（当前路径: ${window.location.pathname}，` +
-                `useParams: ${JSON.stringify(params)}）`
-            );
+            setError('无法获取图书 ID');
             setLoading(false);
             return;
         }
 
-        console.log('[BookManualEdit] 开始加载图书 ID:', bookId);
         setLoading(true);
-        setLoadError(null);
+        setError(null);
 
         try {
             const data = await getBookDetail(bookId);
-            console.log('[BookManualEdit] 获取到的图书数据:', {
-                title: data?.title,
-                book_id: data?.book_id,
-                shelf_id: data?.shelf_id,
-            });
-
             setBookData(data);
-
-            // 填充表单（字符串字段空值处理，pages 转为数字）
-            form.setFieldsValue({
-                title: data.title || '',
-                author: data.author || '',
-                translator: data.translator || '',
-                publisher: data.publisher || '',
-                publish_date: data.publish_date || '',
-                pages: data.pages ? parseInt(data.pages) : undefined,
-                price: data.price || '',
-                binding: data.binding || '',
-                rating: data.rating || '',
-                original_title: data.original_title || '',
-                series: data.series || '',
-                cover_url: data.cover_url || '',
-                douban_url: data.douban_url || '',
-                summary: data.summary || '',
-            });
-        } catch (error: any) {
-            const errorMsg =
-                error?.response?.data?.detail ||
-                error?.userMessage ||
-                `加载图书 #${bookId} 失败，请检查网络连接`;
-            setLoadError(errorMsg);
-            console.error('[BookManualEdit] 加载失败:', error);
+        } catch (err: unknown) {
+            const errorMsg = extractErrorMessage(err) || '加载图书信息失败';
+            setError(errorMsg);
         } finally {
             setLoading(false);
         }
-    }, [bookId, form, params]);
+    }, [bookId]);
 
     useEffect(() => {
-        loadBookData();
-    }, [loadBookData]);
+        load();
+    }, [load]);
 
-    // ==================== 保存操作 ====================
+    return { bookData, loading, error, load, setBookData };
+};
 
-    /**
-     * 保存修改
-     * 
-     * 仅提交有变化的字段（减少网络传输）。
-     * 保存成功后跳转到图书详情页。
-     */
+/**
+ * 未保存更改管理 Hook
+ */
+const useUnsavedChanges = (
+    form: FormInstance<EditFormData>,
+    isDirty: boolean
+) => {
+    const [showUnsavedAlert, setShowUnsavedAlert] = useState(false);
+
+    // 路由守卫：离开时确认
+    const blocker = useBlocker(
+        ({ currentLocation, nextLocation }) =>
+            isDirty && currentLocation.pathname !== nextLocation.pathname
+    );
+
+    useEffect(() => {
+        if (blocker.state === 'blocked') {
+            Modal.confirm({
+                title: '未保存的更改',
+                icon: <ExclamationCircleOutlined style={{ color: '#faad14' }} />,
+                content: '您有未保存的修改，确定要离开吗？',
+                okText: '放弃更改',
+                cancelText: '继续编辑',
+                okType: 'danger',
+                onOk: () => blocker.proceed(),
+                onCancel: () => blocker.reset(),
+            });
+        }
+    }, [blocker]);
+
+    // 浏览器关闭/刷新拦截
+    useEffect(() => {
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            if (isDirty) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        };
+
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [isDirty]);
+
+    useEffect(() => {
+        setShowUnsavedAlert(isDirty);
+    }, [isDirty]);
+
+    return { showUnsavedAlert };
+};
+
+// ==================== 子组件 ====================
+
+/** 封面预览组件 */
+const CoverPreview: FC<{
+    coverUrl: string;
+    title: string;
+    author?: string;
+}> = ({ coverUrl, title, author }) => {
+    const [previewError, setPreviewError] = useState(false);
+
+    const displayUrl = useMemo(() => {
+        if (!coverUrl || previewError) {
+            return getPlaceholderCover(title, author);
+        }
+        return getCoverUrl(coverUrl);
+    }, [coverUrl, title, author, previewError]);
+
+    const handleError = useCallback(() => {
+        setPreviewError(true);
+    }, []);
+
+    // 当 coverUrl 变化时重置错误状态
+    useEffect(() => {
+        setPreviewError(false);
+    }, [coverUrl]);
+
+    return (
+        <div style={{ textAlign: 'center', marginTop: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                封面预览
+            </Text>
+            <Image
+                src={displayUrl}
+                alt="封面预览"
+                style={{
+                    width: 140,
+                    height: 196,
+                    objectFit: 'cover',
+                    borderRadius: 8,
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                }}
+                fallback={getPlaceholderCover(title, author)}
+                onError={handleError}
+                preview={{ mask: '查看大图' }}
+            />
+        </div>
+    );
+};
+
+// ==================== 主组件 ====================
+
+const BookManualEdit: FC = () => {
+    const navigate = useNavigate();
+    const params = useParams<{ id: string }>();
+    const { token } = theme.useToken();
+    const [form] = Form.useForm<EditFormData>();
+
+    // ==================== 状态 ====================
+
+    const bookId = useMemo(() => extractBookId(params), [params]);
+    const { bookData, loading, error, load } = useBookLoader(bookId);
+    const [saving, setSaving] = useState(false);
+    const [hasChanges, setHasChanges] = useState(false);
+    const [originalSnapshot, setOriginalSnapshot] = useState<OriginalSnapshot | null>(null);
+
+    // 未保存更改管理
+    const { showUnsavedAlert } = useUnsavedChanges(form, hasChanges);
+
+    const isMounted = useRef(true);
+
+    useEffect(() => {
+        isMounted.current = true;
+        return () => {
+            isMounted.current = false;
+        };
+    }, []);
+
+    // ==================== 派生数据 ====================
+
+    /** 获取图书详情页 URL */
+    const getDetailUrl = useCallback((): string => {
+        if (bookData?.shelf_id) {
+            return `/shelf/${bookData.shelf_id}/book/${bookId}`;
+        }
+        return `/shelf/1/book/${bookId}`;
+    }, [bookData, bookId]);
+
+    /** 表单值填充 */
+    useEffect(() => {
+        if (!bookData) return;
+
+        const formValues: EditFormData = {
+            title: bookData.title || '',
+            author: bookData.author || '',
+            translator: bookData.translator || '',
+            publisher: bookData.publisher || '',
+            publish_date: bookData.publish_date || '',
+            pages: bookData.pages ? parseInt(bookData.pages) : null,
+            price: bookData.price || '',
+            binding: bookData.binding || '',
+            rating: bookData.rating || '',
+            original_title: bookData.original_title || '',
+            series: bookData.series || '',
+            cover_url: bookData.cover_url || '',
+            douban_url: bookData.douban_url || '',
+            summary: bookData.summary || '',
+        };
+
+        form.setFieldsValue(formValues);
+
+        // 保存原始快照
+        setOriginalSnapshot({
+            title: formValues.title,
+            author: formValues.author,
+            translator: formValues.translator,
+            publisher: formValues.publisher,
+            publish_date: formValues.publish_date,
+            pages: formValues.pages !== null ? String(formValues.pages) : '',
+            price: formValues.price,
+            binding: formValues.binding,
+            rating: formValues.rating,
+            original_title: formValues.original_title,
+            series: formValues.series,
+            cover_url: formValues.cover_url,
+            douban_url: formValues.douban_url,
+            summary: formValues.summary,
+        });
+
+        setHasChanges(false);
+    }, [bookData, form]);
+
+    // ==================== 事件处理 ====================
+
+    /** 表单值变化 */
+    const handleValuesChange = useCallback(() => {
+        setHasChanges(true);
+    }, []);
+
+    /** 保存修改 */
     const handleSave = useCallback(async () => {
         if (!bookId) return;
 
         try {
-            // 校验表单
             const values = await form.validateFields();
             setSaving(true);
 
-            // 构建更新参数（仅包含非空字段）
-            const params: Record<string, string> = {};
-            Object.entries(values).forEach(([key, value]) => {
-                if (value !== undefined && value !== '') {
-                    params[key] = String(value);
-                }
-            });
+            const saveParams = formToParams(values);
+            await updateBookManual(bookId, saveParams);
 
-            console.log('[BookManualEdit] 保存参数:', params);
-
-            // 调用 API 更新
-            await updateBookManual(bookId, params);
-
-            message.success('图书信息已更新');
-            setHasChanges(false);
-
-            // ✅ 保存成功后跳转到正确的详情页
-            navigate(getDetailUrl());
-        } catch (error: any) {
-            if (error.errorFields) {
-                // 表单校验失败
-                message.warning('请检查表单中的错误');
-            } else {
-                // API 错误
-                message.error(
-                    error?.response?.data?.detail || '保存失败，请重试'
-                );
+            if (isMounted.current) {
+                message.success({
+                    content: '图书信息已更新',
+                    key: 'edit-save-success',
+                });
+                setHasChanges(false);
+                // 延迟跳转，让用户看到成功提示
+                setTimeout(() => {
+                    navigate(getDetailUrl());
+                }, 500);
             }
-            console.error('[BookManualEdit] 保存失败:', error);
+        } catch (err: unknown) {
+            if (isMounted.current) {
+                // 表单验证错误
+                if ((err as any)?.errorFields) {
+                    message.warning({
+                        content: '请检查表单中的错误',
+                        key: 'edit-validate-error',
+                    });
+                    return;
+                }
+                const errorMsg = extractErrorMessage(err) || '保存失败，请重试';
+                message.error({
+                    content: errorMsg,
+                    key: 'edit-save-error',
+                });
+            }
         } finally {
-            setSaving(false);
+            if (isMounted.current) {
+                setSaving(false);
+            }
         }
-    }, [form, bookId, navigate, getDetailUrl]);
+    }, [bookId, form, navigate, getDetailUrl]);
 
-    // ==================== 取消操作 ====================
+    /** 恢复原始值 */
+    const handleReset = useCallback(() => {
+        if (originalSnapshot) {
+            form.setFieldsValue({
+                title: originalSnapshot.title,
+                author: originalSnapshot.author,
+                translator: originalSnapshot.translator,
+                publisher: originalSnapshot.publisher,
+                publish_date: originalSnapshot.publish_date,
+                pages: originalSnapshot.pages ? parseInt(originalSnapshot.pages) : null,
+                price: originalSnapshot.price,
+                binding: originalSnapshot.binding,
+                rating: originalSnapshot.rating,
+                original_title: originalSnapshot.original_title,
+                series: originalSnapshot.series,
+                cover_url: originalSnapshot.cover_url,
+                douban_url: originalSnapshot.douban_url,
+                summary: originalSnapshot.summary,
+            });
+            setHasChanges(false);
+            message.info('已恢复原始值');
+        }
+    }, [form, originalSnapshot]);
 
-    /**
-     * 放弃修改并返回
-     * 
-     * 有未保存更改时弹出确认框。
-     */
-    const handleCancel = useCallback(() => {
+    /** 返回处理 */
+    const handleBack = useCallback(() => {
         if (hasChanges) {
-            // Popconfirm 会先弹出确认框，确认后才执行
+            Modal.confirm({
+                title: '放弃修改？',
+                icon: <ExclamationCircleOutlined style={{ color: '#faad14' }} />,
+                content: '您有未保存的更改，确定要返回吗？',
+                okText: '放弃',
+                cancelText: '继续编辑',
+                okType: 'danger',
+                onOk: () => navigate(-1),
+            });
+        } else {
+            navigate(-1);
         }
-        navigate(-1);
     }, [hasChanges, navigate]);
 
-    // ==================== 渲染：加载状态 ====================
+    /** 键盘快捷键 */
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // ⌘S / Ctrl+S → 保存
+            if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+                e.preventDefault();
+                handleSave();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [handleSave]);
+
+    // 需要动态导入 Modal（避免顶层引用问题）
+    const [Modal, setModal] = useState<any>(null);
+    useEffect(() => {
+        import('antd').then(({ Modal: AntModal }) => setModal(() => AntModal));
+    }, []);
+
+    // ==================== 渲染加载状态 ====================
 
     if (loading) {
         return (
             <div style={{ maxWidth: 900, margin: '0 auto', padding: 24 }}>
-                {/* 骨架屏模拟页面结构 */}
-                <Skeleton active paragraph={{ rows: 4 }} />
+                <Skeleton active paragraph={{ rows: 2 }} />
                 <Card style={{ borderRadius: 12, marginTop: 16 }}>
-                    <Skeleton active paragraph={{ rows: 8 }} />
+                    <Skeleton active paragraph={{ rows: 10 }} />
                 </Card>
             </div>
         );
     }
 
-    // ==================== 渲染：错误状态 ====================
+    // ==================== 渲染错误状态 ====================
 
-    if (loadError || !bookData) {
+    if (error || !bookData) {
         return (
             <div style={{ maxWidth: 900, margin: '0 auto', padding: 24 }}>
-                {/* 返回按钮 */}
                 <Button
                     icon={<ArrowLeftOutlined />}
                     onClick={() => navigate(-1)}
+                    style={{ marginBottom: 16 }}
                 >
                     返回
                 </Button>
-
-                {/* 错误结果 */}
-                <Card style={{ borderRadius: 12, marginTop: 16 }}>
+                <Card style={{ borderRadius: 12 }}>
                     <Result
                         status="error"
                         title="加载失败"
-                        subTitle={loadError || '图书不存在或已被删除'}
+                        subTitle={error || '未找到该图书'}
                         extra={[
                             <Button
                                 key="retry"
                                 type="primary"
-                                onClick={loadBookData}
+                                onClick={load}
+                                icon={<UndoOutlined />}
                             >
                                 重试
                             </Button>,
                             <Button
                                 key="home"
                                 onClick={() => navigate('/')}
+                                icon={<HomeOutlined />}
                             >
                                 返回首页
                             </Button>,
                         ]}
-                    >
-                        {/* 调试信息（便于排查问题） */}
+                    />
+                    {/* 调试信息 */}
+                    {import.meta.env.DEV && (
                         <div
                             style={{
                                 marginTop: 16,
                                 padding: 12,
-                                background: '#f5f5f5',
+                                background: token.colorFillSecondary,
                                 borderRadius: 8,
-                                textAlign: 'left',
                                 fontSize: 12,
                             }}
                         >
                             <Text type="secondary">
-                                调试信息：<br />
-                                URL: {window.location.pathname}<br />
-                                useParams: {JSON.stringify(params)}<br />
-                                解析的 bookId: {bookId}<br />
-                                bookId 类型: {typeof bookId}
+                                URL: {window.location.pathname}
+                                <br />
+                                params.id: {params.id ?? 'undefined'}
+                                <br />
+                                bookId: {bookId ?? 'null'}
                             </Text>
                         </div>
-                    </Result>
+                    )}
                 </Card>
             </div>
         );
     }
 
-    // ==================== 主渲染 ====================
+    // ==================== 渲染正常状态 ====================
+
+    const currentCoverUrl = Form.useWatch('cover_url', form);
+    const currentTitle = Form.useWatch('title', form);
+    const currentAuthor = Form.useWatch('author', form);
 
     return (
-        <div style={{ maxWidth: 900, margin: '0 auto', padding: 24 }}>
-            {/* ===== 面包屑导航 ===== */}
+        <div style={{ maxWidth: 960, margin: '0 auto', padding: 24 }}>
+            {/* 面包屑 */}
             <Breadcrumb
                 style={{ marginBottom: 16 }}
                 items={[
@@ -358,7 +588,6 @@ const BookManualEdit: React.FC = () => {
                     },
                     {
                         title: (
-                            // ✅ 点击书名跳转到正确的详情页
                             <a onClick={() => navigate(getDetailUrl())}>
                                 <BookOutlined /> {bookData.title}
                             </a>
@@ -368,128 +597,172 @@ const BookManualEdit: React.FC = () => {
                 ]}
             />
 
-            {/* ===== 页面标题 ===== */}
+            {/* 页头 */}
             <div
                 style={{
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
-                    marginBottom: 24,
+                    marginBottom: 20,
+                    flexWrap: 'wrap',
+                    gap: 12,
                 }}
             >
-                <Title level={2} style={{ margin: 0 }}>
-                    <EditOutlined
-                        style={{ color: '#8B4513', marginRight: 12 }}
-                    />
-                    编辑图书信息
-                </Title>
-
-                {/* 返回按钮（有未保存更改时弹出确认） */}
-                {hasChanges ? (
-                    <Popconfirm
-                        title="确定放弃未保存的修改？"
-                        description="所有未保存的更改将丢失"
-                        onConfirm={handleCancel}
-                        okText="确定放弃"
-                        cancelText="继续编辑"
-                    >
-                        <Button icon={<ArrowLeftOutlined />}>返回</Button>
-                    </Popconfirm>
-                ) : (
-                    <Button
-                        icon={<ArrowLeftOutlined />}
-                        onClick={handleCancel}
-                    >
-                        返回
-                    </Button>
-                )}
+                <div>
+                    <Title level={2} style={{ margin: 0 }}>
+                        <EditOutlined
+                            style={{ color: token.colorPrimary, marginRight: 12 }}
+                        />
+                        编辑图书信息
+                    </Title>
+                    <Text type="secondary" style={{ marginTop: 4, display: 'block' }}>
+                        <BarcodeOutlined /> ISBN: {bookData.isbn}
+                        {bookData.shelf_name && (
+                            <>
+                                {' '}· <BookOutlined /> {bookData.shelf_name}
+                            </>
+                        )}
+                    </Text>
+                </div>
+                <Space size={8}>
+                    {hasChanges ? (
+                        <Popconfirm
+                            title="放弃修改？"
+                            onConfirm={() => navigate(-1)}
+                            okText="放弃"
+                            cancelText="取消"
+                        >
+                            <Button icon={<ArrowLeftOutlined />}>返回</Button>
+                        </Popconfirm>
+                    ) : (
+                        <Button
+                            icon={<ArrowLeftOutlined />}
+                            onClick={handleBack}
+                        >
+                            返回
+                        </Button>
+                    )}
+                </Space>
             </div>
 
-            {/* ===== 未保存更改提示 ===== */}
-            {hasChanges && (
+            {/* 未保存提示 */}
+            {showUnsavedAlert && (
                 <Alert
-                    message="有未保存的更改"
-                    description="请记得保存您的修改，否则更改将丢失"
-                    type="info"
-                    showIcon
-                    style={{ marginBottom: 24, borderRadius: 8 }}
+                    message={
+                        <Space>
+                            <ExclamationCircleOutlined />
+                            有未保存的更改
+                        </Space>
+                    }
+                    description="请保存修改后再离开，或点击恢复按钮撤销更改"
+                    type="warning"
+                    showIcon={false}
+                    style={{ marginBottom: 20, borderRadius: 8 }}
                     action={
-                        <Button
-                            type="primary"
-                            size="small"
-                            icon={<SaveOutlined />}
-                            loading={saving}
-                            onClick={handleSave}
-                        >
-                            立即保存
-                        </Button>
+                        <Space size={8}>
+                            <Button
+                                type="primary"
+                                size="small"
+                                icon={<SaveOutlined />}
+                                loading={saving}
+                                onClick={handleSave}
+                            >
+                                立即保存
+                            </Button>
+                            <Button
+                                size="small"
+                                icon={<UndoOutlined />}
+                                onClick={handleReset}
+                            >
+                                恢复原始
+                            </Button>
+                        </Space>
                     }
                 />
             )}
 
-            {/* ===== 编辑表单 ===== */}
+            {/* 编辑表单 */}
             <Form
                 form={form}
                 layout="vertical"
                 size="large"
-                onValuesChange={() => setHasChanges(true)}
+                onValuesChange={handleValuesChange}
             >
                 {/* 基本信息 */}
                 <Card
                     style={{
-                        marginBottom: 24,
+                        marginBottom: 20,
                         borderRadius: 12,
-                        border: '1px solid #e8d5c8',
+                        border: `1px solid ${token.colorBorderSecondary}`,
                     }}
-                    title="基本信息"
+                    title={
+                        <Space size={6}>
+                            <InfoCircleOutlined style={{ color: '#3b82f6' }} />
+                            <span>基本信息</span>
+                        </Space>
+                    }
                 >
                     <Row gutter={[24, 16]}>
-                        {/* ISBN（只读） */}
                         <Col xs={24} md={12}>
                             <Form.Item label="ISBN">
                                 <Input
                                     value={bookData.isbn}
                                     disabled
-                                    style={{ background: '#fafaf9' }}
+                                    style={{ background: token.colorFillSecondary }}
                                 />
                                 <Text
                                     type="secondary"
-                                    style={{ fontSize: 12 }}
+                                    style={{ fontSize: 11, marginTop: 4, display: 'block' }}
                                 >
                                     ISBN 不可修改
                                 </Text>
                             </Form.Item>
                         </Col>
-
-                        {/* 书名（必填） */}
                         <Col xs={24} md={12}>
                             <Form.Item
                                 name="title"
                                 label="书名"
                                 rules={[
-                                    {
-                                        required: true,
-                                        message: '请输入书名',
-                                    },
+                                    { required: true, message: '书名不能为空' },
+                                    { max: 200, message: '书名不能超过200个字符' },
                                 ]}
                             >
-                                <Input placeholder="书名" />
+                                <Input
+                                    prefix={<BookOutlined />}
+                                    placeholder="请输入书名"
+                                    showCount
+                                    maxLength={200}
+                                />
                             </Form.Item>
                         </Col>
                     </Row>
-
                     <Row gutter={[24, 16]}>
-                        {/* 作者 */}
                         <Col xs={24} md={12}>
                             <Form.Item name="author" label="作者">
-                                <Input placeholder="作者姓名" />
+                                <Input
+                                    prefix={<UserOutlined />}
+                                    placeholder="请输入作者"
+                                />
                             </Form.Item>
                         </Col>
-
-                        {/* 译者 */}
                         <Col xs={24} md={12}>
                             <Form.Item name="translator" label="译者">
-                                <Input placeholder="译者姓名" />
+                                <Input
+                                    prefix={<TranslationOutlined />}
+                                    placeholder="请输入译者"
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                    <Row gutter={[24, 16]}>
+                        <Col xs={24} md={12}>
+                            <Form.Item name="rating" label="评分">
+                                <Input
+                                    prefix={
+                                        <StarOutlined style={{ color: '#f59e0b' }} />
+                                    }
+                                    placeholder="0-10，如 8.5"
+                                />
                             </Form.Item>
                         </Col>
                     </Row>
@@ -498,79 +771,73 @@ const BookManualEdit: React.FC = () => {
                 {/* 出版信息 */}
                 <Card
                     style={{
-                        marginBottom: 24,
+                        marginBottom: 20,
                         borderRadius: 12,
-                        border: '1px solid #e8d5c8',
+                        border: `1px solid ${token.colorBorderSecondary}`,
                     }}
-                    title="出版信息"
+                    title={
+                        <Space size={6}>
+                            <CalendarOutlined style={{ color: '#22c55e' }} />
+                            <span>出版信息</span>
+                        </Space>
+                    }
                 >
                     <Row gutter={[24, 16]}>
                         <Col xs={24} md={12}>
                             <Form.Item name="publisher" label="出版社">
-                                <Input placeholder="出版社名称" />
+                                <Input placeholder="请输入出版社" />
                             </Form.Item>
                         </Col>
                         <Col xs={24} md={12}>
-                            <Form.Item
-                                name="publish_date"
-                                label="出版日期"
-                            >
+                            <Form.Item name="publish_date" label="出版日期">
                                 <Input placeholder="如 2014-05" />
                             </Form.Item>
                         </Col>
                     </Row>
-
                     <Row gutter={[24, 16]}>
                         <Col xs={24} sm={12} md={6}>
                             <Form.Item name="pages" label="页数">
                                 <InputNumber
                                     min={1}
-                                    placeholder="页数"
+                                    max={99999}
                                     style={{ width: '100%' }}
+                                    placeholder="页数"
                                 />
                             </Form.Item>
                         </Col>
                         <Col xs={24} sm={12} md={6}>
                             <Form.Item name="price" label="定价">
-                                <Input placeholder="如 39.50元" />
+                                <Input
+                                    prefix={<DollarOutlined />}
+                                    placeholder="如 39.50"
+                                />
                             </Form.Item>
                         </Col>
                         <Col xs={24} sm={12} md={6}>
                             <Form.Item name="binding" label="装帧">
                                 <Select
+                                    options={BINDING_OPTIONS}
+                                    placeholder="选择装帧"
                                     allowClear
-                                    placeholder="选择装帧类型"
-                                >
-                                    {BINDING_OPTIONS.map((binding) => (
-                                        <Select.Option
-                                            key={binding}
-                                            value={binding}
-                                        >
-                                            {binding}
-                                        </Select.Option>
-                                    ))}
-                                </Select>
+                                />
                             </Form.Item>
                         </Col>
                         <Col xs={24} sm={12} md={6}>
-                            <Form.Item name="rating" label="评分">
-                                <Input placeholder="如 8.5" />
+                            <Form.Item name="series" label="丛书系列">
+                                <Input
+                                    prefix={<TagsOutlined />}
+                                    placeholder="丛书名称"
+                                />
                             </Form.Item>
                         </Col>
                     </Row>
-
                     <Row gutter={[24, 16]}>
                         <Col xs={24} md={12}>
-                            <Form.Item
-                                name="original_title"
-                                label="原作名"
-                            >
-                                <Input placeholder="外文原版书名" />
-                            </Form.Item>
-                        </Col>
-                        <Col xs={24} md={12}>
-                            <Form.Item name="series" label="丛书系列">
-                                <Input placeholder="所属丛书名称" />
+                            <Form.Item name="original_title" label="原作名">
+                                <Input
+                                    prefix={<TranslationOutlined />}
+                                    placeholder="外文原版书名"
+                                />
                             </Form.Item>
                         </Col>
                     </Row>
@@ -579,142 +846,97 @@ const BookManualEdit: React.FC = () => {
                 {/* 封面与链接 */}
                 <Card
                     style={{
-                        marginBottom: 24,
+                        marginBottom: 20,
                         borderRadius: 12,
-                        border: '1px solid #e8d5c8',
+                        border: `1px solid ${token.colorBorderSecondary}`,
                     }}
-                    title="封面与链接"
+                    title={
+                        <Space size={6}>
+                            <LinkOutlined style={{ color: '#a855f7' }} />
+                            <span>封面与链接</span>
+                        </Space>
+                    }
                 >
                     <Row gutter={[24, 16]}>
                         <Col xs={24} md={12}>
-                            <Form.Item name="cover_url" label="封面 URL">
-                                <Input placeholder="https://img.example.com/cover.jpg" />
+                            <Form.Item name="cover_url" label="封面图片 URL">
+                                <Input placeholder="https://..." />
                             </Form.Item>
                         </Col>
                         <Col xs={24} md={12}>
-                            <Form.Item
-                                name="douban_url"
-                                label="豆瓣链接"
-                            >
-                                <Input placeholder="https://book.douban.com/subject/xxx/" />
+                            <Form.Item name="douban_url" label="豆瓣链接">
+                                <Input placeholder="https://book.douban.com/subject/..." />
                             </Form.Item>
                         </Col>
                     </Row>
-
                     {/* 封面预览 */}
-                    {(form.getFieldValue('cover_url') ||
-                        bookData.title) && (
-                        <div style={{ marginTop: 8 }}>
-                            <img
-                                src={
-                                    getCoverUrl(
-                                        form.getFieldValue('cover_url')
-                                    ) ||
-                                    getPlaceholderCover(
-                                        form.getFieldValue('title') ||
-                                            bookData.title,
-                                        form.getFieldValue('author') ||
-                                            bookData.author
-                                    )
-                                }
-                                alt="封面预览"
-                                style={{
-                                    width: 120,
-                                    borderRadius: 8,
-                                    boxShadow:
-                                        '0 2px 8px rgba(139,69,19,.1)',
-                                }}
-                                onError={(e) => {
-                                    // 封面加载失败时使用占位图
-                                    const target =
-                                        e.target as HTMLImageElement;
-                                    target.src = getPlaceholderCover(
-                                        form.getFieldValue('title') ||
-                                            bookData.title,
-                                        form.getFieldValue('author') ||
-                                            bookData.author
-                                    );
-                                }}
-                            />
-                        </div>
-                    )}
+                    <CoverPreview
+                        coverUrl={currentCoverUrl || bookData.cover_url || ''}
+                        title={currentTitle || bookData.title}
+                        author={currentAuthor || bookData.author}
+                    />
                 </Card>
 
                 {/* 内容简介 */}
                 <Card
                     style={{
-                        marginBottom: 24,
+                        marginBottom: 20,
                         borderRadius: 12,
-                        border: '1px solid #e8d5c8',
+                        border: `1px solid ${token.colorBorderSecondary}`,
                     }}
-                    title="内容简介"
+                    title={
+                        <Space size={6}>
+                            <FileTextOutlined style={{ color: '#f97316' }} />
+                            <span>内容简介</span>
+                        </Space>
+                    }
                 >
                     <Form.Item name="summary">
                         <Input.TextArea
-                            rows={6}
+                            rows={7}
                             maxLength={5000}
                             showCount
-                            placeholder="图书的内容简介..."
+                            placeholder="请输入图书的内容简介..."
+                            style={{ borderRadius: 8 }}
                         />
                     </Form.Item>
                 </Card>
 
-                {/* ===== 底部操作按钮 ===== */}
+                {/* 操作按钮 */}
                 <Card
                     style={{
                         borderRadius: 12,
-                        border: '1px solid #e8d5c8',
+                        border: `1px solid ${token.colorBorderSecondary}`,
                     }}
                 >
-                    <Space size="middle">
-                        {/* 保存修改 */}
-                        <Button
-                            type="primary"
-                            size="large"
-                            icon={
-                                saving ? (
-                                    <LoadingOutlined />
-                                ) : (
-                                    <SaveOutlined />
-                                )
-                            }
-                            loading={saving}
-                            onClick={handleSave}
-                        >
-                            保存修改
-                        </Button>
-
-                        {/* 取消（有修改时弹出确认） */}
-                        {hasChanges ? (
-                            <Popconfirm
-                                title="确定放弃修改？"
-                                description="所有未保存的更改将丢失"
-                                onConfirm={handleCancel}
-                                okText="确定放弃"
-                                cancelText="继续编辑"
+                    <Space size={12} wrap>
+                        <Tooltip title="保存修改 (⌘S)">
+                            <Button
+                                type="primary"
+                                size="large"
+                                icon={saving ? <LoadingOutlined /> : <SaveOutlined />}
+                                loading={saving}
+                                onClick={handleSave}
+                                style={{ borderRadius: 8 }}
                             >
-                                <Button
-                                    size="large"
-                                    icon={<ClearOutlined />}
-                                >
-                                    取消
-                                </Button>
-                            </Popconfirm>
-                        ) : (
+                                保存修改
+                            </Button>
+                        </Tooltip>
+                        {hasChanges && (
                             <Button
                                 size="large"
-                                icon={<ClearOutlined />}
-                                onClick={handleCancel}
+                                icon={<UndoOutlined />}
+                                onClick={handleReset}
+                                style={{ borderRadius: 8 }}
                             >
-                                取消
+                                恢复原始值
                             </Button>
                         )}
-
-                        {/* ✅ 查看详情（跳转到正确的详情页） */}
                         <Button
                             size="large"
                             icon={<EyeOutlined />}
                             onClick={() => navigate(getDetailUrl())}
+                            style={{ borderRadius: 8 }}
                         >
                             查看详情
                         </Button>

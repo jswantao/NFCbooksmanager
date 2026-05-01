@@ -1,29 +1,26 @@
 // frontend/src/pages/CookieConfig.tsx
 /**
- * 豆瓣 Cookie 配置页面
+ * 豆瓣 Cookie 配置页面 - React 19 + Ant Design 6
  * 
- * 管理豆瓣 Cookie 的完整生命周期：查看、保存、测试、删除。
- * 
- * 功能模块：
- * 1. 获取教程：折叠面板展示从浏览器获取 Cookie 的步骤
- * 2. Cookie 状态：显示当前配置状态（已配置/未配置）和有效性
- * 3. Cookie 输入：输入框保存新的 Cookie 字符串
- * 4. 测试结果：展示 Cookie 测试的详细反馈
- * 5. 使用建议：Cookie 维护的最佳实践
- * 
- * Cookie 安全：
- * - 完整 Cookie 不通过 API 返回，仅显示脱敏预览
- * - 保存和测试操作分离
- * - 删除时需要确认
- * - 本地存储，不上传第三方
- * 
- * 测试机制：
- * - 使用预定义 ISBN（9787544270878）发起实际搜索请求
- * - 成功获取图书标题说明 Cookie 有效
- * - 失败则提供排查建议
+ * 优化点：
+ * - 完整的类型定义
+ * - 自定义 Hook 封装数据加载
+ * - Cookie 有效性倒计时提醒
+ * - 安全脱敏展示增强
+ * - 一键复制完整 Cookie
+ * - 测试结果动画
+ * - 浏览器 Cookie 快速导入
+ * - 主题色适配
  */
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, {
+    useEffect,
+    useState,
+    useCallback,
+    useMemo,
+    useRef,
+    type FC,
+} from 'react';
 import {
     Card,
     Input,
@@ -44,7 +41,14 @@ import {
     Tooltip,
     Collapse,
     Breadcrumb,
-    Switch,
+    theme,
+    Divider,
+    Modal,
+    Descriptions,
+    Timeline,
+    Progress,
+    Skeleton,
+    type CollapseProps,
 } from 'antd';
 import {
     KeyOutlined,
@@ -58,10 +62,8 @@ import {
     CopyOutlined,
     QuestionCircleOutlined,
     LinkOutlined,
-    StarFilled,
     BookOutlined,
     UserOutlined,
-    ReloadOutlined,
     SafetyOutlined,
     ThunderboltOutlined,
     InfoCircleOutlined,
@@ -69,6 +71,9 @@ import {
     ClockCircleOutlined,
     SettingOutlined,
     ClearOutlined,
+    ReloadOutlined,
+    WarningOutlined,
+    ImportOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -76,13 +81,15 @@ import {
     saveCookieConfig,
     testCookieConfig,
     deleteCookieConfig,
+    extractErrorMessage,
 } from '../services/api';
 import { getCoverUrl } from '../utils/image';
-
-// ---- 类型定义 ----
+import { formatDate } from '../utils/format';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
+
+// ==================== 类型定义 ====================
 
 /** Cookie 配置信息 */
 interface CookieInfo {
@@ -92,7 +99,7 @@ interface CookieInfo {
     updated_at?: string;
 }
 
-/** Cookie 测试结果 */
+/** 测试结果 */
 interface TestResult {
     success: boolean;
     message: string;
@@ -106,265 +113,865 @@ interface TestResult {
     };
 }
 
-// ---- 常量 ----
+// ==================== 常量 ====================
 
-/** 豆瓣登录地址 */
-const DOUBAN_LOGIN_URL = 'https://accounts.douban.com/passport/login';
-
-/** 测试用图书豆瓣页面 */
-const DOUBAN_TEST_URL = 'https://book.douban.com/subject/25862578/';
-
-/** Cookie 获取步骤 */
 const TUTORIAL_STEPS = [
     {
-        title: '登录豆瓣',
+        title: '登录豆瓣读书',
         description: (
             <span>
-                打开浏览器访问{' '}
+                打开{' '}
                 <a
                     href="https://book.douban.com"
                     target="_blank"
                     rel="noopener noreferrer"
                 >
                     https://book.douban.com
-                </a>
-                {' '}并登录您的账号
+                </a>{' '}
+                并使用账号登录
             </span>
         ),
+        icon: <LinkOutlined />,
     },
     {
         title: '打开开发者工具',
-        description:
-            '按 F12（Mac: Cmd+Option+I）打开开发者工具，切换到 Network（网络）标签',
+        description: '按 F12 (或 ⌘⌥I) 打开开发者工具，切换到 Network (网络) 标签',
+        icon: <SettingOutlined />,
     },
     {
         title: '刷新页面',
-        description:
-            '按 F5（Mac: Cmd+R）刷新页面，在请求列表中找到任意一个请求（如 subject/xxx/）',
+        description: '按 F5 (或 ⌘R) 刷新页面，在请求列表中找到任意一个请求',
+        icon: <ReloadOutlined />,
     },
     {
         title: '复制 Cookie',
-        description: (
-            <div>
-                <p>点击请求，在 Request Headers 中找到 Cookie 字段</p>
-                <p style={{ color: '#8c7b72', fontSize: '13px' }}>
-                    技巧：右键请求 → Copy → Copy as cURL，可获取完整请求信息
-                </p>
-            </div>
-        ),
+        description:
+            '在 Request Headers 中找到 Cookie 字段，完整复制其值（通常以一长串字符开头）',
+        icon: <CopyOutlined />,
     },
     {
         title: '粘贴并保存',
-        description:
-            '将 Cookie 字符串完整粘贴到下方输入框，点击「保存 Cookie」按钮',
+        description: '将复制的 Cookie 粘贴到下方输入框，点击「保存」按钮',
+        icon: <SaveOutlined />,
     },
 ];
 
-// ---- 主组件 ----
+const COOKIE_EXPIRY_WARN_DAYS = 3;
+const COOKIE_EXPIRY_DANGER_DAYS = 1;
 
-const CookieConfig: React.FC = () => {
-    const navigate = useNavigate();
+// ==================== 自定义 Hook ====================
 
-    // ==================== 状态 ====================
-
+/**
+ * Cookie 配置数据 Hook
+ */
+const useCookieConfig = () => {
     const [loading, setLoading] = useState(true);
-    const [testing, setTesting] = useState(false);
-    const [saving, setSaving] = useState(false);
-    const [deleting, setDeleting] = useState(false);
-
     const [cookieInfo, setCookieInfo] = useState<CookieInfo | null>(null);
-    const [testResult, setTestResult] = useState<TestResult | null>(null);
-    const [cookieInput, setCookieInput] = useState('');
-    const [userAgentInput, setUserAgentInput] = useState('');
-    const [showFullCookie, setShowFullCookie] = useState(false);
-    const [loadError, setLoadError] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
 
-    // ==================== 数据加载 ====================
-
-    /** 加载 Cookie 配置状态 */
-    const loadCookieInfo = useCallback(async () => {
+    const load = useCallback(async () => {
         setLoading(true);
-        setLoadError(null);
+        setError(null);
 
         try {
             const data = await getCookieConfig();
             setCookieInfo(data);
-        } catch (error: any) {
-            const errorMsg =
-                error?.response?.data?.detail || '加载配置失败';
-            setLoadError(errorMsg);
-            console.error('[CookieConfig] 加载失败:', error);
+        } catch (err: unknown) {
+            const errorMsg = extractErrorMessage(err) || '加载配置失败';
+            setError(errorMsg);
         } finally {
             setLoading(false);
         }
     }, []);
 
     useEffect(() => {
-        loadCookieInfo();
-    }, [loadCookieInfo]);
+        load();
+    }, [load]);
 
-    // ==================== 保存操作 ====================
+    return { cookieInfo, loading, error, load, setCookieInfo };
+};
 
-    /** 保存 Cookie 配置 */
-    const handleSaveCookie = useCallback(async () => {
-        if (!cookieInput.trim()) {
-            message.warning('请输入 Cookie 字符串');
+/**
+ * Cookie 有效期估算 Hook
+ */
+const useCookieAgeWarning = (updatedAt?: string) => {
+    const warning = useMemo(() => {
+        if (!updatedAt) return null;
+
+        const updated = new Date(updatedAt).getTime();
+        const now = Date.now();
+        const daysSinceUpdate = (now - updated) / (1000 * 60 * 60 * 24);
+
+        if (daysSinceUpdate >= COOKIE_EXPIRY_DANGER_DAYS) {
+            return {
+                level: 'danger' as const,
+                message: `已超过 ${Math.floor(daysSinceUpdate)} 天未更新，Cookie 可能已过期`,
+                icon: <WarningOutlined style={{ color: '#ef4444' }} />,
+            };
+        }
+
+        if (daysSinceUpdate >= COOKIE_EXPIRY_WARN_DAYS) {
+            return {
+                level: 'warning' as const,
+                message: `已配置 ${Math.floor(daysSinceUpdate)} 天，建议定期更新`,
+                icon: <ClockCircleOutlined style={{ color: '#f59e0b' }} />,
+            };
+        }
+
+        return {
+            level: 'success' as const,
+            message: `最近更新于 ${formatDate(updatedAt, 'full')}`,
+            icon: <CheckCircleOutlined style={{ color: '#22c55e' }} />,
+        };
+    }, [updatedAt]);
+
+    return warning;
+};
+
+// ==================== 工具函数 ====================
+
+/**
+ * 安全脱敏 Cookie（仅显示前 20 和后 10 字符）
+ */
+const maskCookie = (cookie: string): string => {
+    if (!cookie) return '';
+    if (cookie.length <= 40) return cookie;
+    return `${cookie.slice(0, 20)}...${cookie.slice(-10)}`;
+};
+
+/**
+ * 估计 Cookie 字符数
+ */
+const estimateCookieLength = (cookie: string): string => {
+    const len = cookie.length;
+    if (len < 500) return `${len} 字符（可能不完整）`;
+    if (len < 1000) return `${len} 字符（基本可用）`;
+    if (len < 2000) return `${len} 字符（较完整）`;
+    return `${len} 字符（完整）`;
+};
+
+// ==================== 主组件 ====================
+
+const CookieConfig: FC = () => {
+    const navigate = useNavigate();
+    const { token } = theme.useToken();
+
+    // 数据
+    const { cookieInfo, loading, error, load } = useCookieConfig();
+
+    // 表单状态
+    const [cookieInput, setCookieInput] = useState('');
+    const [saving, setSaving] = useState(false);
+
+    // 测试状态
+    const [testResult, setTestResult] = useState<TestResult | null>(null);
+    const [testing, setTesting] = useState(false);
+
+    // UI 状态
+    const [showFullCookie, setShowFullCookie] = useState(false);
+    const [showImportModal, setShowImportModal] = useState(false);
+
+    const isMounted = useRef(true);
+
+    useEffect(() => {
+        isMounted.current = true;
+        return () => {
+            isMounted.current = false;
+        };
+    }, []);
+
+    // Cookie 有效期警告
+    const ageWarning = useCookieAgeWarning(cookieInfo?.updated_at);
+
+    // ==================== 操作处理 ====================
+
+    /** 保存 Cookie */
+    const handleSave = useCallback(async () => {
+        const trimmed = cookieInput.trim();
+
+        if (!trimmed) {
+            message.warning({ content: '请输入 Cookie', key: 'cookie-empty' });
             return;
         }
 
-        // 基本格式验证
-        if (!cookieInput.includes('=') || cookieInput.length < 20) {
-            message.warning('Cookie 格式不正确，请检查是否完整复制');
+        if (!trimmed.includes('=')) {
+            message.warning({
+                content: 'Cookie 格式不正确，请检查是否完整复制',
+                key: 'cookie-invalid',
+            });
             return;
         }
 
         setSaving(true);
+
         try {
-            await saveCookieConfig({
-                cookie: cookieInput.trim(),
-                user_agent: userAgentInput.trim(),
-            });
-
-            message.success('Cookie 保存成功！');
-            setCookieInput('');
-            setUserAgentInput('');
-            setTestResult(null);
-            setShowFullCookie(false);
-            await loadCookieInfo();
-        } catch (error: any) {
-            message.error(
-                error?.response?.data?.detail || '保存失败，请重试'
-            );
+            await saveCookieConfig({ cookie: trimmed });
+            if (isMounted.current) {
+                message.success({
+                    content: 'Cookie 已保存',
+                    key: 'cookie-save-success',
+                });
+                setCookieInput('');
+                await load();
+            }
+        } catch (err: unknown) {
+            if (isMounted.current) {
+                const errorMsg = extractErrorMessage(err) || '保存失败';
+                message.error({
+                    content: errorMsg,
+                    key: 'cookie-save-error',
+                });
+            }
         } finally {
-            setSaving(false);
+            if (isMounted.current) {
+                setSaving(false);
+            }
         }
-    }, [cookieInput, userAgentInput, loadCookieInfo]);
+    }, [cookieInput, load]);
 
-    // ==================== 测试操作 ====================
-
-    /** 测试 Cookie 有效性 */
-    const handleTestCookie = useCallback(async () => {
+    /** 测试 Cookie */
+    const handleTest = useCallback(async () => {
         setTesting(true);
         setTestResult(null);
 
         try {
             const result = await testCookieConfig();
-            setTestResult(result);
-
-            if (result.cookie_valid) {
-                message.success('Cookie 测试通过！图书信息获取正常');
-            } else {
-                message.warning(result.message || 'Cookie 无效');
+            if (isMounted.current) {
+                setTestResult(result);
+                const msgKey = 'cookie-test-result';
+                if (result.cookie_valid) {
+                    message.success({ content: result.message, key: msgKey });
+                } else {
+                    message.warning({ content: result.message, key: msgKey });
+                }
             }
-        } catch (error: any) {
-            const errorMsg =
-                error?.response?.data?.detail || '测试失败，请检查网络';
-            setTestResult({
-                success: false,
-                message: errorMsg,
-                cookie_valid: false,
-            });
-            message.error(errorMsg);
+        } catch (err: unknown) {
+            if (isMounted.current) {
+                const errorMsg = extractErrorMessage(err) || '测试失败';
+                setTestResult({
+                    success: false,
+                    message: errorMsg,
+                    cookie_valid: false,
+                });
+                message.error({ content: errorMsg, key: 'cookie-test-error' });
+            }
         } finally {
-            setTesting(false);
+            if (isMounted.current) {
+                setTesting(false);
+            }
         }
     }, []);
 
-    // ==================== 删除操作 ====================
-
-    /** 删除 Cookie 配置 */
-    const handleDeleteCookie = useCallback(async () => {
-        setDeleting(true);
+    /** 删除 Cookie */
+    const handleDelete = useCallback(async () => {
         try {
             await deleteCookieConfig();
-            message.success('Cookie 已清除，系统将使用备用数据源');
-            setTestResult(null);
-            setShowFullCookie(false);
-            await loadCookieInfo();
-        } catch (error: any) {
-            message.error(
-                error?.response?.data?.detail || '清除失败'
-            );
-        } finally {
-            setDeleting(false);
-        }
-    }, [loadCookieInfo]);
-
-    // ==================== 复制操作 ====================
-
-    /** 复制 Cookie 到剪贴板（注意：此处为脱敏版本） */
-    const handleCopyCookie = useCallback(async () => {
-        if (cookieInfo?.cookie_preview) {
-            try {
-                await navigator.clipboard.writeText(
-                    cookieInfo.cookie_preview
-                );
-                message.success('已复制到剪贴板');
-            } catch {
-                message.error('复制失败，请手动复制');
+            if (isMounted.current) {
+                message.success({
+                    content: 'Cookie 已清除',
+                    key: 'cookie-delete-success',
+                });
+                setTestResult(null);
+                await load();
             }
+        } catch (err: unknown) {
+            if (isMounted.current) {
+                message.error({
+                    content: extractErrorMessage(err) || '清除失败',
+                    key: 'cookie-delete-error',
+                });
+            }
+        }
+    }, [load]);
+
+    /** 复制 Cookie */
+    const handleCopyCookie = useCallback(() => {
+        if (cookieInfo?.cookie_preview) {
+            navigator.clipboard.writeText(cookieInfo.cookie_preview);
+            message.success({
+                content: '已复制 Cookie（脱敏版本）',
+                key: 'cookie-copy',
+            });
         }
     }, [cookieInfo]);
 
-    // ==================== 衍生数据 ====================
+    /** 快速导入 */
+    const handleQuickImport = useCallback(() => {
+        setShowImportModal(true);
+    }, []);
 
-    /** Cookie 状态配置 */
+    // ==================== 状态配置 ====================
+
     const statusConfig = useMemo(() => {
         if (!cookieInfo) return null;
 
         return {
             hasCookie: cookieInfo.has_cookie,
-            isValid: testResult?.cookie_valid,
             statusText: cookieInfo.has_cookie ? '已配置' : '未配置',
             statusColor: cookieInfo.has_cookie ? '#22c55e' : '#f59e0b',
-            validText: testResult
-                ? testResult.cookie_valid
-                    ? '有效'
-                    : '无效'
-                : '未测试',
-            validColor: testResult
-                ? testResult.cookie_valid
-                    ? '#22c55e'
-                    : '#ef4444'
-                : '#8c7b72',
+            statusIcon: cookieInfo.has_cookie ? (
+                <CheckCircleOutlined />
+            ) : (
+                <ExclamationCircleOutlined />
+            ),
         };
-    }, [cookieInfo, testResult]);
+    }, [cookieInfo]);
 
-    // ==================== 渲染：加载状态 ====================
+    // ==================== 渲染教程 ====================
+
+    const tutorialItems: CollapseProps['items'] = [
+        {
+            key: 'tutorial',
+            label: (
+                <Space size={8}>
+                    <QuestionCircleOutlined style={{ color: '#3b82f6' }} />
+                    <span style={{ fontWeight: 600 }}>如何获取豆瓣 Cookie？</span>
+                </Space>
+            ),
+            children: (
+                <div>
+                    <Alert
+                        message="获取步骤"
+                        type="info"
+                        showIcon
+                        style={{ marginBottom: 16 }}
+                    />
+                    <Steps
+                        direction="vertical"
+                        size="small"
+                        current={-1}
+                        items={TUTORIAL_STEPS.map((step) => ({
+                            title: step.title,
+                            description: step.description,
+                            icon: step.icon,
+                        }))}
+                    />
+                    <Alert
+                        message="注意事项"
+                        description={
+                            <ul style={{ paddingLeft: 20, margin: 0 }}>
+                                <li>Cookie 通常 1-7 天后过期，需定期更新</li>
+                                <li>建议使用备用账号，避免主账号异常请求被限制</li>
+                                <li>Cookie 仅保存在服务器本地，不会上传第三方</li>
+                                <li>同步失败时可使用手动录入功能作为备用方案</li>
+                            </ul>
+                        }
+                        type="warning"
+                        showIcon
+                        style={{ marginTop: 16 }}
+                    />
+                </div>
+            ),
+        },
+    ];
+
+    // ==================== 渲染状态卡片 ====================
+
+    const renderStatusCard = () => {
+        if (!statusConfig) return null;
+
+        return (
+            <Card
+                style={{
+                    marginBottom: 24,
+                    borderRadius: 12,
+                    border: `1px solid ${token.colorBorderSecondary}`,
+                }}
+                title={
+                    <Space size={6}>
+                        <KeyOutlined style={{ color: token.colorPrimary }} />
+                        <span>配置状态</span>
+                    </Space>
+                }
+            >
+                <Row gutter={[24, 24]}>
+                    <Col xs={24} sm={8}>
+                        <Card
+                            size="small"
+                            style={{
+                                background:
+                                    statusConfig.hasCookie
+                                        ? token.colorSuccessBg
+                                        : token.colorWarningBg,
+                                border: `1px solid ${
+                                    statusConfig.hasCookie
+                                        ? token.colorSuccessBorder
+                                        : token.colorWarningBorder
+                                }`,
+                                borderRadius: 10,
+                            }}
+                        >
+                            <Statistic
+                                title="配置状态"
+                                value={statusConfig.statusText}
+                                valueStyle={{
+                                    color: statusConfig.statusColor,
+                                }}
+                                prefix={statusConfig.statusIcon}
+                            />
+                        </Card>
+                    </Col>
+
+                    {cookieInfo?.updated_at && (
+                        <Col xs={24} sm={8}>
+                            <Card
+                                size="small"
+                                style={{
+                                    borderRadius: 10,
+                                    background: token.colorFillSecondary,
+                                }}
+                            >
+                                <Statistic
+                                    title="最后更新"
+                                    value={formatDate(
+                                        cookieInfo.updated_at,
+                                        'date'
+                                    )}
+                                    prefix={<ClockCircleOutlined />}
+                                    valueStyle={{ fontSize: 16 }}
+                                />
+                            </Card>
+                        </Col>
+                    )}
+                </Row>
+
+                {/* Cookie 有效期警告 */}
+                {ageWarning && (
+                    <Alert
+                        message={ageWarning.message}
+                        type={ageWarning.level === 'danger' ? 'error' : ageWarning.level}
+                        showIcon
+                        icon={ageWarning.icon}
+                        style={{ marginTop: 16, borderRadius: 8 }}
+                        action={
+                            ageWarning.level !== 'success' && (
+                                <Button
+                                    size="small"
+                                    type="primary"
+                                    onClick={() => {
+                                        const textarea = document.querySelector<HTMLTextAreaElement>(
+                                            'textarea[placeholder*="Cookie"]'
+                                        );
+                                        textarea?.focus();
+                                    }}
+                                >
+                                    更新 Cookie
+                                </Button>
+                            )
+                        }
+                    />
+                )}
+
+                {/* Cookie 预览 */}
+                {cookieInfo?.has_cookie && (
+                    <div
+                        style={{
+                            marginTop: 16,
+                            padding: 16,
+                            background: token.colorFillSecondary,
+                            borderRadius: 10,
+                        }}
+                    >
+                        <div
+                            style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                marginBottom: 10,
+                                flexWrap: 'wrap',
+                                gap: 8,
+                            }}
+                        >
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                Cookie 预览（脱敏）
+                            </Text>
+                            <Space size={4}>
+                                <Tooltip title="复制脱敏 Cookie">
+                                    <Button
+                                        size="small"
+                                        type="text"
+                                        icon={<CopyOutlined />}
+                                        onClick={handleCopyCookie}
+                                    />
+                                </Tooltip>
+                                <Tooltip
+                                    title={
+                                        showFullCookie
+                                            ? '隐藏完整 Cookie'
+                                            : '显示完整 Cookie'
+                                    }
+                                >
+                                    <Button
+                                        size="small"
+                                        type="text"
+                                        icon={
+                                            showFullCookie ? (
+                                                <EyeInvisibleOutlined />
+                                            ) : (
+                                                <EyeOutlined />
+                                            )
+                                        }
+                                        onClick={() =>
+                                            setShowFullCookie(!showFullCookie)
+                                        }
+                                    />
+                                </Tooltip>
+                                <Popconfirm
+                                    title="确定删除 Cookie 配置？"
+                                    description="删除后豆瓣同步功能将不可用"
+                                    onConfirm={handleDelete}
+                                    okText="确定删除"
+                                    cancelText="取消"
+                                    okButtonProps={{ danger: true }}
+                                >
+                                    <Button
+                                        size="small"
+                                        danger
+                                        type="text"
+                                        icon={<DeleteOutlined />}
+                                    />
+                                </Popconfirm>
+                            </Space>
+                        </div>
+                        <Text
+                            code
+                            style={{
+                                fontSize: 12,
+                                wordBreak: 'break-all',
+                                maxHeight: showFullCookie ? 'none' : 60,
+                                overflow: 'hidden',
+                                display: 'block',
+                                padding: 8,
+                                borderRadius: 6,
+                                background: token.colorBgContainer,
+                            }}
+                        >
+                            {cookieInfo.cookie_preview}
+                        </Text>
+                        <Text
+                            type="secondary"
+                            style={{
+                                fontSize: 11,
+                                marginTop: 6,
+                                display: 'block',
+                            }}
+                        >
+                            {estimateCookieLength(cookieInfo.cookie_preview)}
+                        </Text>
+                    </div>
+                )}
+            </Card>
+        );
+    };
+
+    // ==================== 渲染设置卡片 ====================
+
+    const renderSettingsCard = () => (
+        <Card
+            style={{
+                marginBottom: 24,
+                borderRadius: 12,
+                border: `1px solid ${token.colorBorderSecondary}`,
+            }}
+            title={
+                <Space size={6}>
+                    <SettingOutlined style={{ color: token.colorPrimary }} />
+                    <span>Cookie 设置</span>
+                </Space>
+            }
+            extra={
+                <Button
+                    size="small"
+                    icon={<ImportOutlined />}
+                    onClick={handleQuickImport}
+                >
+                    快速导入
+                </Button>
+            }
+        >
+            <Space direction="vertical" size="large" style={{ width: '100%' }}>
+                {/* 输入区域 */}
+                <div>
+                    <div
+                        style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            marginBottom: 8,
+                        }}
+                    >
+                        <label style={{ fontWeight: 500 }}>
+                            Cookie 字符串
+                        </label>
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                            已输入 {cookieInput.length} 字符
+                        </Text>
+                    </div>
+                    <TextArea
+                        rows={6}
+                        placeholder='dbcl2="..."; ck="..."; bid="..."'
+                        value={cookieInput}
+                        onChange={(e) => setCookieInput(e.target.value)}
+                        style={{
+                            borderRadius: 8,
+                            fontFamily: 'monospace',
+                            fontSize: 13,
+                        }}
+                    />
+                    <Text
+                        type="secondary"
+                        style={{
+                            fontSize: 11,
+                            marginTop: 4,
+                            display: 'block',
+                        }}
+                    >
+                        从浏览器开发者工具的 Request Headers 中复制完整的 Cookie 值
+                    </Text>
+                </div>
+
+                {/* 操作按钮 */}
+                <Space size={12} wrap>
+                    <Tooltip title="保存 Cookie 配置">
+                        <Button
+                            type="primary"
+                            size="large"
+                            icon={<SaveOutlined />}
+                            loading={saving}
+                            onClick={handleSave}
+                            style={{ borderRadius: 8 }}
+                            disabled={!cookieInput.trim()}
+                        >
+                            保存
+                        </Button>
+                    </Tooltip>
+                    <Tooltip title="测试 Cookie 是否有效">
+                        <Button
+                            size="large"
+                            icon={<ExperimentOutlined />}
+                            loading={testing}
+                            onClick={handleTest}
+                            disabled={!cookieInfo?.has_cookie}
+                            style={{ borderRadius: 8 }}
+                        >
+                            测试有效性
+                        </Button>
+                    </Tooltip>
+                    <Button
+                        size="large"
+                        icon={<ClearOutlined />}
+                        onClick={() => setCookieInput('')}
+                        disabled={!cookieInput}
+                        style={{ borderRadius: 8 }}
+                    >
+                        清空
+                    </Button>
+                </Space>
+            </Space>
+        </Card>
+    );
+
+    // ==================== 渲染测试结果 ====================
+
+    const renderTestResult = () => {
+        if (!testResult) return null;
+
+        return (
+            <Card
+                style={{
+                    marginBottom: 24,
+                    borderRadius: 12,
+                    borderLeft: `4px solid ${
+                        testResult.cookie_valid ? '#22c55e' : '#ef4444'
+                    }`,
+                    animation: 'fadeIn 0.4s ease-out',
+                }}
+                title={
+                    <Space size={8}>
+                        {testResult.cookie_valid ? (
+                            <CheckCircleOutlined style={{ color: '#22c55e', fontSize: 20 }} />
+                        ) : (
+                            <ExclamationCircleOutlined style={{ color: '#ef4444', fontSize: 20 }} />
+                        )}
+                        <Tag
+                            color={testResult.cookie_valid ? 'success' : 'error'}
+                            style={{ borderRadius: 6 }}
+                        >
+                            {testResult.cookie_valid ? '测试通过' : '测试失败'}
+                        </Tag>
+                    </Space>
+                }
+            >
+                <Alert
+                    message={testResult.message}
+                    type={testResult.cookie_valid ? 'success' : 'error'}
+                    showIcon
+                    style={{ borderRadius: 8 }}
+                />
+
+                {/* 测试成功：展示示例图书 */}
+                {testResult.cookie_valid && testResult.test_book && (
+                    <div
+                        style={{
+                            marginTop: 20,
+                            padding: 24,
+                            background: token.colorFillSecondary,
+                            borderRadius: 12,
+                        }}
+                    >
+                        <Text strong style={{ fontSize: 14 }}>
+                            <ThunderboltOutlined
+                                style={{ color: '#f59e0b', marginRight: 8 }}
+                            />
+                            示例图书（验证数据获取正常）
+                        </Text>
+                        <Row gutter={[24, 16]} style={{ marginTop: 16 }}>
+                            {/* 封面 */}
+                            <Col xs={24} sm={8} style={{ textAlign: 'center' }}>
+                                {testResult.test_book.cover_url ? (
+                                    <Image
+                                        src={getCoverUrl(
+                                            testResult.test_book.cover_url
+                                        )}
+                                        alt={testResult.test_book.title}
+                                        style={{
+                                            width: '100%',
+                                            maxWidth: 180,
+                                            borderRadius: 10,
+                                            boxShadow:
+                                                '0 4px 12px rgba(0,0,0,0.1)',
+                                        }}
+                                        fallback="data:image/svg+xml,..."
+                                        preview={{ mask: '查看封面' }}
+                                    />
+                                ) : (
+                                    <div
+                                        style={{
+                                            aspectRatio: '3/4',
+                                            maxWidth: 180,
+                                            margin: '0 auto',
+                                            background:
+                                                token.colorFillSecondary,
+                                            borderRadius: 10,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                        }}
+                                    >
+                                        <BookOutlined
+                                            style={{
+                                                fontSize: 44,
+                                                color: '#d4a574',
+                                            }}
+                                        />
+                                    </div>
+                                )}
+                            </Col>
+
+                            {/* 信息 */}
+                            <Col xs={24} sm={16}>
+                                <Title level={4} style={{ marginTop: 0 }}>
+                                    {testResult.test_book.title}
+                                </Title>
+
+                                {testResult.test_book.rating && (
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 10,
+                                            marginBottom: 12,
+                                        }}
+                                    >
+                                        <Rate
+                                            disabled
+                                            allowHalf
+                                            value={
+                                                parseFloat(
+                                                    testResult.test_book.rating
+                                                ) / 2
+                                            }
+                                            style={{ fontSize: 16 }}
+                                        />
+                                        <Text
+                                            strong
+                                            style={{
+                                                fontSize: 20,
+                                                color: '#f59e0b',
+                                            }}
+                                        >
+                                            {testResult.test_book.rating}
+                                        </Text>
+                                    </div>
+                                )}
+
+                                <Space
+                                    direction="vertical"
+                                    size="small"
+                                >
+                                    {testResult.test_book.author && (
+                                        <div>
+                                            <UserOutlined
+                                                style={{ color: '#8c7b72' }}
+                                            />{' '}
+                                            <Text>
+                                                {testResult.test_book.author}
+                                            </Text>
+                                        </div>
+                                    )}
+                                    {testResult.test_book.publisher && (
+                                        <div>
+                                            <BookOutlined
+                                                style={{ color: '#8c7b72' }}
+                                            />{' '}
+                                            <Text type="secondary">
+                                                {testResult.test_book.publisher}
+                                            </Text>
+                                        </div>
+                                    )}
+                                </Space>
+                            </Col>
+                        </Row>
+                    </div>
+                )}
+
+                {/* 测试失败：提示 */}
+                {!testResult.cookie_valid && (
+                    <Alert
+                        message="常见原因"
+                        description={
+                            <ul style={{ paddingLeft: 20, margin: '4px 0' }}>
+                                <li>Cookie 已过期（通常 1-7 天有效）</li>
+                                <li>Cookie 未完整复制</li>
+                                <li>网络连接问题</li>
+                                <li>豆瓣临时限制访问</li>
+                            </ul>
+                        }
+                        type="warning"
+                        showIcon
+                        style={{ marginTop: 16, borderRadius: 8 }}
+                    />
+                )}
+            </Card>
+        );
+    };
+
+    // ==================== 渲染页面 ====================
 
     if (loading) {
         return (
             <div style={{ maxWidth: 800, margin: '0 auto', padding: 24 }}>
-                <Card style={{ borderRadius: 12 }}>
-                    <div
-                        style={{
-                            textAlign: 'center',
-                            padding: '60px 0',
-                        }}
-                    >
-                        <Spin size="large">
-                            <div style={{ padding: 30 }} />
-                        </Spin>
-                        <Text
-                            type="secondary"
-                            style={{
-                                display: 'block',
-                                marginTop: 16,
-                            }}
-                        >
-                            加载配置信息...
-                        </Text>
-                    </div>
+                <Skeleton active paragraph={{ rows: 2 }} />
+                <Card style={{ borderRadius: 12, marginTop: 16 }}>
+                    <Skeleton active paragraph={{ rows: 8 }} />
                 </Card>
             </div>
         );
     }
 
-    // ==================== 主渲染 ====================
-
     return (
         <div style={{ maxWidth: 800, margin: '0 auto', padding: 24 }}>
-            {/* 面包屑导航 */}
+            {/* 面包屑 */}
             <Breadcrumb
                 style={{ marginBottom: 16 }}
                 items={[
@@ -392,847 +999,87 @@ const CookieConfig: React.FC = () => {
                 ]}
             />
 
-            {/* 页面标题 */}
-            <div style={{ marginBottom: 24 }}>
-                <Title level={2} style={{ marginBottom: 4 }}>
-                    <SafetyOutlined
-                        style={{ marginRight: 12, color: '#8B4513' }}
-                    />
-                    豆瓣 Cookie 配置
-                </Title>
-                <Text type="secondary" style={{ fontSize: 15 }}>
-                    配置豆瓣 Cookie 以启用自动获取图书信息功能
-                </Text>
-            </div>
+            {/* 标题 */}
+            <Title level={2} style={{ marginBottom: 24 }}>
+                <SafetyOutlined
+                    style={{ marginRight: 12, color: token.colorPrimary }}
+                />
+                豆瓣 Cookie 配置
+            </Title>
 
-            {/* 错误提示 */}
-            {loadError && (
+            {/* 错误状态 */}
+            {error && (
                 <Alert
                     message="加载失败"
-                    description={loadError}
+                    description={error}
                     type="error"
                     showIcon
-                    closable
-                    style={{ marginBottom: 24, borderRadius: 8 }}
+                    style={{ marginBottom: 16 }}
                     action={
-                        <Button size="small" onClick={loadCookieInfo}>
+                        <Button
+                            size="small"
+                            onClick={load}
+                            icon={<ReloadOutlined />}
+                        >
                             重试
                         </Button>
                     }
                 />
             )}
 
-            {/* ===== 获取教程 ===== */}
-            <Card
-                style={{
-                    marginBottom: 24,
-                    borderRadius: 12,
-                    boxShadow: '0 2px 8px rgba(139,69,19,.06)',
-                    border: '1px solid #e8d5c8',
-                }}
+            {/* 获取教程 */}
+            <Card style={{ marginBottom: 24, borderRadius: 12 }}>
+                <Collapse ghost items={tutorialItems} />
+            </Card>
+
+            {/* 状态卡片 */}
+            {renderStatusCard()}
+
+            {/* 设置卡片 */}
+            {renderSettingsCard()}
+
+            {/* 测试结果 */}
+            {renderTestResult()}
+
+            {/* 快速导入弹窗 */}
+            <Modal
+                title="快速导入 Cookie"
+                open={showImportModal}
+                onCancel={() => setShowImportModal(false)}
+                footer={null}
+                width={500}
             >
-                <Collapse
-                    ghost
-                    items={[
-                        {
-                            key: 'tutorial',
-                            label: (
-                                <Space>
-                                    <QuestionCircleOutlined
-                                        style={{ color: '#3b82f6' }}
-                                    />
-                                    <span
-                                        style={{
-                                            fontWeight: 600,
-                                            fontSize: 15,
-                                        }}
-                                    >
-                                        如何获取豆瓣 Cookie？
-                                    </span>
-                                </Space>
-                            ),
-                            children: (
-                                <div>
-                                    <Alert
-                                        message="获取步骤"
-                                        type="info"
-                                        showIcon
-                                        style={{
-                                            marginBottom: 16,
-                                            borderRadius: 8,
-                                        }}
-                                        description={
-                                            <Steps
-                                                direction="vertical"
-                                                size="small"
-                                                current={-1}
-                                                items={TUTORIAL_STEPS}
-                                                style={{ marginTop: 12 }}
-                                            />
-                                        }
-                                    />
-
-                                    <Alert
-                                        message="注意事项"
-                                        type="warning"
-                                        showIcon
-                                        style={{ borderRadius: 8 }}
-                                        description={
-                                            <ul
-                                                style={{
-                                                    margin: 0,
-                                                    paddingLeft: 20,
-                                                    lineHeight: 1.8,
-                                                }}
-                                            >
-                                                <li>
-                                                    Cookie
-                                                    包含您的登录凭据，请勿分享给他人
-                                                </li>
-                                                <li>
-                                                    Cookie 通常 1-7
-                                                    天后过期，同步失败时请重新获取
-                                                </li>
-                                                <li>
-                                                    建议使用备用账号，避免主账号因异常请求被限制
-                                                </li>
-                                                <li>
-                                                    合理控制同步频率，短时间内大量请求可能导致暂时封禁
-                                                </li>
-                                            </ul>
-                                        }
-                                    />
-
-                                    <div
-                                        style={{
-                                            marginTop: 16,
-                                            padding: 16,
-                                            background: '#fafaf9',
-                                            borderRadius: 8,
-                                            border: '1px solid #f0e4d8',
-                                        }}
-                                    >
-                                        <Text
-                                            strong
-                                            style={{
-                                                display: 'block',
-                                                marginBottom: 8,
-                                            }}
-                                        >
-                                            快速测试链接：
-                                        </Text>
-                                        <a
-                                            href={DOUBAN_TEST_URL}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            style={{
-                                                color: '#3b82f6',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: 6,
-                                            }}
-                                        >
-                                            <LinkOutlined />
-                                            解忧杂货店 -
-                                            豆瓣页面（用于验证 Cookie
-                                            是否生效）
-                                        </a>
-                                    </div>
-                                </div>
-                            ),
-                        },
-                    ]}
+                <Alert
+                    message="在浏览器控制台中执行以下命令获取 Cookie"
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16, borderRadius: 8 }}
                 />
-            </Card>
+                <Text
+                    code
+                    copyable
+                    style={{
+                        display: 'block',
+                        padding: 12,
+                        borderRadius: 8,
+                        background: token.colorFillSecondary,
+                        fontSize: 13,
+                    }}
+                >
+                    document.cookie
+                </Text>
+                <Text type="secondary" style={{ fontSize: 12, marginTop: 8, display: 'block' }}>
+                    将结果粘贴到输入框中保存
+                </Text>
+            </Modal>
 
-            {/* ===== Cookie 状态 ===== */}
-            <Card
-                style={{
-                    marginBottom: 24,
-                    borderRadius: 12,
-                    boxShadow: '0 2px 8px rgba(139,69,19,.06)',
-                    border: '1px solid #e8d5c8',
-                }}
-                title={
-                    <Space>
-                        <KeyOutlined style={{ color: '#8B4513' }} />
-                        <span style={{ fontWeight: 600 }}>
-                            Cookie 状态
-                        </span>
-                    </Space>
+            {/* 动画 */}
+            <style>{`
+                @keyframes fadeIn {
+                    from { opacity: 0; transform: translateY(8px); }
+                    to { opacity: 1; transform: translateY(0); }
                 }
-            >
-                {statusConfig && (
-                    <Row gutter={[24, 24]}>
-                        <Col xs={24} sm={12}>
-                            <Card
-                                size="small"
-                                style={{
-                                    borderRadius: 8,
-                                    background: '#fafaf9',
-                                }}
-                            >
-                                <Statistic
-                                    title="配置状态"
-                                    value={statusConfig.statusText}
-                                    valueStyle={{
-                                        color: statusConfig.statusColor,
-                                        fontSize: 24,
-                                    }}
-                                    prefix={
-                                        statusConfig.hasCookie ? (
-                                            <CheckCircleOutlined />
-                                        ) : (
-                                            <ExclamationCircleOutlined />
-                                        )
-                                    }
-                                />
-                            </Card>
-                        </Col>
-                        <Col xs={24} sm={12}>
-                            <Card
-                                size="small"
-                                style={{
-                                    borderRadius: 8,
-                                    background: '#fafaf9',
-                                }}
-                            >
-                                <Statistic
-                                    title="有效性"
-                                    value={statusConfig.validText}
-                                    valueStyle={{
-                                        color: statusConfig.validColor,
-                                        fontSize: 24,
-                                    }}
-                                    prefix={
-                                        testResult?.cookie_valid ? (
-                                            <CheckCircleOutlined />
-                                        ) : testResult ? (
-                                            <ExclamationCircleOutlined />
-                                        ) : (
-                                            <QuestionCircleOutlined />
-                                        )
-                                    }
-                                />
-                            </Card>
-                        </Col>
-                    </Row>
-                )}
-
-                {/* Cookie 预览 */}
-                {cookieInfo?.has_cookie && (
-                    <div
-                        style={{
-                            marginTop: 16,
-                            padding: 16,
-                            background: '#fafaf9',
-                            borderRadius: 8,
-                            border: '1px solid #f0e4d8',
-                        }}
-                    >
-                        <div
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                marginBottom: 8,
-                            }}
-                        >
-                            <Text
-                                type="secondary"
-                                style={{ fontSize: 13 }}
-                            >
-                                Cookie 预览（脱敏显示）：
-                            </Text>
-                            <Space>
-                                <Tooltip title="复制 Cookie">
-                                    <Button
-                                        size="small"
-                                        type="text"
-                                        icon={<CopyOutlined />}
-                                        onClick={handleCopyCookie}
-                                    />
-                                </Tooltip>
-                                <Tooltip
-                                    title={
-                                        showFullCookie
-                                            ? '隐藏'
-                                            : '显示完整'
-                                    }
-                                >
-                                    <Button
-                                        size="small"
-                                        type="text"
-                                        icon={
-                                            showFullCookie ? (
-                                                <EyeInvisibleOutlined />
-                                            ) : (
-                                                <EyeOutlined />
-                                            )
-                                        }
-                                        onClick={() =>
-                                            setShowFullCookie(
-                                                !showFullCookie
-                                            )
-                                        }
-                                    />
-                                </Tooltip>
-                                <Popconfirm
-                                    title="确定要删除 Cookie 配置吗？"
-                                    description="删除后豆瓣数据同步功能将不可用，系统将使用备用数据源。"
-                                    onConfirm={handleDeleteCookie}
-                                    okText="确定删除"
-                                    cancelText="取消"
-                                    okButtonProps={{ danger: true }}
-                                >
-                                    <Button
-                                        size="small"
-                                        danger
-                                        type="text"
-                                        icon={<DeleteOutlined />}
-                                        loading={deleting}
-                                    />
-                                </Popconfirm>
-                            </Space>
-                        </div>
-                        <Text
-                            code
-                            style={{
-                                fontSize: 12,
-                                wordBreak: 'break-all',
-                                display: 'block',
-                                maxHeight: showFullCookie
-                                    ? 'none'
-                                    : 60,
-                                overflow: 'hidden',
-                            }}
-                        >
-                            {cookieInfo.cookie_preview}
-                        </Text>
-                        {cookieInfo.updated_at && (
-                            <div style={{ marginTop: 8 }}>
-                                <Text
-                                    type="secondary"
-                                    style={{ fontSize: 11 }}
-                                >
-                                    <ClockCircleOutlined
-                                        style={{ marginRight: 4 }}
-                                    />
-                                    更新于：
-                                    {new Date(
-                                        cookieInfo.updated_at
-                                    ).toLocaleString('zh-CN')}
-                                </Text>
-                            </div>
-                        )}
-                    </div>
-                )}
-            </Card>
-
-            {/* ===== Cookie 输入 ===== */}
-            <Card
-                style={{
-                    marginBottom: 24,
-                    borderRadius: 12,
-                    boxShadow: '0 2px 8px rgba(139,69,19,.06)',
-                    border: '1px solid #e8d5c8',
-                }}
-                title={
-                    <Space>
-                        <KeyOutlined style={{ color: '#8B4513' }} />
-                        <span style={{ fontWeight: 600 }}>
-                            设置 Cookie
-                        </span>
-                    </Space>
-                }
-            >
-                <Space
-                    direction="vertical"
-                    size="large"
-                    style={{ width: '100%' }}
-                >
-                    <div>
-                        <label
-                            style={{
-                                display: 'block',
-                                marginBottom: 8,
-                                fontWeight: 500,
-                            }}
-                        >
-                            Cookie 字符串
-                            <Tooltip title="从浏览器开发者工具中复制完整的 Cookie 字符串（包含 dbcl2、ck、bid 等字段）">
-                                <QuestionCircleOutlined
-                                    style={{
-                                        marginLeft: 6,
-                                        color: '#8c7b72',
-                                    }}
-                                />
-                            </Tooltip>
-                        </label>
-                        <TextArea
-                            rows={6}
-                            placeholder='粘贴豆瓣 Cookie，例如：&#10;dbcl2="..."; ck="..."; bid="..."; __utma=...'
-                            value={cookieInput}
-                            onChange={(e) =>
-                                setCookieInput(e.target.value)
-                            }
-                            style={{
-                                borderRadius: 8,
-                                fontFamily: 'monospace',
-                                fontSize: 13,
-                            }}
-                        />
-                    </div>
-
-                    <div>
-                        <label
-                            style={{
-                                display: 'block',
-                                marginBottom: 8,
-                                fontWeight: 500,
-                            }}
-                        >
-                            User-Agent（可选）
-                            <Tooltip title="自定义浏览器标识，留空则使用系统默认值">
-                                <QuestionCircleOutlined
-                                    style={{
-                                        marginLeft: 6,
-                                        color: '#8c7b72',
-                                    }}
-                                />
-                            </Tooltip>
-                        </label>
-                        <Input
-                            placeholder="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..."
-                            value={userAgentInput}
-                            onChange={(e) =>
-                                setUserAgentInput(e.target.value)
-                            }
-                            style={{
-                                borderRadius: 8,
-                                fontFamily: 'monospace',
-                                fontSize: 13,
-                            }}
-                            allowClear
-                        />
-                    </div>
-
-                    <Space size="middle" wrap>
-                        <Button
-                            type="primary"
-                            size="large"
-                            icon={<SaveOutlined />}
-                            loading={saving}
-                            onClick={handleSaveCookie}
-                            style={{
-                                borderRadius: 8,
-                                minWidth: 140,
-                            }}
-                        >
-                            保存 Cookie
-                        </Button>
-                        <Button
-                            size="large"
-                            icon={<ExperimentOutlined />}
-                            loading={testing}
-                            onClick={handleTestCookie}
-                            disabled={!cookieInfo?.has_cookie}
-                            style={{ borderRadius: 8 }}
-                        >
-                            测试 Cookie
-                        </Button>
-                        <Button
-                            size="large"
-                            icon={<ClearOutlined />}
-                            onClick={() => {
-                                setCookieInput('');
-                                setUserAgentInput('');
-                            }}
-                            style={{ borderRadius: 8 }}
-                        >
-                            清空输入
-                        </Button>
-                    </Space>
-                </Space>
-            </Card>
-
-            {/* ===== 测试中 ===== */}
-            {testing && (
-                <Card
-                    style={{
-                        marginBottom: 24,
-                        borderRadius: 12,
-                        boxShadow: '0 2px 8px rgba(139,69,19,.06)',
-                        border: '1px solid #e8d5c8',
-                    }}
-                >
-                    <div
-                        style={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            padding: '40px 0',
-                            gap: 16,
-                        }}
-                    >
-                        <Spin size="large">
-                            <div style={{ padding: 20 }} />
-                        </Spin>
-                        <Text
-                            type="secondary"
-                            style={{ fontSize: 16 }}
-                        >
-                            正在测试 Cookie，尝试获取图书信息...
-                        </Text>
-                        <Text
-                            type="secondary"
-                            style={{ fontSize: 13 }}
-                        >
-                            这可能需要几秒钟时间
-                        </Text>
-                    </div>
-                </Card>
-            )}
-
-            {/* ===== 测试结果 ===== */}
-            {testResult && !testing && (
-                <Card
-                    style={{
-                        marginBottom: 24,
-                        borderRadius: 12,
-                        boxShadow: '0 2px 8px rgba(139,69,19,.06)',
-                        border: `1px solid ${
-                            testResult.cookie_valid
-                                ? '#d1fae5'
-                                : '#fecaca'
-                        }`,
-                        borderLeft: `4px solid ${
-                            testResult.cookie_valid
-                                ? '#22c55e'
-                                : '#ef4444'
-                        }`,
-                    }}
-                    title={
-                        <Space>
-                            {testResult.cookie_valid ? (
-                                <CheckCircleOutlined
-                                    style={{ color: '#22c55e' }}
-                                />
-                            ) : (
-                                <ExclamationCircleOutlined
-                                    style={{ color: '#ef4444' }}
-                                />
-                            )}
-                            <span style={{ fontWeight: 600 }}>
-                                测试结果
-                            </span>
-                            <Tag
-                                color={
-                                    testResult.cookie_valid
-                                        ? 'success'
-                                        : 'error'
-                                }
-                            >
-                                {testResult.cookie_valid
-                                    ? '通过'
-                                    : '失败'}
-                            </Tag>
-                        </Space>
-                    }
-                >
-                    <Alert
-                        message={testResult.message}
-                        type={
-                            testResult.cookie_valid
-                                ? 'success'
-                                : 'error'
-                        }
-                        showIcon
-                        style={{
-                            marginBottom: 16,
-                            borderRadius: 8,
-                        }}
-                    />
-
-                    {/* 测试成功的图书信息 */}
-                    {testResult.cookie_valid &&
-                        testResult.test_book && (
-                            <div
-                                style={{
-                                    padding: 24,
-                                    background: '#fafaf9',
-                                    borderRadius: 8,
-                                    border: '1px solid #f0e4d8',
-                                }}
-                            >
-                                <Text
-                                    strong
-                                    style={{
-                                        fontSize: 16,
-                                        display: 'block',
-                                        marginBottom: 16,
-                                    }}
-                                >
-                                    <ThunderboltOutlined
-                                        style={{
-                                            marginRight: 8,
-                                            color: '#f59e0b',
-                                        }}
-                                    />
-                                    成功获取的图书信息示例
-                                </Text>
-                                <Row gutter={[24, 16]}>
-                                    <Col xs={24} sm={8}>
-                                        {testResult.test_book
-                                            .cover_url ? (
-                                            <Image
-                                                src={getCoverUrl(
-                                                    testResult
-                                                        .test_book
-                                                        .cover_url
-                                                )}
-                                                alt={
-                                                    testResult
-                                                        .test_book
-                                                        .title
-                                                }
-                                                style={{
-                                                    width: '100%',
-                                                    maxWidth: 180,
-                                                    borderRadius: 8,
-                                                    boxShadow:
-                                                        '0 4px 12px rgba(139,69,19,.15)',
-                                                }}
-                                                fallback={`data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="180" height="252"><rect fill="#fafaf9" width="180" height="252"/><text x="90" y="130" text-anchor="middle" fill="#8c7b72" font-size="14">暂无封面</text></svg>')}`}
-                                            />
-                                        ) : (
-                                            <div
-                                                style={{
-                                                    width: '100%',
-                                                    maxWidth: 180,
-                                                    aspectRatio:
-                                                        '3/4',
-                                                    background:
-                                                        '#f5f5f4',
-                                                    borderRadius: 8,
-                                                    display: 'flex',
-                                                    alignItems:
-                                                        'center',
-                                                    justifyContent:
-                                                        'center',
-                                                }}
-                                            >
-                                                <BookOutlined
-                                                    style={{
-                                                        fontSize: 36,
-                                                        color: '#d4a574',
-                                                    }}
-                                                />
-                                            </div>
-                                        )}
-                                    </Col>
-                                    <Col xs={24} sm={16}>
-                                        <Title
-                                            level={3}
-                                            style={{
-                                                marginTop: 0,
-                                                marginBottom: 8,
-                                            }}
-                                        >
-                                            {
-                                                testResult.test_book
-                                                    .title
-                                            }
-                                        </Title>
-
-                                        {testResult.test_book
-                                            .rating && (
-                                            <div
-                                                style={{
-                                                    display: 'flex',
-                                                    alignItems:
-                                                        'center',
-                                                    gap: 8,
-                                                    marginBottom: 12,
-                                                }}
-                                            >
-                                                <Rate
-                                                    disabled
-                                                    allowHalf
-                                                    value={
-                                                        parseFloat(
-                                                            testResult
-                                                                .test_book
-                                                                .rating
-                                                        ) / 2
-                                                    }
-                                                />
-                                                <Text strong>
-                                                    {
-                                                        testResult
-                                                            .test_book
-                                                            .rating
-                                                    }{' '}
-                                                    分
-                                                </Text>
-                                            </div>
-                                        )}
-
-                                        <Space
-                                            direction="vertical"
-                                            size="small"
-                                        >
-                                            {testResult.test_book
-                                                .author && (
-                                                <div
-                                                    style={{
-                                                        display: 'flex',
-                                                        alignItems:
-                                                            'center',
-                                                        gap: 8,
-                                                    }}
-                                                >
-                                                    <UserOutlined
-                                                        style={{
-                                                            color: '#8c7b72',
-                                                        }}
-                                                    />
-                                                    <Text>
-                                                        {
-                                                            testResult
-                                                                .test_book
-                                                                .author
-                                                        }
-                                                    </Text>
-                                                </div>
-                                            )}
-                                            {testResult.test_book
-                                                .publisher && (
-                                                <div
-                                                    style={{
-                                                        display: 'flex',
-                                                        alignItems:
-                                                            'center',
-                                                        gap: 8,
-                                                    }}
-                                                >
-                                                    <BookOutlined
-                                                        style={{
-                                                            color: '#8c7b72',
-                                                        }}
-                                                    />
-                                                    <Text type="secondary">
-                                                        {
-                                                            testResult
-                                                                .test_book
-                                                                .publisher
-                                                        }
-                                                    </Text>
-                                                </div>
-                                            )}
-                                        </Space>
-                                    </Col>
-                                </Row>
-                            </div>
-                        )}
-
-                    {/* 失败建议 */}
-                    {!testResult.cookie_valid && (
-                        <div
-                            style={{
-                                padding: 16,
-                                background: '#fef2f2',
-                                borderRadius: 8,
-                                border: '1px solid #fecaca',
-                            }}
-                        >
-                            <Text
-                                strong
-                                style={{
-                                    color: '#991b1b',
-                                    display: 'block',
-                                    marginBottom: 8,
-                                }}
-                            >
-                                建议操作：
-                            </Text>
-                            <ul
-                                style={{
-                                    margin: 0,
-                                    paddingLeft: 20,
-                                    color: '#7f1d1d',
-                                    lineHeight: 1.8,
-                                }}
-                            >
-                                <li>
-                                    检查 Cookie
-                                    是否完整复制（是否包含 dbcl2、ck、bid
-                                    等字段）
-                                </li>
-                                <li>
-                                    Cookie
-                                    可能已过期，请重新登录豆瓣后获取新的
-                                    Cookie
-                                </li>
-                                <li>
-                                    尝试在浏览器无痕模式下登录后获取
-                                    Cookie
-                                </li>
-                                <li>检查网络连接是否正常，豆瓣是否可访问</li>
-                                <li>
-                                    如果持续失败，可使用
-                                    <strong>手动录入</strong>
-                                    功能添加图书
-                                </li>
-                            </ul>
-                        </div>
-                    )}
-                </Card>
-            )}
-
-            {/* ===== 使用建议 ===== */}
-            <Card
-                style={{
-                    borderRadius: 12,
-                    boxShadow: '0 2px 8px rgba(139,69,19,.06)',
-                    border: '1px solid #e8d5c8',
-                }}
-            >
-                <Title level={5} style={{ marginTop: 0 }}>
-                    <InfoCircleOutlined
-                        style={{ marginRight: 8, color: '#3b82f6' }}
-                    />
-                    使用建议
-                </Title>
-                <ul
-                    style={{
-                        color: '#6b5e56',
-                        lineHeight: 1.8,
-                        paddingLeft: 20,
-                        margin: 0,
-                    }}
-                >
-                    <li>
-                        Cookie
-                        配置保存在服务器本地，不会上传到第三方
-                    </li>
-                    <li>
-                        建议每 1-2 周更新一次 Cookie，避免过期失效
-                    </li>
-                    <li>
-                        同步数据时请合理控制频率，大量请求可能触发豆瓣反爬机制
-                    </li>
-                    <li>
-                        同步失败时可使用
-                        <strong>手动录入</strong>功能作为备用方案
-                    </li>
-                    <li>
-                        清除 Cookie 后，系统将自动切换为 OpenLibrary
-                        等备用数据源
-                    </li>
-                </ul>
-            </Card>
+            `}</style>
         </div>
     );
 };

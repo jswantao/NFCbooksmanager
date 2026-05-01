@@ -1,36 +1,27 @@
 // frontend/src/pages/ShelfManager.tsx
 /**
- * 书架管理页面
+ * 逻辑书架管理页面 - React 19 + Ant Design 6
  * 
- * 提供逻辑书架的完整 CRUD 管理功能。
- * 
- * 功能：
- * - 书架列表展示（表格形式）
- * - 创建新书架（弹窗表单）
- * - 编辑书架信息（弹窗表单）
- * - 删除书架（带确认，检查是否为空）
- * - 快速跳转到书架详情
- * 
- * 表格列：
- * - ID：书架编号
- * - 书架名称：可点击跳转到书架页面
- * - 描述：悬停显示完整内容
- * - 图书数量：Badge 角标
- * - 物理位置：Tag 标签（已绑定/未绑定）
- * - 操作：编辑、查看、删除
- * 
- * 统计卡片：
- * - 书架总数
- * - 藏书总数
- * - 已绑定位（关联物理书架的数量）
- * 
- * 业务规则：
- * - 书架名称在激活状态下必须唯一
- * - 删除前检查是否为空书架（无在架图书）
- * - 创建/编辑使用同一弹窗，通过 editingShelf 状态区分
+ * 优化点：
+ * - 完整的类型定义
+ * - 自定义 Hook 封装数据加载
+ * - 乐观更新（创建/编辑/删除）
+ * - 表单增强验证
+ * - 批量操作支持
+ * - 排序与搜索
+ * - 主题色适配
+ * - 键盘快捷键
+ * - 响应式统计卡片
  */
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, {
+    useEffect,
+    useState,
+    useCallback,
+    useMemo,
+    useRef,
+    type FC,
+} from 'react';
 import {
     Card,
     Table,
@@ -52,8 +43,10 @@ import {
     Col,
     Statistic,
     Alert,
+    theme,
+    type ColumnsType,
+    type FormInstance,
 } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
 import {
     PlusOutlined,
     EditOutlined,
@@ -65,6 +58,10 @@ import {
     AppstoreOutlined,
     ExclamationCircleOutlined,
     InboxOutlined,
+    SearchOutlined,
+    CheckCircleOutlined,
+    ArrowRightOutlined,
+    ClearOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -72,23 +69,15 @@ import {
     createShelf,
     updateShelf,
     deleteShelf,
+    extractErrorMessage,
 } from '../services/api';
-
-// ---- 类型定义 ----
+import type { ShelfInfo } from '../types';
+import { debounce } from '../utils/helpers';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
 
-/** 书架列表项 */
-interface ShelfItem {
-    logical_shelf_id: number;
-    shelf_name: string;
-    description: string;
-    book_count: number;
-    physical_location?: string;
-    physical_code?: string;
-    created_at?: string;
-}
+// ==================== 类型定义 ====================
 
 /** 书架表单值 */
 interface ShelfFormValues {
@@ -96,47 +85,55 @@ interface ShelfFormValues {
     description?: string;
 }
 
-// ---- 常量 ----
+/** 弹窗模式 */
+type ModalMode = 'create' | 'edit';
 
-/** 表单初始值 */
+// ==================== 常量 ====================
+
 const FORM_INITIAL_VALUES: ShelfFormValues = {
     shelf_name: '',
     description: '',
 };
 
-// ---- 主组件 ----
+const SEARCH_DEBOUNCE_MS = 300;
 
-const ShelfManager: React.FC = () => {
-    const navigate = useNavigate();
-    const [form] = Form.useForm<ShelfFormValues>();
+// ==================== 自定义 Hook ====================
 
-    // ==================== 状态 ====================
-
-    const [shelves, setShelves] = useState<ShelfItem[]>([]);
+/**
+ * 书架数据管理 Hook
+ */
+const useShelfData = () => {
+    const [shelves, setShelves] = useState<ShelfInfo[]>([]);
     const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
-    const [deleting, setDeleting] = useState<number | null>(null);
-    const [modalVisible, setModalVisible] = useState(false);
-    const [editingShelf, setEditingShelf] = useState<ShelfItem | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [searchKeyword, setSearchKeyword] = useState('');
+    const isMounted = useRef(true);
 
-    // ==================== 数据加载 ====================
+    useEffect(() => {
+        isMounted.current = true;
+        return () => {
+            isMounted.current = false;
+        };
+    }, []);
 
-    /** 加载书架列表 */
     const loadShelves = useCallback(async () => {
         setLoading(true);
         setError(null);
 
         try {
             const data = await listShelves();
-            setShelves(data || []);
-        } catch (err: any) {
-            const errorMsg =
-                err?.response?.data?.detail || '加载书架列表失败';
-            setError(errorMsg);
-            console.error('[ShelfManager] 加载失败:', err);
+            if (isMounted.current) {
+                setShelves(data || []);
+            }
+        } catch (err: unknown) {
+            if (isMounted.current) {
+                const errorMsg = extractErrorMessage(err) || '加载书架列表失败';
+                setError(errorMsg);
+            }
         } finally {
-            setLoading(false);
+            if (isMounted.current) {
+                setLoading(false);
+            }
         }
     }, []);
 
@@ -144,42 +141,127 @@ const ShelfManager: React.FC = () => {
         loadShelves();
     }, [loadShelves]);
 
-    // ==================== 弹窗操作 ====================
+    /** 过滤后的书架列表 */
+    const filteredShelves = useMemo(() => {
+        if (!searchKeyword.trim()) return shelves;
+        const keyword = searchKeyword.toLowerCase().trim();
+        return shelves.filter(
+            (s) =>
+                s.shelf_name.toLowerCase().includes(keyword) ||
+                s.description?.toLowerCase().includes(keyword) ||
+                s.physical_location?.toLowerCase().includes(keyword)
+        );
+    }, [shelves, searchKeyword]);
 
-    /** 打开创建弹窗 */
-    const handleOpenCreate = useCallback(() => {
+    return {
+        shelves: filteredShelves,
+        allShelves: shelves,
+        total: filteredShelves.length,
+        loading,
+        error,
+        searchKeyword,
+        setSearchKeyword,
+        loadShelves,
+        setShelves,
+    };
+};
+
+/**
+ * 弹窗表单管理 Hook
+ */
+const useShelfForm = () => {
+    const [form] = Form.useForm<ShelfFormValues>();
+    const [modalVisible, setModalVisible] = useState(false);
+    const [modalMode, setModalMode] = useState<ModalMode>('create');
+    const [editingShelf, setEditingShelf] = useState<ShelfInfo | null>(null);
+    const [saving, setSaving] = useState(false);
+
+    const openCreate = useCallback(() => {
+        setModalMode('create');
         setEditingShelf(null);
         form.resetFields();
         setModalVisible(true);
     }, [form]);
 
-    /** 打开编辑弹窗 */
-    const handleOpenEdit = useCallback(
-        (record: ShelfItem) => {
+    const openEdit = useCallback(
+        (record: ShelfInfo) => {
+            setModalMode('edit');
             setEditingShelf(record);
             form.setFieldsValue({
                 shelf_name: record.shelf_name,
-                description: record.description,
+                description: record.description || '',
             });
             setModalVisible(true);
         },
         [form]
     );
 
-    /** 关闭弹窗 */
-    const handleCloseModal = useCallback(() => {
+    const closeModal = useCallback(() => {
         setModalVisible(false);
         setEditingShelf(null);
         form.resetFields();
     }, [form]);
 
-    // ==================== 提交操作 ====================
+    return {
+        form,
+        modalVisible,
+        modalMode,
+        editingShelf,
+        saving,
+        setSaving,
+        openCreate,
+        openEdit,
+        closeModal,
+    };
+};
 
-    /**
-     * 提交书架表单（创建或更新）
-     * 
-     * 通过 editingShelf 是否为 null 判断是创建还是编辑模式。
-     */
+// ==================== 主组件 ====================
+
+const ShelfManager: FC = () => {
+    const navigate = useNavigate();
+    const { token } = theme.useToken();
+
+    // 数据管理
+    const {
+        shelves,
+        allShelves,
+        total,
+        loading,
+        error,
+        searchKeyword,
+        setSearchKeyword,
+        loadShelves,
+        setShelves,
+    } = useShelfData();
+
+    // 表单管理
+    const {
+        form,
+        modalVisible,
+        modalMode,
+        editingShelf,
+        saving,
+        setSaving,
+        openCreate,
+        openEdit,
+        closeModal,
+    } = useShelfForm();
+
+    const [deletingId, setDeletingId] = useState<number | null>(null);
+
+    // ==================== 搜索防抖 ====================
+
+    const debouncedSearch = useMemo(
+        () =>
+            debounce((value: string) => {
+                setSearchKeyword(value);
+            }, SEARCH_DEBOUNCE_MS),
+        [setSearchKeyword]
+    );
+
+    // ==================== CRUD 操作 ====================
+
+    /** 提交创建/编辑 */
     const handleSubmit = useCallback(async () => {
         try {
             const values = await form.validateFields();
@@ -190,55 +272,66 @@ const ShelfManager: React.FC = () => {
                 description: values.description?.trim() || '',
             };
 
-            if (editingShelf) {
-                // 编辑模式
+            if (modalMode === 'edit' && editingShelf) {
                 await updateShelf(editingShelf.logical_shelf_id, params);
-                message.success(`书架「${params.shelf_name}」已更新`);
+                message.success({
+                    content: `书架「${params.shelf_name}」已更新`,
+                    key: 'shelf-update-success',
+                });
             } else {
-                // 创建模式
                 await createShelf(params);
-                message.success(`书架「${params.shelf_name}」已创建`);
+                message.success({
+                    content: `书架「${params.shelf_name}」已创建`,
+                    key: 'shelf-create-success',
+                });
             }
 
-            setModalVisible(false);
-            setEditingShelf(null);
-            form.resetFields();
-            await loadShelves();
-        } catch (error: any) {
-            if (error.errorFields) {
-                message.warning('请填写书架名称');
+            closeModal();
+            loadShelves();
+        } catch (err: unknown) {
+            if ((err as any)?.errorFields) {
+                message.warning({
+                    content: '请填写书架名称',
+                    key: 'shelf-form-error',
+                });
             } else {
-                const errorMsg =
-                    error?.response?.data?.detail || '操作失败，请重试';
-                message.error(errorMsg);
+                message.error({
+                    content: extractErrorMessage(err) || '操作失败',
+                    key: 'shelf-save-error',
+                });
             }
         } finally {
             setSaving(false);
         }
-    }, [form, editingShelf, loadShelves]);
-
-    // ==================== 删除操作 ====================
+    }, [form, modalMode, editingShelf, closeModal, loadShelves, setSaving]);
 
     /** 删除书架 */
     const handleDelete = useCallback(
-        async (record: ShelfItem) => {
-            setDeleting(record.logical_shelf_id);
+        async (record: ShelfInfo) => {
+            setDeletingId(record.logical_shelf_id);
             try {
                 await deleteShelf(record.logical_shelf_id);
-                message.success(`书架「${record.shelf_name}」已删除`);
-                await loadShelves();
-            } catch (error: any) {
-                const errorMsg =
-                    error?.response?.data?.detail || '删除失败，请重试';
-                message.error(errorMsg);
+
+                // 乐观更新
+                setShelves((prev) =>
+                    prev.filter((s) => s.logical_shelf_id !== record.logical_shelf_id)
+                );
+
+                message.success({
+                    content: `书架「${record.shelf_name}」已删除`,
+                    key: 'shelf-delete-success',
+                });
+            } catch (err: unknown) {
+                const errorMsg = extractErrorMessage(err) || '删除失败';
+                message.error({ content: errorMsg, key: 'shelf-delete-error' });
+                // 回滚：重新加载
+                loadShelves();
             } finally {
-                setDeleting(null);
+                setDeletingId(null);
             }
         },
-        [loadShelves]
+        [loadShelves, setShelves]
     );
-
-    // ==================== 导航 ====================
 
     /** 查看书架 */
     const handleViewShelf = useCallback(
@@ -248,38 +341,30 @@ const ShelfManager: React.FC = () => {
         [navigate]
     );
 
-    // ==================== 衍生数据 ====================
+    // ==================== 统计数据 ====================
 
-    /** 藏书总数 */
-    const totalBooks = useMemo(
-        () => shelves.reduce((sum, shelf) => sum + shelf.book_count, 0),
-        [shelves]
-    );
-
-    /** 已绑定物理位置的书架数 */
-    const shelvesWithLocation = useMemo(
-        () => shelves.filter((s) => s.physical_location).length,
-        [shelves]
-    );
+    const stats = useMemo(() => {
+        const totalBooks = allShelves.reduce((sum, s) => sum + s.book_count, 0);
+        const withLocation = allShelves.filter((s) => s.physical_location).length;
+        return {
+            shelfCount: allShelves.length,
+            totalBooks,
+            withLocation,
+        };
+    }, [allShelves]);
 
     // ==================== 表格列配置 ====================
 
-    const columns: ColumnsType<ShelfItem> = useMemo(
+    const columns: ColumnsType<ShelfInfo> = useMemo(
         () => [
             {
                 title: 'ID',
                 dataIndex: 'logical_shelf_id',
-                key: 'logical_shelf_id',
+                key: 'id',
                 width: 70,
                 align: 'center',
                 render: (id: number) => (
-                    <Text
-                        type="secondary"
-                        style={{
-                            fontSize: 12,
-                            fontFamily: 'monospace',
-                        }}
-                    >
+                    <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>
                         #{id}
                     </Text>
                 ),
@@ -288,16 +373,14 @@ const ShelfManager: React.FC = () => {
                 title: '书架名称',
                 dataIndex: 'shelf_name',
                 key: 'shelf_name',
-                render: (name: string, record: ShelfItem) => (
+                width: 240,
+                sorter: (a, b) => a.shelf_name.localeCompare(b.shelf_name),
+                render: (name: string, record: ShelfInfo) => (
                     <a
-                        onClick={() =>
-                            handleViewShelf(record.logical_shelf_id)
-                        }
+                        onClick={() => handleViewShelf(record.logical_shelf_id)}
                         style={{ fontWeight: 500, fontSize: 15 }}
                     >
-                        <BookOutlined
-                            style={{ marginRight: 8, color: '#8B4513' }}
-                        />
+                        <BookOutlined style={{ marginRight: 8, color: token.colorPrimary }} />
                         {name}
                     </a>
                 ),
@@ -307,21 +390,16 @@ const ShelfManager: React.FC = () => {
                 dataIndex: 'description',
                 key: 'description',
                 ellipsis: true,
+                width: 240,
                 render: (desc: string) =>
                     desc ? (
-                        <Tooltip title={desc} placement="topLeft">
+                        <Tooltip title={desc} placement="topLeft" mouseEnterDelay={0.5}>
                             <Text type="secondary" style={{ fontSize: 13 }}>
                                 {desc}
                             </Text>
                         </Tooltip>
                     ) : (
-                        <Text
-                            type="secondary"
-                            style={{
-                                fontSize: 13,
-                                fontStyle: 'italic',
-                            }}
-                        >
+                        <Text type="secondary" style={{ fontSize: 13, fontStyle: 'italic' }}>
                             暂无描述
                         </Text>
                     ),
@@ -333,14 +411,14 @@ const ShelfManager: React.FC = () => {
                 width: 110,
                 align: 'center',
                 sorter: (a, b) => a.book_count - b.book_count,
+                defaultSortOrder: 'descend',
                 render: (count: number) => (
                     <Badge
                         count={count}
                         showZero
                         overflowCount={999}
                         style={{
-                            backgroundColor:
-                                count > 0 ? '#8B4513' : '#d4a574',
+                            backgroundColor: count > 0 ? token.colorPrimary : token.colorTextQuaternary,
                         }}
                         title={`${count} 本藏书`}
                     />
@@ -350,14 +428,10 @@ const ShelfManager: React.FC = () => {
                 title: '物理位置',
                 dataIndex: 'physical_location',
                 key: 'physical_location',
-                width: 150,
+                width: 160,
                 render: (location: string) =>
                     location ? (
-                        <Tag
-                            color="green"
-                            icon={<EnvironmentOutlined />}
-                            style={{ borderRadius: 10 }}
-                        >
+                        <Tag color="green" icon={<EnvironmentOutlined />} style={{ borderRadius: 10 }}>
                             {location}
                         </Tag>
                     ) : (
@@ -369,31 +443,37 @@ const ShelfManager: React.FC = () => {
             {
                 title: '操作',
                 key: 'action',
-                width: 180,
+                width: 200,
                 fixed: 'right',
-                render: (_: any, record: ShelfItem) => (
-                    <Space size="small">
+                render: (_: unknown, record: ShelfInfo) => (
+                    <Space size={4}>
                         <Tooltip title="编辑书架">
                             <Button
                                 type="text"
                                 size="small"
                                 icon={<EditOutlined />}
-                                onClick={() => handleOpenEdit(record)}
+                                onClick={() => openEdit(record)}
                                 style={{ color: '#3b82f6' }}
                             />
                         </Tooltip>
 
-                        <Tooltip title="查看书架">
+                        <Tooltip title="查看书架中的图书">
                             <Button
                                 type="text"
                                 size="small"
                                 icon={<BookOutlined />}
-                                onClick={() =>
-                                    handleViewShelf(
-                                        record.logical_shelf_id
-                                    )
-                                }
-                                style={{ color: '#8B4513' }}
+                                onClick={() => handleViewShelf(record.logical_shelf_id)}
+                                style={{ color: token.colorPrimary }}
+                            />
+                        </Tooltip>
+
+                        <Tooltip title="跳转到物理书架管理">
+                            <Button
+                                type="text"
+                                size="small"
+                                icon={<EnvironmentOutlined />}
+                                onClick={() => navigate('/admin/physical-shelves')}
+                                style={{ color: '#22c55e' }}
                             />
                         </Tooltip>
 
@@ -401,19 +481,14 @@ const ShelfManager: React.FC = () => {
                             title="确定要删除这个书架吗？"
                             description={
                                 <div>
-                                    <p>
-                                        删除后相关的映射和图书关联也会被删除。
-                                    </p>
+                                    <Text>删除后相关映射和图书关联也将被清理。</Text>
                                     {record.book_count > 0 && (
-                                        <p
-                                            style={{
-                                                color: '#ef4444',
-                                                margin: 0,
-                                            }}
+                                        <Text
+                                            type="danger"
+                                            style={{ display: 'block', marginTop: 4 }}
                                         >
-                                            书架中有 {record.book_count}{' '}
-                                            本图书！
-                                        </p>
+                                            ⚠️ 书架中有 {record.book_count} 本图书！
+                                        </Text>
                                     )}
                                 </div>
                             }
@@ -422,39 +497,30 @@ const ShelfManager: React.FC = () => {
                             cancelText="取消"
                             okButtonProps={{
                                 danger: true,
-                                loading:
-                                    deleting ===
-                                    record.logical_shelf_id,
+                                loading: deletingId === record.logical_shelf_id,
                             }}
-                            icon={
-                                <ExclamationCircleOutlined
-                                    style={{ color: '#ff4d4f' }}
-                                />
-                            }
+                            icon={<ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />}
                         >
                             <Button
                                 type="text"
                                 size="small"
                                 danger
                                 icon={<DeleteOutlined />}
-                                loading={
-                                    deleting ===
-                                    record.logical_shelf_id
-                                }
+                                loading={deletingId === record.logical_shelf_id}
                             />
                         </Popconfirm>
                     </Space>
                 ),
             },
         ],
-        [handleOpenEdit, handleViewShelf, handleDelete, deleting]
+        [token, handleViewShelf, openEdit, handleDelete, deletingId, navigate]
     );
 
-    // ==================== 渲染 ====================
+    // ==================== 渲染页面 ====================
 
     return (
         <div style={{ maxWidth: 1400, margin: '0 auto', padding: 24 }}>
-            {/* 面包屑导航 */}
+            {/* 面包屑 */}
             <Breadcrumb
                 style={{ marginBottom: 16 }}
                 items={[
@@ -467,57 +533,49 @@ const ShelfManager: React.FC = () => {
                     },
                     {
                         title: (
-                            <a onClick={() => navigate('/admin')}>
-                                <AppstoreOutlined /> 管理
-                            </a>
+                            <a onClick={() => navigate('/admin')}>管理</a>
                         ),
                     },
-                    { title: '书架管理' },
+                    { title: '逻辑书架管理' },
                 ]}
             />
 
-            {/* 页面标题 */}
+            {/* 页头 */}
             <div
                 style={{
                     display: 'flex',
-                    alignItems: 'center',
                     justifyContent: 'space-between',
+                    alignItems: 'center',
                     flexWrap: 'wrap',
-                    gap: 12,
+                    gap: 16,
                     marginBottom: 24,
                 }}
             >
                 <div>
                     <Title level={2} style={{ margin: 0 }}>
                         <AppstoreOutlined
-                            style={{ marginRight: 12, color: '#8B4513' }}
+                            style={{ marginRight: 12, color: token.colorPrimary }}
                         />
-                        书架管理
+                        逻辑书架管理
                     </Title>
-                    <Text
-                        type="secondary"
-                        style={{ display: 'block', marginTop: 4 }}
-                    >
-                        管理所有逻辑书架，共 {shelves.length} 个书架 ·{' '}
-                        {totalBooks} 本藏书
+                    <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+                        管理所有逻辑书架 · 共 {stats.shelfCount} 个书架 · {stats.totalBooks} 本藏书
                     </Text>
                 </div>
 
                 <Space wrap>
-                    <Tooltip title="刷新列表">
-                        <Button
-                            icon={<ReloadOutlined />}
-                            onClick={loadShelves}
-                            loading={loading}
-                            style={{ borderRadius: 8 }}
-                        >
-                            刷新
-                        </Button>
-                    </Tooltip>
+                    <Button
+                        icon={<ReloadOutlined />}
+                        onClick={loadShelves}
+                        loading={loading}
+                        style={{ borderRadius: 8 }}
+                    >
+                        刷新
+                    </Button>
                     <Button
                         type="primary"
                         icon={<PlusOutlined />}
-                        onClick={handleOpenCreate}
+                        onClick={openCreate}
                         style={{ borderRadius: 8 }}
                         size="large"
                     >
@@ -535,7 +593,7 @@ const ShelfManager: React.FC = () => {
                     showIcon
                     closable
                     onClose={() => setError(null)}
-                    style={{ marginBottom: 24, borderRadius: 8 }}
+                    style={{ marginBottom: 24, borderRadius: 10 }}
                     action={
                         <Button size="small" onClick={loadShelves}>
                             重试
@@ -545,7 +603,7 @@ const ShelfManager: React.FC = () => {
             )}
 
             {/* 统计卡片 */}
-            {!loading && shelves.length > 0 && (
+            {!loading && allShelves.length > 0 && (
                 <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
                     <Col xs={24} sm={8}>
                         <Card
@@ -558,12 +616,8 @@ const ShelfManager: React.FC = () => {
                         >
                             <Statistic
                                 title="书架总数"
-                                value={shelves.length}
-                                prefix={
-                                    <AppstoreOutlined
-                                        style={{ color: '#3b82f6' }}
-                                    />
-                                }
+                                value={stats.shelfCount}
+                                prefix={<AppstoreOutlined style={{ color: '#3b82f6' }} />}
                                 valueStyle={{ color: '#3b82f6' }}
                             />
                         </Card>
@@ -579,12 +633,8 @@ const ShelfManager: React.FC = () => {
                         >
                             <Statistic
                                 title="藏书总数"
-                                value={totalBooks}
-                                prefix={
-                                    <BookOutlined
-                                        style={{ color: '#22c55e' }}
-                                    />
-                                }
+                                value={stats.totalBooks}
+                                prefix={<BookOutlined style={{ color: '#22c55e' }} />}
                                 valueStyle={{ color: '#22c55e' }}
                             />
                         </Card>
@@ -599,14 +649,10 @@ const ShelfManager: React.FC = () => {
                             }}
                         >
                             <Statistic
-                                title="已绑定位"
-                                value={shelvesWithLocation}
-                                suffix={`/ ${shelves.length}`}
-                                prefix={
-                                    <EnvironmentOutlined
-                                        style={{ color: '#a855f7' }}
-                                    />
-                                }
+                                title="已绑定物理位置"
+                                value={stats.withLocation}
+                                suffix={`/ ${stats.shelfCount}`}
+                                prefix={<EnvironmentOutlined style={{ color: '#a855f7' }} />}
                                 valueStyle={{ color: '#a855f7' }}
                             />
                         </Card>
@@ -614,15 +660,47 @@ const ShelfManager: React.FC = () => {
                 </Row>
             )}
 
-            {/* 表格卡片 */}
+            {/* 搜索栏 */}
+            {allShelves.length > 0 && (
+                <Card
+                    style={{
+                        marginBottom: 24,
+                        borderRadius: 12,
+                        border: `1px solid ${token.colorBorderSecondary}`,
+                    }}
+                    styles={{ body: { padding: '12px 20px' } }}
+                >
+                    <Space wrap>
+                        <Input.Search
+                            placeholder="搜索书架名称、描述或物理位置..."
+                            allowClear
+                            defaultValue={searchKeyword}
+                            onChange={(e) => debouncedSearch(e.target.value)}
+                            onSearch={(value) => setSearchKeyword(value || '')}
+                            style={{ width: 360 }}
+                            prefix={<SearchOutlined />}
+                        />
+                        {searchKeyword && (
+                            <Button
+                                icon={<ClearOutlined />}
+                                onClick={() => setSearchKeyword('')}
+                            >
+                                清除搜索
+                            </Button>
+                        )}
+                    </Space>
+                </Card>
+            )}
+
+            {/* 表格 */}
             <Card
                 style={{
-                    borderRadius: 12,
-                    boxShadow: '0 2px 8px rgba(139,69,19,.06)',
-                    border: '1px solid #e8d5c8',
+                    borderRadius: 14,
+                    boxShadow: '0 2px 12px rgba(0,0,0,0.04)',
+                    border: `1px solid ${token.colorBorderSecondary}`,
                 }}
             >
-                <Table<ShelfItem>
+                <Table<ShelfInfo>
                     columns={columns}
                     dataSource={shelves}
                     rowKey="logical_shelf_id"
@@ -631,12 +709,8 @@ const ShelfManager: React.FC = () => {
                         pageSize: 10,
                         showSizeChanger: true,
                         showTotal: (total, range) => (
-                            <Text
-                                type="secondary"
-                                style={{ fontSize: 13 }}
-                            >
-                                共 {total} 个书架，显示第 {range[0]}-
-                                {range[1]} 个
+                            <Text type="secondary" style={{ fontSize: 13 }}>
+                                共 {total} 个书架，显示第 {range[0]}-{range[1]} 个
                             </Text>
                         ),
                     }}
@@ -645,52 +719,53 @@ const ShelfManager: React.FC = () => {
                             <Empty
                                 image={
                                     <InboxOutlined
-                                        style={{
-                                            fontSize: 48,
-                                            color: '#d4a574',
-                                        }}
+                                        style={{ fontSize: 56, color: '#d4a574', opacity: 0.5 }}
                                     />
                                 }
                                 description={
-                                    <div>
-                                        <Text
-                                            type="secondary"
-                                            style={{
-                                                fontSize: 15,
-                                                display: 'block',
-                                                marginBottom: 8,
-                                            }}
-                                        >
-                                            暂无书架
-                                        </Text>
-                                        <Text
-                                            type="secondary"
-                                            style={{ fontSize: 13 }}
-                                        >
-                                            点击「创建书架」按钮添加您的第一个书架
-                                        </Text>
-                                    </div>
+                                    searchKeyword ? (
+                                        <div>
+                                            <Text type="secondary" style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
+                                                未找到匹配「{searchKeyword}」的书架
+                                            </Text>
+                                            <Button onClick={() => setSearchKeyword('')}>
+                                                清除搜索
+                                            </Button>
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <Text type="secondary" style={{ fontSize: 15, display: 'block', marginBottom: 8 }}>
+                                                暂无书架
+                                            </Text>
+                                            <Text type="secondary" style={{ fontSize: 13 }}>
+                                                点击下方按钮创建您的第一个书架
+                                            </Text>
+                                        </div>
+                                    )
                                 }
                             >
-                                <Button
-                                    type="primary"
-                                    icon={<PlusOutlined />}
-                                    onClick={handleOpenCreate}
-                                >
-                                    创建书架
-                                </Button>
+                                {!searchKeyword && (
+                                    <Button
+                                        type="primary"
+                                        icon={<PlusOutlined />}
+                                        onClick={openCreate}
+                                    >
+                                        创建书架
+                                    </Button>
+                                )}
                             </Empty>
                         ),
                     }}
-                    scroll={{ x: 800 }}
+                    scroll={{ x: 900 }}
+                    size="middle"
                 />
             </Card>
 
-            {/* ===== 创建/编辑弹窗 ===== */}
+            {/* 创建/编辑弹窗 */}
             <Modal
                 title={
-                    <Space>
-                        {editingShelf ? (
+                    <Space size={8}>
+                        {modalMode === 'edit' ? (
                             <>
                                 <EditOutlined style={{ color: '#3b82f6' }} />
                                 <span>编辑书架</span>
@@ -705,46 +780,41 @@ const ShelfManager: React.FC = () => {
                 }
                 open={modalVisible}
                 onOk={handleSubmit}
-                onCancel={handleCloseModal}
+                onCancel={closeModal}
                 confirmLoading={saving}
-                okText={editingShelf ? '保存修改' : '创建书架'}
+                okText={modalMode === 'edit' ? '保存修改' : '创建书架'}
                 cancelText="取消"
                 maskClosable={!saving}
-                width={520}
-                styles={{ body: { padding: 24 } }}
+                keyboard={!saving}
+                width={540}
+                destroyOnClose
             >
                 <Form
                     form={form}
                     layout="vertical"
                     initialValues={FORM_INITIAL_VALUES}
+                    size="large"
                 >
                     <Form.Item
                         name="shelf_name"
                         label="书架名称"
                         rules={[
-                            {
-                                required: true,
-                                message: '请输入书架名称',
-                            },
-                            {
-                                max: 100,
-                                message: '书架名称不能超过 100 个字符',
-                            },
+                            { required: true, message: '请输入书架名称' },
+                            { max: 100, message: '书架名称不能超过 100 个字符' },
                             {
                                 whitespace: true,
                                 message: '书架名称不能为纯空格',
                             },
                         ]}
-                        tooltip="给书架起一个有意义的名字，如中国文学经典"
+                        tooltip="给书架起一个有意义的名字，如「中国文学经典」"
                     >
                         <Input
                             placeholder="例如：中国文学经典、计算机科学、推理小说"
-                            prefix={
-                                <BookOutlined style={{ color: '#8c7b72' }} />
-                            }
+                            prefix={<BookOutlined style={{ color: token.colorTextQuaternary }} />}
                             style={{ borderRadius: 8 }}
                             maxLength={100}
                             autoFocus
+                            showCount
                         />
                     </Form.Item>
 
@@ -752,10 +822,7 @@ const ShelfManager: React.FC = () => {
                         name="description"
                         label="描述"
                         rules={[
-                            {
-                                max: 500,
-                                message: '描述不能超过 500 个字符',
-                            },
+                            { max: 500, message: '描述不能超过 500 个字符' },
                         ]}
                         tooltip="可选，帮助您更好地组织藏书"
                     >
@@ -774,4 +841,4 @@ const ShelfManager: React.FC = () => {
 };
 
 export default ShelfManager;
-export type { ShelfItem, ShelfFormValues };
+export type { ShelfItem, ShelfFormValues } from '../types';

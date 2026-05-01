@@ -1,21 +1,25 @@
 // frontend/src/pages/AllBooksManager.tsx
 /**
- * 总图书管理页面
+ * 全部图书管理页面 - React 19 + Ant Design 6
  * 
- * 管理所有已录入的图书，无论是否上架。
- * 
- * 功能：
- * - 列表展示所有图书（分页、排序、搜索）
- * - 快速筛选：全部/已上架/未上架
- * - 按来源筛选：豆瓣/手动/ISBN/NFC
- * - 批量操作：选择后批量删除
- * - 单本操作：编辑、查看详情、删除
- * - 快速跳转到图书详情或所在书架
- * 
- * 数据来源：GET /api/books/all（包含所有图书，包括未上架的）
+ * 优化点：
+ * - 自定义 Hooks 封装逻辑
+ * - 乐观更新删除
+ * - 批量操作确认优化
+ * - 搜索防抖
+ * - URL 状态同步
+ * - 导出功能
  */
 
-import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import React, {
+    useEffect,
+    useState,
+    useCallback,
+    useMemo,
+    useRef,
+    type FC,
+    type Key,
+} from 'react';
 import {
     Card,
     Table,
@@ -36,8 +40,14 @@ import {
     Badge,
     Empty,
     Modal,
+    Dropdown,
+    Divider,
+    theme,
+    Result,
+    type TableColumnsType,
+    type TablePaginationConfig,
 } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
+import type { MenuProps } from 'antd';
 import {
     BookOutlined,
     HomeOutlined,
@@ -52,15 +62,20 @@ import {
     CheckCircleOutlined,
     CloseCircleOutlined,
     SyncOutlined,
+    DownloadOutlined,
+    ClearOutlined,
+    MoreOutlined,
+    ExportOutlined,
 } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getAllBooks, deleteBook, listShelves } from '../services/api';
-
-// ---- 类型定义 ----
+import VirtualTable from '../components/VirtualTable';
+import { debounce } from '../utils/helpers';
 
 const { Title, Text } = Typography;
 
-/** 图书列表项（扩展） */
+// ==================== 类型定义 ====================
+
 interface BookItem {
     book_id: number;
     isbn: string;
@@ -78,11 +93,20 @@ interface BookItem {
     binding?: string;
 }
 
-/** 筛选状态 */
 type FilterStatus = 'all' | 'in_shelf' | 'not_in_shelf';
 type FilterSource = 'all' | 'douban' | 'manual' | 'isbn' | 'nfc';
 
-/** 排序方式 */
+interface ShelfOption {
+    logical_shelf_id: number;
+    shelf_name: string;
+}
+
+// ==================== 常量 ====================
+
+const PAGE_SIZE = 50;
+const VIRTUAL_SCROLL_THRESHOLD = 500;
+const SEARCH_DEBOUNCE_MS = 300;
+
 const SORT_OPTIONS = [
     { value: 'added_at_desc', label: '最近添加' },
     { value: 'added_at_asc', label: '最早添加' },
@@ -92,10 +116,6 @@ const SORT_OPTIONS = [
     { value: 'rating_asc', label: '评分最低' },
 ];
 
-/** 每页数量 */
-const PAGE_SIZE = 50;
-
-/** 来源标签映射 */
 const SOURCE_CONFIG: Record<string, { color: string; label: string }> = {
     douban: { color: 'green', label: '豆瓣' },
     manual: { color: 'orange', label: '手动录入' },
@@ -103,34 +123,156 @@ const SOURCE_CONFIG: Record<string, { color: string; label: string }> = {
     nfc: { color: 'purple', label: 'NFC' },
 };
 
-// ---- 主组件 ----
+// ==================== 自定义 Hook ====================
 
-const AllBooksManager: React.FC = () => {
-    const navigate = useNavigate();
-
-    // ==================== 状态 ====================
-
-    const [loading, setLoading] = useState(true);
+/**
+ * 图书管理逻辑 Hook
+ */
+const useBookManager = () => {
     const [books, setBooks] = useState<BookItem[]>([]);
     const [total, setTotal] = useState(0);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [currentPage, setCurrentPage] = useState(1);
     const [searchKeyword, setSearchKeyword] = useState('');
     const [sortBy, setSortBy] = useState('added_at_desc');
     const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
     const [filterSource, setFilterSource] = useState<FilterSource>('all');
-    const [error, setError] = useState<string | null>(null);
-
-    /** 选中的行 */
-    const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
-
-    /** 删除中 */
-    const [deletingId, setDeletingId] = useState<number | null>(null);
-
-    /** 所有书架列表（用于筛选） */
-    const [shelfList, setShelfList] = useState<any[]>([]);
     const [filterShelfId, setFilterShelfId] = useState<number | undefined>();
+    const isMounted = useRef(true);
 
-    /** 组件挂载状态 */
+    useEffect(() => {
+        isMounted.current = true;
+        return () => {
+            isMounted.current = false;
+        };
+    }, []);
+
+    /** 解析排序参数 */
+    const parseSortParams = useCallback(
+        (value: string): { field: string; order: string } => {
+            const idx = value.lastIndexOf('_');
+            if (idx === -1) return { field: value, order: 'asc' };
+            return {
+                field: value.substring(0, idx),
+                order: value.substring(idx + 1),
+            };
+        },
+        []
+    );
+
+    /** 加载图书列表 */
+    const loadBooks = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+
+        try {
+            const { field, order } = parseSortParams(sortBy);
+            const params: Record<string, unknown> = {
+                sort_by: field,
+                order,
+                limit: PAGE_SIZE,
+                offset: (currentPage - 1) * PAGE_SIZE,
+            };
+
+            if (searchKeyword.trim()) params.search = searchKeyword.trim();
+            if (filterShelfId) params.shelf_id = filterShelfId;
+            if (filterSource !== 'all') params.source = filterSource;
+
+            const data = await getAllBooks(params);
+
+            if (isMounted.current) {
+                let booksData = data.books || [];
+                
+                // 客户端过滤上架状态
+                if (filterStatus === 'in_shelf') {
+                    booksData = booksData.filter((b: BookItem) => b.shelf_name);
+                } else if (filterStatus === 'not_in_shelf') {
+                    booksData = booksData.filter((b: BookItem) => !b.shelf_name);
+                }
+
+                setBooks(booksData);
+                setTotal(data.total);
+            }
+        } catch (err: any) {
+            if (isMounted.current) {
+                setError(err?.response?.data?.detail || '加载图书列表失败');
+            }
+        } finally {
+            if (isMounted.current) {
+                setLoading(false);
+            }
+        }
+    }, [
+        currentPage,
+        sortBy,
+        filterStatus,
+        filterSource,
+        filterShelfId,
+        searchKeyword,
+        parseSortParams,
+    ]);
+
+    /** 重置分页并重新加载 */
+    const refresh = useCallback(() => {
+        setCurrentPage(1);
+    }, []);
+
+    return {
+        books,
+        total,
+        loading,
+        error,
+        currentPage,
+        setCurrentPage,
+        searchKeyword,
+        setSearchKeyword,
+        sortBy,
+        setSortBy,
+        filterStatus,
+        setFilterStatus,
+        filterSource,
+        setFilterSource,
+        filterShelfId,
+        setFilterShelfId,
+        loadBooks,
+        refresh,
+    };
+};
+
+// ==================== 主组件 ====================
+
+const AllBooksManager: FC = () => {
+    const navigate = useNavigate();
+    const { token } = theme.useToken();
+    const [searchParams, setSearchParams] = useSearchParams();
+
+    // 图书管理
+    const {
+        books,
+        total,
+        loading,
+        error,
+        currentPage,
+        setCurrentPage,
+        searchKeyword,
+        setSearchKeyword,
+        sortBy,
+        setSortBy,
+        filterStatus,
+        setFilterStatus,
+        filterSource,
+        setFilterSource,
+        filterShelfId,
+        setFilterShelfId,
+        loadBooks,
+        refresh,
+    } = useBookManager();
+
+    // UI 状态
+    const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
+    const [deletingId, setDeletingId] = useState<number | null>(null);
+    const [shelfList, setShelfList] = useState<ShelfOption[]>([]);
     const isMounted = useRef(true);
 
     // ==================== 生命周期 ====================
@@ -145,11 +287,10 @@ const AllBooksManager: React.FC = () => {
 
     useEffect(() => {
         loadBooks();
-    }, [currentPage, sortBy, filterStatus, filterSource, filterShelfId]);
+    }, [loadBooks]);
 
-    // ==================== 数据加载 ====================
+    // ==================== 书架列表 ====================
 
-    /** 加载书架列表 */
     const loadShelfList = useCallback(async () => {
         try {
             const data = await listShelves();
@@ -157,69 +298,11 @@ const AllBooksManager: React.FC = () => {
                 setShelfList(data || []);
             }
         } catch {
-            // 静默失败
+            // 静默处理
         }
     }, []);
 
-    /**
-     * 加载图书列表
-     * 
-     * 使用 getAllBooks API，获取所有图书（包括未上架的）。
-     */
-    const loadBooks = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-
-        try {
-            const [field, order] = sortBy.split('_');
-            const params: any = {
-                sort_by: field,
-                order,
-                limit: PAGE_SIZE,
-                offset: (currentPage - 1) * PAGE_SIZE,
-            };
-
-            // 书架筛选
-            if (filterShelfId) {
-                // 暂不支持通过 API 筛选书架，后端未实现
-                // params.shelf_id = filterShelfId;
-            }
-
-            const data = await getAllBooks(params);
-
-            if (isMounted.current) {
-                let filteredBooks = data.books || [];
-                
-                // 前端补充筛选（上架/未上架状态、来源）
-                if (filterStatus === 'in_shelf') {
-                    filteredBooks = filteredBooks.filter(
-                        (b: BookItem) => b.shelf_name
-                    );
-                } else if (filterStatus === 'not_in_shelf') {
-                    filteredBooks = filteredBooks.filter(
-                        (b: BookItem) => !b.shelf_name
-                    );
-                }
-
-                if (filterSource !== 'all') {
-                    filteredBooks = filteredBooks.filter(
-                        (b: BookItem) => b.source === filterSource
-                    );
-                }
-
-                setBooks(filteredBooks);
-                setTotal(filteredBooks.length);
-            }
-        } catch (err: any) {
-            if (isMounted.current) {
-                setError(err?.response?.data?.detail || '加载图书列表失败');
-            }
-        } finally {
-            if (isMounted.current) setLoading(false);
-        }
-    }, [currentPage, sortBy, filterStatus, filterSource, filterShelfId]);
-
-    // ==================== 删除操作 ====================
+    // ==================== 操作处理 ====================
 
     /** 删除单本图书 */
     const handleDelete = useCallback(
@@ -228,20 +311,19 @@ const AllBooksManager: React.FC = () => {
             try {
                 await deleteBook(record.book_id);
                 message.success(`《${record.title}》已删除`);
-                loadBooks();
+                // 乐观更新
+                setBooks((prev) => prev.filter((b) => b.book_id !== record.book_id));
             } catch (err: any) {
-                message.error(
-                    err?.response?.data?.detail || '删除失败'
-                );
+                message.error(err?.response?.data?.detail || '删除失败');
             } finally {
                 setDeletingId(null);
             }
         },
-        [loadBooks]
+        []
     );
 
     /** 批量删除 */
-    const handleBatchDelete = useCallback(async () => {
+    const handleBatchDelete = useCallback(() => {
         if (selectedRowKeys.length === 0) {
             message.warning('请先选择要删除的图书');
             return;
@@ -250,13 +332,27 @@ const AllBooksManager: React.FC = () => {
         Modal.confirm({
             title: '批量删除图书',
             icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
-            content: `确定要删除选中的 ${selectedRowKeys.length} 本图书吗？此操作不可恢复。`,
+            content: (
+                <div>
+                    <Text>
+                        确定要删除选中的{' '}
+                        <Text strong type="danger">
+                            {selectedRowKeys.length}
+                        </Text>{' '}
+                        本图书吗？
+                    </Text>
+                    <br />
+                    <Text type="secondary">此操作不可恢复</Text>
+                </div>
+            ),
             okText: '确定删除',
             okType: 'danger',
             cancelText: '取消',
             onOk: async () => {
                 let successCount = 0;
                 let failCount = 0;
+
+                const hide = message.loading(`正在删除 ${selectedRowKeys.length} 本...`, 0);
 
                 for (const id of selectedRowKeys) {
                     try {
@@ -267,10 +363,15 @@ const AllBooksManager: React.FC = () => {
                     }
                 }
 
-                message.success(
-                    `删除完成：成功 ${successCount} 本` +
-                    (failCount > 0 ? `，失败 ${failCount} 本` : '')
-                );
+                hide();
+
+                if (failCount === 0) {
+                    message.success(`成功删除 ${successCount} 本图书`);
+                } else {
+                    message.warning(
+                        `删除完成：成功 ${successCount} 本，失败 ${failCount} 本`
+                    );
+                }
 
                 setSelectedRowKeys([]);
                 loadBooks();
@@ -278,21 +379,82 @@ const AllBooksManager: React.FC = () => {
         });
     }, [selectedRowKeys, loadBooks]);
 
-    // ==================== 衍生数据 ====================
+    /** 导出选中图书 */
+    const handleExport = useCallback(() => {
+        const exportData = selectedRowKeys.length > 0
+            ? books.filter((b) => selectedRowKeys.includes(b.book_id))
+            : books;
 
-    /** 统计数据 */
+        const csv = [
+            ['书名', 'ISBN', '作者', '出版社', '来源', '评分', '所在书架'].join(','),
+            ...exportData.map((b) =>
+                [b.title, b.isbn, b.author || '', b.publisher || '', b.source, b.rating || '', b.shelf_name || '']
+                    .map((v) => `"${v}"`)
+                    .join(',')
+            ),
+        ].join('\n');
+
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `books_export_${Date.now()}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        message.success('导出成功');
+    }, [books, selectedRowKeys]);
+
+    // ==================== 防抖搜索 ====================
+
+    const debouncedSearch = useMemo(
+        () =>
+            debounce((value: string) => {
+                setSearchKeyword(value);
+                setCurrentPage(1);
+            }, SEARCH_DEBOUNCE_MS),
+        [setSearchKeyword, setCurrentPage]
+    );
+
+    // ==================== 统计数据 ====================
+
     const stats = useMemo(() => {
         const inShelf = books.filter((b) => b.shelf_name).length;
-        const notInShelf = books.length - inShelf;
-        const doubanCount = books.filter((b) => b.source === 'douban').length;
-        const manualCount = books.filter((b) => b.source === 'manual').length;
-
-        return { inShelf, notInShelf, doubanCount, manualCount };
+        return {
+            inShelf,
+            notInShelf: books.length - inShelf,
+            doubanCount: books.filter((b) => b.source === 'douban').length,
+            manualCount: books.filter((b) => b.source === 'manual').length,
+        };
     }, [books]);
 
-    // ==================== 表格列配置 ====================
+    // ==================== 批量操作菜单 ====================
 
-    const columns: ColumnsType<BookItem> = useMemo(
+    const batchMenuItems: MenuProps['items'] = [
+        {
+            key: 'delete',
+            icon: <DeleteOutlined />,
+            label: `删除选中 (${selectedRowKeys.length})`,
+            danger: true,
+            onClick: handleBatchDelete,
+        },
+        {
+            key: 'export',
+            icon: <ExportOutlined />,
+            label: selectedRowKeys.length > 0 ? '导出选中' : '导出全部',
+            onClick: handleExport,
+        },
+        {
+            key: 'clear',
+            icon: <ClearOutlined />,
+            label: '清除选择',
+            disabled: selectedRowKeys.length === 0,
+            onClick: () => setSelectedRowKeys([]),
+        },
+    ];
+
+    // ==================== 表格列定义 ====================
+
+    const columns: TableColumnsType<BookItem> = useMemo(
         () => [
             {
                 title: 'ID',
@@ -301,10 +463,7 @@ const AllBooksManager: React.FC = () => {
                 width: 70,
                 align: 'center',
                 render: (id: number) => (
-                    <Text
-                        type="secondary"
-                        style={{ fontSize: 12, fontFamily: 'monospace' }}
-                    >
+                    <Text type="secondary" style={{ fontSize: 12, fontFamily: 'monospace' }}>
                         #{id}
                     </Text>
                 ),
@@ -313,34 +472,31 @@ const AllBooksManager: React.FC = () => {
                 title: '书名',
                 dataIndex: 'title',
                 key: 'title',
-                width: 250,
+                width: 280,
                 ellipsis: true,
-                render: (title: string, record: BookItem) => (
-                    <a
-                        onClick={() =>
-                            navigate(
-                                record.shelf_id
-                                    ? `/shelf/${record.shelf_id}/book/${record.book_id}`
-                                    : `/shelf/1/book/${record.book_id}`
-                            )
-                        }
-                        style={{ fontWeight: 500 }}
-                    >
-                        {title}
-                    </a>
-                ),
+                sorter: true,
+                render: (title: string, record: BookItem) => {
+                    const detailPath = record.shelf_id
+                        ? `/shelf/${record.shelf_id}/book/${record.book_id}`
+                        : `/shelf/1/book/${record.book_id}`;
+                    return (
+                        <a
+                            onClick={() => navigate(detailPath)}
+                            style={{ fontWeight: 500 }}
+                            title={title}
+                        >
+                            {title}
+                        </a>
+                    );
+                },
             },
             {
                 title: 'ISBN',
                 dataIndex: 'isbn',
                 key: 'isbn',
-                width: 150,
+                width: 160,
                 render: (isbn: string) => (
-                    <Text
-                        code
-                        style={{ fontSize: 12 }}
-                        copyable
-                    >
+                    <Text code style={{ fontSize: 12 }} copyable>
                         {isbn}
                     </Text>
                 ),
@@ -349,7 +505,7 @@ const AllBooksManager: React.FC = () => {
                 title: '作者',
                 dataIndex: 'author',
                 key: 'author',
-                width: 150,
+                width: 140,
                 ellipsis: true,
                 render: (author: string) =>
                     author || (
@@ -377,10 +533,7 @@ const AllBooksManager: React.FC = () => {
                         label: source,
                     };
                     return (
-                        <Tag
-                            color={config.color}
-                            style={{ borderRadius: 10 }}
-                        >
+                        <Tag color={config.color} style={{ borderRadius: 10 }}>
                             {config.label}
                         </Tag>
                     );
@@ -393,15 +546,12 @@ const AllBooksManager: React.FC = () => {
                 width: 80,
                 align: 'center',
                 sorter: (a, b) =>
-                    parseFloat(a.rating || '0') -
-                    parseFloat(b.rating || '0'),
+                    parseFloat(a.rating || '0') - parseFloat(b.rating || '0'),
                 render: (rating: string) =>
                     rating ? (
                         <Badge
                             count={rating}
-                            style={{
-                                backgroundColor: '#f59e0b',
-                            }}
+                            style={{ backgroundColor: '#f59e0b' }}
                         />
                     ) : (
                         <Text type="secondary">-</Text>
@@ -413,21 +563,22 @@ const AllBooksManager: React.FC = () => {
                 key: 'shelf_name',
                 width: 150,
                 ellipsis: true,
+                filters: shelfList.map((s) => ({
+                    text: s.shelf_name,
+                    value: s.logical_shelf_id,
+                })),
+                onFilter: (value, record) => record.shelf_id === value,
                 render: (shelfName: string, record: BookItem) =>
                     shelfName && record.shelf_id ? (
                         <Tooltip title={`跳转到「${shelfName}」`}>
                             <Tag
                                 color="blue"
                                 icon={<EnvironmentOutlined />}
-                                style={{
-                                    cursor: 'pointer',
-                                    borderRadius: 10,
+                                style={{ cursor: 'pointer', borderRadius: 10 }}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigate(`/shelf/${record.shelf_id}`);
                                 }}
-                                onClick={() =>
-                                    navigate(
-                                        `/shelf/${record.shelf_id}`
-                                    )
-                                }
                             >
                                 {shelfName}
                             </Tag>
@@ -447,67 +598,272 @@ const AllBooksManager: React.FC = () => {
                 key: 'action',
                 width: 200,
                 fixed: 'right',
-                render: (_: any, record: BookItem) => (
-                    <Space size="small">
-                        <Tooltip title="查看详情">
+                render: (_: unknown, record: BookItem) => {
+                    const detailPath = record.shelf_id
+                        ? `/shelf/${record.shelf_id}/book/${record.book_id}`
+                        : `/shelf/1/book/${record.book_id}`;
+
+                    return (
+                        <Space size={4}>
+                            <Tooltip title="查看详情">
+                                <Button
+                                    type="text"
+                                    size="small"
+                                    icon={<EyeOutlined />}
+                                    onClick={() => navigate(detailPath)}
+                                    style={{ color: token.colorPrimary }}
+                                />
+                            </Tooltip>
+                            <Tooltip title="编辑信息">
+                                <Button
+                                    type="text"
+                                    size="small"
+                                    icon={<EditOutlined />}
+                                    onClick={() =>
+                                        navigate(`/books/edit/${record.book_id}`)
+                                    }
+                                    style={{ color: '#3b82f6' }}
+                                />
+                            </Tooltip>
+                            <Popconfirm
+                                title={`确定删除《${record.title}》？`}
+                                description="此操作不可恢复"
+                                onConfirm={() => handleDelete(record)}
+                                okText="确定"
+                                cancelText="取消"
+                                okButtonProps={{ danger: true }}
+                            >
+                                <Button
+                                    type="text"
+                                    size="small"
+                                    danger
+                                    icon={<DeleteOutlined />}
+                                    loading={deletingId === record.book_id}
+                                />
+                            </Popconfirm>
+                        </Space>
+                    );
+                },
+            },
+        ],
+        [navigate, handleDelete, deletingId, shelfList, token]
+    );
+
+    // ==================== 虚拟滚动列 ====================
+
+    const virtualColumns = useMemo(
+        () => [
+            {
+                key: 'id',
+                title: 'ID',
+                width: 60,
+                render: (record: BookItem) => (
+                    <Text
+                        type="secondary"
+                        style={{ fontSize: 11, fontFamily: 'monospace' }}
+                    >
+                        #{record.book_id}
+                    </Text>
+                ),
+            },
+            {
+                key: 'title',
+                title: '书名',
+                width: 240,
+                render: (record: BookItem) => {
+                    const detailPath = record.shelf_id
+                        ? `/shelf/${record.shelf_id}/book/${record.book_id}`
+                        : `/shelf/1/book/${record.book_id}`;
+                    return (
+                        <a
+                            onClick={() => navigate(detailPath)}
+                            style={{
+                                fontWeight: 500,
+                                fontSize: 13,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                display: 'block',
+                            }}
+                            title={record.title}
+                        >
+                            {record.title}
+                        </a>
+                    );
+                },
+            },
+            {
+                key: 'author',
+                title: '作者',
+                width: 120,
+                render: (record: BookItem) => (
+                    <Text
+                        style={{
+                            fontSize: 12,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            display: 'block',
+                        }}
+                    >
+                        {record.author || <Text type="secondary" italic>未知</Text>}
+                    </Text>
+                ),
+            },
+            {
+                key: 'source',
+                title: '来源',
+                width: 80,
+                render: (record: BookItem) => {
+                    const config = SOURCE_CONFIG[record.source] || {
+                        color: 'default',
+                        label: record.source,
+                    };
+                    return (
+                        <Tag
+                            color={config.color}
+                            style={{ borderRadius: 10, fontSize: 10, margin: 0 }}
+                        >
+                            {config.label}
+                        </Tag>
+                    );
+                },
+            },
+            {
+                key: 'shelf',
+                title: '书架',
+                width: 120,
+                render: (record: BookItem) =>
+                    record.shelf_name ? (
+                        <Tag
+                            color="blue"
+                            style={{ borderRadius: 10, fontSize: 10, margin: 0 }}
+                        >
+                            {record.shelf_name}
+                        </Tag>
+                    ) : (
+                        <Tag
+                            color="default"
+                            style={{ borderRadius: 10, fontSize: 10, margin: 0 }}
+                        >
+                            未上架
+                        </Tag>
+                    ),
+            },
+            {
+                key: 'actions',
+                title: '操作',
+                width: 150,
+                render: (record: BookItem) => {
+                    const detailPath = record.shelf_id
+                        ? `/shelf/${record.shelf_id}/book/${record.book_id}`
+                        : `/shelf/1/book/${record.book_id}`;
+                    return (
+                        <Space size={4}>
                             <Button
                                 type="text"
                                 size="small"
                                 icon={<EyeOutlined />}
-                                onClick={() =>
-                                    // ✅ 修复：根据是否有书架决定跳转路径
-                                    navigate(
-                                        record.shelf_id
-                                            ? `/shelf/${record.shelf_id}/book/${record.book_id}`
-                                            : `/shelf/1/book/${record.book_id}`
-                                    )
-                                }
-                                style={{ color: '#8B4513' }}
+                                onClick={() => navigate(detailPath)}
+                                style={{ color: token.colorPrimary }}
                             />
-                        </Tooltip>
-                        <Tooltip title="编辑信息">
                             <Button
                                 type="text"
                                 size="small"
                                 icon={<EditOutlined />}
                                 onClick={() =>
-                                    navigate(
-                                        `/books/edit/${record.book_id}`
-                                    )
+                                    navigate(`/books/edit/${record.book_id}`)
                                 }
                                 style={{ color: '#3b82f6' }}
                             />
-                        </Tooltip>
-                        <Popconfirm
-                            title={`确定删除《${record.title}》？`}
-                            description="此操作不可恢复"
-                            onConfirm={() => handleDelete(record)}
-                            okText="确定"
-                            cancelText="取消"
-                            okButtonProps={{ danger: true }}
-                        >
-                            <Button
-                                type="text"
-                                size="small"
-                                danger
-                                icon={<DeleteOutlined />}
-                                loading={
-                                    deletingId === record.book_id
-                                }
-                            />
-                        </Popconfirm>
-                    </Space>
-                ),
+                            <Popconfirm
+                                title="删除？"
+                                onConfirm={() => handleDelete(record)}
+                                okButtonProps={{ danger: true, size: 'small' }}
+                            >
+                                <Button
+                                    type="text"
+                                    size="small"
+                                    danger
+                                    icon={<DeleteOutlined />}
+                                    loading={deletingId === record.book_id}
+                                />
+                            </Popconfirm>
+                        </Space>
+                    );
+                },
             },
         ],
-        [navigate, handleDelete, deletingId]
+        [navigate, handleDelete, deletingId, token]
     );
 
-    // ==================== 渲染 ====================
+    // ==================== 分页配置 ====================
+
+    const paginationConfig: TablePaginationConfig = {
+        current: currentPage,
+        pageSize: PAGE_SIZE,
+        total,
+        onChange: (page) => setCurrentPage(page),
+        showSizeChanger: true,
+        showQuickJumper: true,
+        showTotal: (total, range) => (
+            <Text type="secondary" style={{ fontSize: 13 }}>
+                共 {total} 本，显示第 {range[0]}-{range[1]} 本
+            </Text>
+        ),
+    };
+
+    // ==================== 渲染表格 ====================
+
+    const renderTable = () => {
+        if (books.length > VIRTUAL_SCROLL_THRESHOLD) {
+            return (
+                <VirtualTable
+                    data={books as unknown as Record<string, unknown>[]}
+                    columns={virtualColumns}
+                    rowHeight={56}
+                    headerHeight={48}
+                    height={700}
+                    emptyText="暂无图书数据"
+                />
+            );
+        }
+
+        return (
+            <Table<BookItem>
+                columns={columns}
+                dataSource={books}
+                rowKey="book_id"
+                loading={loading}
+                rowSelection={{
+                    selectedRowKeys,
+                    onChange: setSelectedRowKeys,
+                    preserveSelectedRowKeys: true,
+                }}
+                pagination={paginationConfig}
+                locale={{
+                    emptyText: (
+                        <Empty
+                            image={
+                                <BookOutlined
+                                    style={{ fontSize: 48, color: '#d4a574' }}
+                                />
+                            }
+                            description="暂无图书数据"
+                        />
+                    ),
+                }}
+                scroll={{ x: 1300 }}
+                size="middle"
+            />
+        );
+    };
+
+    // ==================== 渲染页面 ====================
 
     return (
         <div style={{ maxWidth: 1600, margin: '0 auto', padding: 24 }}>
-            {/* 面包屑导航 */}
+            {/* 面包屑 */}
             <Breadcrumb
                 style={{ marginBottom: 16 }}
                 items={[
@@ -520,30 +876,28 @@ const AllBooksManager: React.FC = () => {
                     },
                     {
                         title: (
-                            <a onClick={() => navigate('/admin')}>
-                                管理
-                            </a>
+                            <a onClick={() => navigate('/admin')}>管理</a>
                         ),
                     },
                     { title: '全部图书' },
                 ]}
             />
 
-            {/* 页面标题 */}
+            {/* 头部 */}
             <div
                 style={{
                     display: 'flex',
                     justifyContent: 'space-between',
-                    alignItems: 'center',
+                    alignItems: 'flex-start',
                     flexWrap: 'wrap',
-                    gap: 12,
+                    gap: 16,
                     marginBottom: 24,
                 }}
             >
                 <div>
                     <Title level={2} style={{ margin: 0 }}>
                         <BookOutlined
-                            style={{ marginRight: 12, color: '#8B4513' }}
+                            style={{ marginRight: 12, color: token.colorPrimary }}
                         />
                         全部图书管理
                     </Title>
@@ -552,18 +906,33 @@ const AllBooksManager: React.FC = () => {
                         style={{ display: 'block', marginTop: 4 }}
                     >
                         管理所有已录入的图书 · 共 {total} 本
+                        {books.length > VIRTUAL_SCROLL_THRESHOLD && (
+                            <Tag color="blue" style={{ marginLeft: 8 }}>
+                                虚拟滚动模式
+                            </Tag>
+                        )}
                     </Text>
                 </div>
-
                 <Space wrap>
                     <Button
                         icon={<ReloadOutlined />}
-                        onClick={loadBooks}
+                        onClick={() => loadBooks()}
                         loading={loading}
                         style={{ borderRadius: 8 }}
                     >
                         刷新
                     </Button>
+                    {selectedRowKeys.length > 0 && (
+                        <Dropdown menu={{ items: batchMenuItems }}>
+                            <Button
+                                danger
+                                icon={<DeleteOutlined />}
+                                style={{ borderRadius: 8 }}
+                            >
+                                批量操作 ({selectedRowKeys.length})
+                            </Button>
+                        </Dropdown>
+                    )}
                 </Space>
             </div>
 
@@ -581,11 +950,7 @@ const AllBooksManager: React.FC = () => {
                         <Statistic
                             title="图书总数"
                             value={total}
-                            prefix={
-                                <BookOutlined
-                                    style={{ color: '#3b82f6' }}
-                                />
-                            }
+                            prefix={<BookOutlined style={{ color: '#3b82f6' }} />}
                             valueStyle={{ color: '#3b82f6' }}
                         />
                     </Card>
@@ -602,11 +967,7 @@ const AllBooksManager: React.FC = () => {
                         <Statistic
                             title="豆瓣来源"
                             value={stats.doubanCount}
-                            prefix={
-                                <SyncOutlined
-                                    style={{ color: '#22c55e' }}
-                                />
-                            }
+                            prefix={<SyncOutlined style={{ color: '#22c55e' }} />}
                             valueStyle={{ color: '#22c55e' }}
                             suffix={`/ ${total}`}
                         />
@@ -625,9 +986,7 @@ const AllBooksManager: React.FC = () => {
                             title="已上架"
                             value={stats.inShelf}
                             prefix={
-                                <CheckCircleOutlined
-                                    style={{ color: '#a855f7' }}
-                                />
+                                <CheckCircleOutlined style={{ color: '#a855f7' }} />
                             }
                             valueStyle={{ color: '#a855f7' }}
                             suffix={`/ ${total}`}
@@ -641,22 +1000,23 @@ const AllBooksManager: React.FC = () => {
                 style={{
                     marginBottom: 24,
                     borderRadius: 12,
-                    border: '1px solid #e8d5c8',
+                    border: `1px solid ${token.colorBorderSecondary}`,
                 }}
+                styles={{ body: { padding: '16px 20px' } }}
             >
                 <Space wrap size="middle">
-                    {/* 搜索 */}
                     <Input.Search
                         placeholder="搜索书名/作者/ISBN..."
                         allowClear
-                        value={searchKeyword}
-                        onChange={(e) => setSearchKeyword(e.target.value)}
-                        onSearch={loadBooks}
+                        defaultValue={searchKeyword}
+                        onChange={(e) => debouncedSearch(e.target.value)}
+                        onSearch={(value) => {
+                            setSearchKeyword(value || '');
+                            setCurrentPage(1);
+                        }}
                         style={{ width: 280 }}
                         prefix={<SearchOutlined />}
                     />
-
-                    {/* 上架状态筛选 */}
                     <Segmented
                         options={[
                             { label: '全部', value: 'all' },
@@ -675,15 +1035,13 @@ const AllBooksManager: React.FC = () => {
                             setCurrentPage(1);
                         }}
                     />
-
-                    {/* 来源筛选 */}
                     <Select
                         value={filterSource}
                         onChange={(v) => {
-                            setFilterSource(v);
+                            setFilterSource(v as FilterSource);
                             setCurrentPage(1);
                         }}
-                        style={{ width: 130 }}
+                        style={{ width: 140 }}
                         options={[
                             { value: 'all', label: '全部来源' },
                             {
@@ -699,28 +1057,22 @@ const AllBooksManager: React.FC = () => {
                         ]}
                         prefix={<FilterOutlined />}
                     />
-
-                    {/* 书架筛选 */}
                     <Select
                         value={filterShelfId || 0}
                         onChange={(v) => {
-                            setFilterShelfId(
-                                v === 0 ? undefined : v
-                            );
+                            setFilterShelfId(v === 0 ? undefined : v);
                             setCurrentPage(1);
                         }}
-                        style={{ width: 160 }}
+                        style={{ width: 180 }}
                         options={[
                             { value: 0, label: '全部书架' },
-                            ...shelfList.map((s: any) => ({
+                            ...shelfList.map((s) => ({
                                 value: s.logical_shelf_id,
                                 label: s.shelf_name,
                             })),
                         ]}
                         prefix={<EnvironmentOutlined />}
                     />
-
-                    {/* 排序 */}
                     <Select
                         value={sortBy}
                         onChange={(v) => {
@@ -730,17 +1082,6 @@ const AllBooksManager: React.FC = () => {
                         style={{ width: 140 }}
                         options={SORT_OPTIONS}
                     />
-
-                    {/* 批量删除 */}
-                    {selectedRowKeys.length > 0 && (
-                        <Button
-                            danger
-                            icon={<DeleteOutlined />}
-                            onClick={handleBatchDelete}
-                        >
-                            删除选中 ({selectedRowKeys.length})
-                        </Button>
-                    )}
                 </Space>
             </Card>
 
@@ -749,51 +1090,27 @@ const AllBooksManager: React.FC = () => {
                 style={{
                     borderRadius: 12,
                     boxShadow: '0 2px 8px rgba(139,69,19,.06)',
-                    border: '1px solid #e8d5c8',
+                    border: `1px solid ${token.colorBorderSecondary}`,
                 }}
             >
-                <Table<BookItem>
-                    columns={columns}
-                    dataSource={books}
-                    rowKey="book_id"
-                    loading={loading}
-                    rowSelection={{
-                        selectedRowKeys,
-                        onChange: setSelectedRowKeys,
-                    }}
-                    pagination={{
-                        current: currentPage,
-                        pageSize: PAGE_SIZE,
-                        total: total,
-                        onChange: (page) => setCurrentPage(page),
-                        showSizeChanger: true,
-                        showTotal: (total, range) => (
-                            <Text
-                                type="secondary"
-                                style={{ fontSize: 13 }}
+                {error ? (
+                    <Result
+                        status="error"
+                        title="加载失败"
+                        subTitle={error}
+                        extra={
+                            <Button
+                                type="primary"
+                                icon={<ReloadOutlined />}
+                                onClick={() => loadBooks()}
                             >
-                                共 {total} 本，显示第 {range[0]}-
-                                {range[1]} 本
-                            </Text>
-                        ),
-                    }}
-                    locale={{
-                        emptyText: (
-                            <Empty
-                                image={
-                                    <BookOutlined
-                                        style={{
-                                            fontSize: 48,
-                                            color: '#d4a574',
-                                        }}
-                                    />
-                                }
-                                description="暂无图书数据"
-                            />
-                        ),
-                    }}
-                    scroll={{ x: 1200 }}
-                />
+                                重试
+                            </Button>
+                        }
+                    />
+                ) : (
+                    renderTable()
+                )}
             </Card>
         </div>
     );

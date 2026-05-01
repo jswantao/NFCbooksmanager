@@ -154,12 +154,14 @@ async def sync_book(
 async def get_all_books(
     sort_by: str = Query(
         "created_at",
-        description="排序字段: created_at / added_at / title / author / rating"
+        description="排序字段: created_at / title / author / rating"
     ),
     order: str = Query("desc", description="排序方向: asc / desc"),
     limit: int = Query(50, ge=1, le=200, description="每页数量"),
     offset: int = Query(0, ge=0, description="偏移量（分页起始位置）"),
     source: Optional[str] = Query(None, description="按来源筛选: douban / manual / isbn / nfc"),
+    search: Optional[str] = Query(None, description="搜索书名/作者/ISBN/出版社"),
+    shelf_id: Optional[int] = Query(None, description="按所在书架 ID 筛选"),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
@@ -168,46 +170,86 @@ async def get_all_books(
     功能：
     - 获取所有图书，包括那些未分配到任何书架的图书
     - 支持按来源筛选（豆瓣/手动/ISBN/NFC）
+    - 支持全文搜索（书名/作者/ISBN/出版社）
+    - 支持按书架筛选（包括未上架图书）
     - 支持排序和分页
     - 对于在架图书，包含书架名称；未在架图书的 shelf_name 为 null
     
-    数据来源：BookMetadata（左外连接 LogicalShelfBook 和 LogicalShelf）
+    数据来源：
+    - 主查询从 BookMetadata 出发，使用子查询获取每本书当前所在书架
+    - 避免 LEFT JOIN 导致的重复行问题（一书多架场景）
     
     Args:
-        sort_by: 排序字段（created_at=添加时间/added_at=上架时间/title=书名/author=作者/rating=评分）
+        sort_by: 排序字段（created_at/title/author/rating）
         order: 排序方向
         limit: 每页数量
         offset: 偏移量
         source: 按来源筛选（可选）
+        search: 搜索关键词（可选，匹配书名/作者/ISBN/出版社）
+        shelf_id: 按书架筛选（可选，仅返回该书架中的图书）
     
     Returns:
         包含图书列表、总数、分页信息的字典
     """
-    # 构建基础查询：使用左外连接，获取所有图书及其可能的书架信息
+    # ---- 步骤 1：构建子查询，获取每本书当前所在书架信息 ----
+    # 使用子查询获取每本书第一个 in_shelf 关联的书架信息
+    # 如果一本书在多个书架中，只取第一个（避免主查询出现重复行）
+    active_shelf_sub = (
+        db.query(
+            LogicalShelfBook.book_id,
+            func.min(LogicalShelfBook.logical_shelf_id).label("shelf_id"),
+        )
+        .filter(LogicalShelfBook.status == BookStatus.IN_SHELF.value)
+        .group_by(LogicalShelfBook.book_id)
+        .subquery("active_shelf")
+    )
+    
+    # ---- 步骤 2：构建主查询 ----
+    # 从 BookMetadata 出发，LEFT JOIN 子查询获取书架信息
     query = (
-        db.query(BookMetadata, LogicalShelfBook, LogicalShelf)
+        db.query(
+            BookMetadata,
+            LogicalShelf.shelf_name,
+            LogicalShelf.logical_shelf_id,
+        )
+        .select_from(BookMetadata)
         .outerjoin(
-            LogicalShelfBook,
-            (BookMetadata.book_id == LogicalShelfBook.book_id) &
-            (LogicalShelfBook.status == BookStatus.IN_SHELF.value),
+            active_shelf_sub,
+            BookMetadata.book_id == active_shelf_sub.c.book_id,
         )
         .outerjoin(
             LogicalShelf,
-            LogicalShelfBook.logical_shelf_id == LogicalShelf.logical_shelf_id,
+            active_shelf_sub.c.shelf_id == LogicalShelf.logical_shelf_id,
         )
     )
     
-    # 按来源筛选（可选）
+    # ---- 步骤 3：筛选条件 ----
+    
+    # 按来源筛选
     if source:
         query = query.filter(BookMetadata.source == source)
     
-    # 计算总数
-    total = query.count()
+    # 全文搜索
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            or_(
+                BookMetadata.title.ilike(search_term),
+                BookMetadata.author.ilike(search_term),
+                BookMetadata.isbn.ilike(search_term),
+                BookMetadata.publisher.ilike(search_term),
+            )
+        )
     
-    # 排序字段映射（支持多个排序字段）
+    # 按书架筛选
+    if shelf_id is not None:
+        query = query.filter(
+            active_shelf_sub.c.shelf_id == shelf_id
+        )
+    
+    # ---- 步骤 4：排序 ----
     sort_mapping = {
         "created_at": BookMetadata.created_at,
-        "added_at": LogicalShelfBook.added_at,  # 对未上架的图书，此字段为 NULL
         "title": BookMetadata.title,
         "author": BookMetadata.author,
         "rating": case(
@@ -218,17 +260,17 @@ async def get_all_books(
     }
     sort_column = sort_mapping.get(sort_by, BookMetadata.created_at)
     
-    # 应用排序
     query = query.order_by(
         desc(sort_column) if order == "desc" else asc(sort_column)
     )
     
-    # 分页查询
+    # ---- 步骤 5：计算总数和分页 ----
+    total = query.count()
     rows = query.offset(offset).limit(limit).all()
     
-    # 构建响应数据
+    # ---- 步骤 6：构建响应 ----
     books = []
-    for book, shelf_book, shelf in rows:
+    for book, shelf_name, shelf_id_val in rows:
         books.append({
             "book_id": book.book_id,
             "isbn": book.isbn or "",
@@ -240,8 +282,9 @@ async def get_all_books(
             "publisher": book.publisher,
             "publish_date": book.publish_date,
             "price": book.price,
-            "shelf_name": shelf.shelf_name if shelf else None,
-            "shelf_id": shelf.logical_shelf_id if shelf else None,
+            "binding": book.binding,
+            "shelf_name": shelf_name,
+            "shelf_id": shelf_id_val,
             "added_at": (
                 book.created_at.isoformat()
                 if book.created_at else None

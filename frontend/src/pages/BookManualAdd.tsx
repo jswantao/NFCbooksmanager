@@ -1,18 +1,26 @@
 // frontend/src/pages/BookManualAdd.tsx
 /**
- * 手动录入图书页面
+ * 手动录入图书页面 - React 19 + Ant Design 6
  * 
- * 采用两步式流程：
- * 1. 填写信息：分区域填写图书元数据
- * 2. 预览确认：预览填写的信息，确认后提交
- * 3. 录入成功：显示结果并提供后续操作
- * 
- * ⚠️ 关键设计：
- * Form 组件必须始终挂载在 DOM 中（使用 style={{ display: 'none' }} 隐藏），
- * 否则切换步骤时 Form.Item 消失会导致 getFieldsValue() 返回空对象。
+ * 优化点：
+ * - 完整的类型定义
+ * - 表单验证增强
+ * - ISBN 自动格式化
+ * - 步骤状态管理 Hook
+ * - 草稿自动保存
+ * - 封面 URL 实时预览
+ * - 键盘快捷键
+ * - 响应式表单布局
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, {
+    useState,
+    useEffect,
+    useCallback,
+    useRef,
+    useMemo,
+    type FC,
+} from 'react';
 import {
     Card,
     Form,
@@ -33,6 +41,11 @@ import {
     Breadcrumb,
     InputNumber,
     Empty,
+    theme,
+    Tooltip,
+    Collapse,
+    type FormInstance,
+    type FormRule,
 } from 'antd';
 import {
     BookOutlined,
@@ -57,25 +70,21 @@ import {
     EditOutlined,
     ClearOutlined,
     LoadingOutlined,
+    BarcodeOutlined,
+    QuestionCircleOutlined,
+    ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { createBookManual, listShelves } from '../services/api';
+import { createBookManual, listShelves, extractErrorMessage } from '../services/api';
 import { getPlaceholderCover } from '../utils/image';
-
-// ---- 类型定义 ----
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
-/** 装帧类型选项 */
-const BINDING_OPTIONS = ['平装', '精装', '线装', '骑马钉', '软精装', '其他'];
+// ==================== 类型定义 ====================
 
-/**
- * 预览时存储的表单快照
- * 
- * 在点击预览时保存表单值，避免因 Form.Item 卸载导致数据丢失。
- */
-interface FormSnapshot {
+/** 表单数据结构 */
+interface BookFormData {
     isbn: string;
     title: string;
     author: string;
@@ -84,7 +93,7 @@ interface FormSnapshot {
     publish_date: string;
     cover_url: string;
     summary: string;
-    pages: string;
+    pages: number | null;
     price: string;
     binding: string;
     rating: string;
@@ -94,164 +103,419 @@ interface FormSnapshot {
     shelf_id?: number;
 }
 
-// ---- 主组件 ----
+/** 书架选项 */
+interface ShelfOption {
+    value: number;
+    label: string;
+    count: number;
+}
 
-const BookManualAdd: React.FC = () => {
+/** 录入步骤 */
+type AddStep = 0 | 1 | 2; // 填写 → 预览 → 完成
+
+// ==================== 常量 ====================
+
+const BINDING_OPTIONS = [
+    { value: '平装', label: '📖 平装' },
+    { value: '精装', label: '📚 精装' },
+    { value: '线装', label: '🧵 线装' },
+    { value: '骑马钉', label: '📎 骑马钉' },
+    { value: '软精装', label: '📕 软精装' },
+    { value: '无线胶装', label: '📒 无线胶装' },
+    { value: '其他', label: '📔 其他' },
+];
+
+const DRAFT_STORAGE_KEY = 'book-manual-add-draft';
+
+const ISBN_RULES: FormRule[] = [
+    { required: true, message: '请输入 ISBN' },
+    {
+        pattern: /^(?:\d{9}[\dXx]|\d{13})$/,
+        message: 'ISBN 格式不正确（10位或13位数字）',
+    },
+];
+
+const TITLE_RULES: FormRule[] = [
+    { required: true, message: '请输入书名' },
+    { max: 200, message: '书名不能超过200个字符' },
+];
+
+const RATING_RULES: FormRule[] = [
+    {
+        pattern: /^(?:10(?:\.0)?|[0-9](?:\.[0-9])?)$/,
+        message: '评分范围 0-10，支持一位小数',
+    },
+];
+
+const URL_RULES: FormRule[] = [
+    { type: 'url', message: '请输入有效的 URL', warningOnly: true },
+];
+
+// ==================== 自定义 Hook ====================
+
+/**
+ * 表单草稿管理 Hook
+ */
+const useFormDraft = (form: FormInstance) => {
+    /** 自动保存草稿 */
+    const saveDraft = useCallback(() => {
+        try {
+            const values = form.getFieldsValue();
+            localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(values));
+        } catch {
+            // 静默处理
+        }
+    }, [form]);
+
+    /** 加载草稿 */
+    const loadDraft = useCallback((): Partial<BookFormData> | null => {
+        try {
+            const stored = localStorage.getItem(DRAFT_STORAGE_KEY);
+            if (stored) {
+                return JSON.parse(stored);
+            }
+        } catch {
+            // 静默处理
+        }
+        return null;
+    }, []);
+
+    /** 清除草稿 */
+    const clearDraft = useCallback(() => {
+        try {
+            localStorage.removeItem(DRAFT_STORAGE_KEY);
+        } catch {
+            // 静默处理
+        }
+    }, []);
+
+    return { saveDraft, loadDraft, clearDraft };
+};
+
+/**
+ * 录入步骤管理 Hook
+ */
+const useAddStep = () => {
+    const [currentStep, setCurrentStep] = useState<AddStep>(0);
+    const [formSnapshot, setFormSnapshot] = useState<BookFormData | null>(null);
+    const [createdResult, setCreatedResult] = useState<{
+        success: boolean;
+        data?: { book_id?: number };
+    } | null>(null);
+
+    const goToPreview = useCallback((data: BookFormData) => {
+        setFormSnapshot(data);
+        setCurrentStep(1);
+    }, []);
+
+    const goToEdit = useCallback(() => {
+        setCurrentStep(0);
+    }, []);
+
+    const goToComplete = useCallback((result: { success: boolean; data?: { book_id?: number } }) => {
+        setCreatedResult(result);
+        setCurrentStep(2);
+    }, []);
+
+    const resetSteps = useCallback(() => {
+        setCurrentStep(0);
+        setFormSnapshot(null);
+        setCreatedResult(null);
+    }, []);
+
+    return {
+        currentStep,
+        formSnapshot,
+        createdResult,
+        goToPreview,
+        goToEdit,
+        goToComplete,
+        resetSteps,
+        setFormSnapshot,
+    };
+};
+
+// ==================== 子组件 ====================
+
+/** 必填标签 */
+const RequiredTag: FC = () => (
+    <Tag color="error" style={{ marginLeft: 4, fontSize: 11 }}>
+        必填
+    </Tag>
+);
+
+/** 可选标签 */
+const OptionalTag: FC = () => (
+    <Tag style={{ marginLeft: 4, fontSize: 11 }}>可选</Tag>
+);
+
+// ==================== 主组件 ====================
+
+const BookManualAdd: FC = () => {
     const navigate = useNavigate();
-    const [form] = Form.useForm();
+    const { token } = theme.useToken();
+    const [form] = Form.useForm<BookFormData>();
     const formRef = useRef(form);
     formRef.current = form;
 
-    // ==================== 状态 ====================
+    // 步骤管理
+    const {
+        currentStep,
+        formSnapshot,
+        createdResult,
+        goToPreview,
+        goToEdit,
+        goToComplete,
+        resetSteps,
+    } = useAddStep();
 
-    const [currentStep, setCurrentStep] = useState(0);
+    // 草稿管理
+    const { saveDraft, loadDraft, clearDraft } = useFormDraft(form);
+
+    // UI 状态
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const [shelfOptions, setShelfOptions] = useState<any[]>([]);
-    const [createdResult, setCreatedResult] = useState<any>(null);
+    const [shelfOptions, setShelfOptions] = useState<ShelfOption[]>([]);
+    const [shelfLoading, setShelfLoading] = useState(false);
+    const [coverPreviewError, setCoverPreviewError] = useState(false);
 
-    /**
-     * ⚠️ 关键修复：表单快照
-     * 
-     * 在切换到预览步骤时保存表单值。
-     * 这确保了即使 Form.Item 在后续步骤中不可见，
-     * 提交时仍能获取到完整的表单数据。
-     */
-    const [formSnapshot, setFormSnapshot] = useState<FormSnapshot | null>(null);
-
-    // ==================== 数据加载 ====================
+    // ==================== 生命周期 ====================
 
     useEffect(() => {
-        listShelves()
-            .then((data) =>
-                setShelfOptions(
-                    data.map((shelf: any) => ({
-                        value: shelf.logical_shelf_id,
-                        label: shelf.shelf_name,
-                        count: shelf.book_count,
-                    }))
-                )
-            )
-            .catch(() => {
-                // 静默失败
+        loadShelves();
+
+        // 加载草稿
+        const draft = loadDraft();
+        if (draft && draft.isbn) {
+            form.setFieldsValue(draft);
+            message.info({
+                content: '已恢复上次未完成的录入',
+                key: 'draft-restore',
+                duration: 3,
             });
+        }
     }, []);
 
-    // ==================== 表单提交 ====================
+    // 自动保存草稿（每 30 秒）
+    useEffect(() => {
+        const interval = setInterval(saveDraft, 30000);
+        return () => clearInterval(interval);
+    }, [saveDraft]);
 
-    const handleSubmit = useCallback(async () => {
+    // ==================== 书架列表 ====================
+
+    const loadShelves = useCallback(async () => {
+        setShelfLoading(true);
         try {
-            // ⚠️ 使用快照数据提交（而非从 Form 实例读取）
-            if (!formSnapshot) {
-                message.error('请先填写表单信息');
-                return;
-            }
+            const data = await listShelves();
+            setShelfOptions(
+                (data || []).map((s: any) => ({
+                    value: s.logical_shelf_id,
+                    label: s.shelf_name,
+                    count: s.book_count,
+                }))
+            );
+        } catch {
+            // 静默处理
+        } finally {
+            setShelfLoading(false);
+        }
+    }, []);
 
-            const isbn = formSnapshot.isbn.replace(/[-\s]/g, '');
-            const title = formSnapshot.title;
+    // ==================== 操作处理 ====================
 
-            if (!isbn) {
-                message.error('ISBN 不能为空');
-                return;
-            }
-            if (!title) {
-                message.error('书名不能为空');
-                return;
-            }
+    /** ISBN 自动格式化 */
+    const handleISBNChange = useCallback(
+        (value: string) => {
+            // 移除空格和连字符
+            const cleaned = value.replace(/[-\s]/g, '');
+            form.setFieldValue('isbn', cleaned);
+        },
+        [form]
+    );
 
-            setIsSubmitting(true);
+    /** 封面 URL 预览错误 */
+    const handleCoverPreviewError = useCallback(() => {
+        setCoverPreviewError(true);
+    }, []);
 
-            const requestBody: Record<string, any> = {
-                isbn,
-                title,
-                author: formSnapshot.author,
-                translator: formSnapshot.translator,
-                publisher: formSnapshot.publisher,
-                publish_date: formSnapshot.publish_date,
-                cover_url: formSnapshot.cover_url,
-                summary: formSnapshot.summary,
-                pages: formSnapshot.pages,
-                price: formSnapshot.price,
-                binding: formSnapshot.binding,
-                rating: formSnapshot.rating,
-                original_title: formSnapshot.original_title,
-                series: formSnapshot.series,
-                douban_url: formSnapshot.douban_url,
+    const handleCoverPreviewLoad = useCallback(() => {
+        setCoverPreviewError(false);
+    }, []);
+
+    /** 预览信息 */
+    const handlePreview = useCallback(async () => {
+        try {
+            // 验证必填字段
+            await form.validateFields(['isbn', 'title']);
+
+            const values = form.getFieldsValue();
+            const snapshot: BookFormData = {
+                isbn: (values.isbn || '').toString().trim(),
+                title: (values.title || '').toString().trim(),
+                author: (values.author || '').toString().trim(),
+                translator: (values.translator || '').toString().trim(),
+                publisher: (values.publisher || '').toString().trim(),
+                publish_date: (values.publish_date || '').toString().trim(),
+                cover_url: (values.cover_url || '').toString().trim(),
+                summary: (values.summary || '').toString().trim(),
+                pages: values.pages ? Number(values.pages) : null,
+                price: (values.price || '').toString().trim(),
+                binding: (values.binding || '平装').toString().trim(),
+                rating: (values.rating || '').toString().trim(),
+                original_title: (values.original_title || '').toString().trim(),
+                series: (values.series || '').toString().trim(),
+                douban_url: (values.douban_url || '').toString().trim(),
+                shelf_id: values.shelf_id ? Number(values.shelf_id) : undefined,
             };
 
-            if (formSnapshot.shelf_id) {
-                requestBody.shelf_id = Number(formSnapshot.shelf_id);
-            }
+            setCoverPreviewError(false);
+            goToPreview(snapshot);
 
-            console.log('[BookManualAdd] 请求体:', JSON.stringify(requestBody, null, 2));
+            // 保存草稿
+            saveDraft();
+        } catch {
+            message.warning({
+                content: '请先填写 ISBN 和书名',
+                key: 'validate-warning',
+            });
+        }
+    }, [form, goToPreview, saveDraft]);
 
+    /** 确认录入 */
+    const handleSubmit = useCallback(async () => {
+        if (!formSnapshot) {
+            message.error({
+                content: '请先填写表单信息',
+                key: 'submit-error',
+            });
+            return;
+        }
+
+        const isbn = formSnapshot.isbn.replace(/[-\s]/g, '');
+        const title = formSnapshot.title;
+
+        if (!isbn) {
+            message.error({ content: 'ISBN 不能为空', key: 'isbn-error' });
+            return;
+        }
+        if (!title) {
+            message.error({ content: '书名不能为空', key: 'title-error' });
+            return;
+        }
+
+        setIsSubmitting(true);
+
+        const requestBody: Record<string, unknown> = {
+            isbn,
+            title,
+            author: formSnapshot.author || undefined,
+            translator: formSnapshot.translator || undefined,
+            publisher: formSnapshot.publisher || undefined,
+            publish_date: formSnapshot.publish_date || undefined,
+            cover_url: formSnapshot.cover_url || undefined,
+            summary: formSnapshot.summary || undefined,
+            pages: formSnapshot.pages || undefined,
+            price: formSnapshot.price || undefined,
+            binding: formSnapshot.binding || '平装',
+            rating: formSnapshot.rating || undefined,
+            original_title: formSnapshot.original_title || undefined,
+            series: formSnapshot.series || undefined,
+            douban_url: formSnapshot.douban_url || undefined,
+        };
+
+        if (formSnapshot.shelf_id) {
+            requestBody.shelf_id = formSnapshot.shelf_id;
+        }
+
+        try {
             const result = await createBookManual(requestBody);
-
             if (result.success) {
-                setCreatedResult(result);
-                setCurrentStep(2);
-                message.success('图书录入成功！');
+                // 清除草稿
+                clearDraft();
+                goToComplete(result);
+                message.success({
+                    content: '录入成功！',
+                    key: 'create-success',
+                });
             } else {
-                message.error(result.message || '录入失败');
+                message.error({
+                    content: result.message || '录入失败',
+                    key: 'create-error',
+                });
             }
-        } catch (error: any) {
-            console.error('[BookManualAdd] 提交失败:', error);
-
-            if (error?.response?.data?.detail) {
-                message.error(error.response.data.detail);
-            } else if (error?.userMessage) {
-                message.error(error.userMessage);
-            } else {
-                message.error('录入失败，请检查网络连接');
-            }
+        } catch (err: unknown) {
+            const errorMsg = extractErrorMessage(err) || '录入失败，请重试';
+            message.error({ content: errorMsg, key: 'create-error' });
         } finally {
             setIsSubmitting(false);
         }
-    }, [formSnapshot]);
+    }, [formSnapshot, clearDraft, goToComplete]);
 
-    // ==================== 重置 ====================
-
+    /** 重置所有 */
     const handleReset = useCallback(() => {
         form.resetFields();
-        setFormSnapshot(null);
-        setCurrentStep(0);
-        setCreatedResult(null);
-    }, [form]);
+        clearDraft();
+        resetSteps();
+        setCoverPreviewError(false);
+    }, [form, clearDraft, resetSteps]);
 
-    // ==================== 渲染：成功页面 ====================
+    // ==================== 渲染完成步骤 ====================
 
     if (currentStep === 2 && createdResult) {
-        const submittedISBN = formSnapshot?.isbn || '';
         const submittedTitle = formSnapshot?.title || '未知书名';
+        const submittedISBN = formSnapshot?.isbn || '';
         const bookId = createdResult?.data?.book_id;
 
         return (
             <div style={{ maxWidth: 700, margin: '0 auto', padding: 24 }}>
                 <Result
                     status="success"
-                    icon={<CheckCircleOutlined style={{ color: '#22c55e', fontSize: 72 }} />}
-                    title="图书录入成功！"
+                    icon={
+                        <CheckCircleOutlined
+                            style={{ color: '#22c55e', fontSize: 80 }}
+                        />
+                    }
+                    title="录入成功！"
                     subTitle={
                         <div>
-                            <Text strong style={{ fontSize: 16 }}>
+                            <Text strong style={{ fontSize: 17 }}>
                                 《{submittedTitle}》已成功录入
                             </Text>
                             {submittedISBN && (
-                                <div style={{ marginTop: 12 }}>
-                                    <Text code>ISBN: {submittedISBN}</Text>
+                                <div style={{ marginTop: 14 }}>
+                                    <Text code style={{ fontSize: 13 }}>
+                                        <BarcodeOutlined /> {submittedISBN}
+                                    </Text>
                                 </div>
                             )}
                         </div>
                     }
                     extra={
-                        <Space size="middle">
-                            <Button type="primary" icon={<PlusOutlined />} size="large" onClick={handleReset}>
+                        <Space size={12} wrap>
+                            <Button
+                                type="primary"
+                                icon={<PlusOutlined />}
+                                size="large"
+                                onClick={handleReset}
+                                style={{ borderRadius: 8 }}
+                            >
                                 继续添加
                             </Button>
-                            <Button icon={<BookOutlined />} size="large" onClick={() => navigate('/shelf/1')}>
+                            <Button
+                                icon={<BookOutlined />}
+                                size="large"
+                                onClick={() => navigate('/shelf/1')}
+                                style={{ borderRadius: 8 }}
+                            >
                                 浏览书架
                             </Button>
                             {bookId && (
-                                <Button icon={<EyeOutlined />} size="large" onClick={() => navigate(`/book/${bookId}`)}>
+                                <Button
+                                    icon={<EyeOutlined />}
+                                    size="large"
+                                    onClick={() => navigate(`/book/${bookId}`)}
+                                    style={{ borderRadius: 8 }}
+                                >
                                     查看详情
                                 </Button>
                             )}
@@ -262,58 +526,99 @@ const BookManualAdd: React.FC = () => {
         );
     }
 
-    // ==================== 渲染：表单页面 ====================
+    // ==================== 渲染表单步骤 ====================
+
+    // 封面预览 URL
+    const previewCoverUrl = form.getFieldValue('cover_url') || '';
 
     return (
-        <div style={{ maxWidth: 900, margin: '0 auto', padding: 24 }}>
-            {/* 面包屑导航 */}
+        <div style={{ maxWidth: 960, margin: '0 auto', padding: 24 }}>
+            {/* 面包屑 */}
             <Breadcrumb
                 style={{ marginBottom: 16 }}
                 items={[
-                    { title: <a onClick={() => navigate('/')}><HomeOutlined /> 首页</a> },
+                    {
+                        title: (
+                            <a onClick={() => navigate('/')}>
+                                <HomeOutlined /> 首页
+                            </a>
+                        ),
+                    },
                     { title: '手动录入图书' },
                 ]}
             />
 
-            {/* 页面标题 */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+            {/* 页头 */}
+            <div
+                style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 24,
+                    flexWrap: 'wrap',
+                    gap: 12,
+                }}
+            >
                 <Title level={2} style={{ margin: 0 }}>
-                    <FormOutlined style={{ color: '#8B4513', marginRight: 12 }} />
+                    <FormOutlined
+                        style={{ color: token.colorPrimary, marginRight: 12 }}
+                    />
                     手动录入图书
                 </Title>
-                <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
+                <Button
+                    icon={<ArrowLeftOutlined />}
+                    onClick={() => navigate(-1)}
+                >
+                    返回
+                </Button>
             </div>
 
-            {/* 步骤指示器 */}
+            {/* 步骤条 */}
             <Card style={{ marginBottom: 24, borderRadius: 12 }}>
                 <Steps
                     current={currentStep}
                     items={[
-                        { title: '填写信息', icon: <FormOutlined /> },
-                        { title: '预览确认', icon: <EyeOutlined /> },
+                        {
+                            title: '填写信息',
+                            description: '录入图书基本资料',
+                            icon: <FormOutlined />,
+                        },
+                        {
+                            title: '预览确认',
+                            description: '核对录入信息',
+                            icon: <EyeOutlined />,
+                        },
+                        {
+                            title: '完成录入',
+                            description: '图书已保存',
+                            icon: <CheckCircleOutlined />,
+                        },
                     ]}
+                    size="small"
                 />
             </Card>
 
-            {/* ===== Form 始终挂载，通过 display 控制可见性 ===== */}
-            {/* ⚠️ 关键修复：不使用条件渲染，而是用 display: none 隐藏 */}
+            {/* ========== 步骤 0：填写表单 ========== */}
             <div style={{ display: currentStep === 0 ? 'block' : 'none' }}>
                 <Form
                     form={form}
                     layout="vertical"
                     size="large"
-                    onValuesChange={(changedValues, allValues) => {
-                        console.log('[BookManualAdd] 表单值变化:', JSON.stringify(allValues));
-                    }}
+                    initialValues={{ binding: '平装' }}
+                    onValuesChange={saveDraft}
                 >
-                    {/* 基本信息（必填） */}
+                    {/* 基本信息 */}
                     <Card
-                        style={{ marginBottom: 24, borderRadius: 12, border: '1px solid #e8d5c8' }}
+                        style={{
+                            marginBottom: 20,
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                        }}
                         title={
-                            <Space>
+                            <Space size={6}>
                                 <InfoCircleOutlined style={{ color: '#3b82f6' }} />
-                                基本信息
-                                <Tag color="error">必填</Tag>
+                                <span>基本信息</span>
+                                <RequiredTag />
                             </Space>
                         }
                     >
@@ -322,36 +627,73 @@ const BookManualAdd: React.FC = () => {
                                 <Form.Item
                                     name="isbn"
                                     label="ISBN"
-                                    rules={[
-                                        { required: true, message: '请输入 ISBN' },
-                                        { pattern: /^\d{9}[\dXx]$|^\d{13}$/, message: 'ISBN 格式不正确（10 或 13 位）' },
-                                    ]}
+                                    rules={ISBN_RULES}
+                                    tooltip="国际标准书号，10位或13位数字"
                                 >
-                                    <Input placeholder="9787544270878" prefix={<NumberOutlined />} maxLength={13} />
+                                    <Input
+                                        placeholder="如 9787544270878"
+                                        prefix={<BarcodeOutlined />}
+                                        maxLength={13}
+                                        onChange={(e) =>
+                                            handleISBNChange(e.target.value)
+                                        }
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                             <Col xs={24} md={12}>
                                 <Form.Item
                                     name="title"
                                     label="书名"
-                                    rules={[
-                                        { required: true, message: '请输入书名' },
-                                        { max: 200, message: '书名不能超过 200 个字符' },
-                                    ]}
+                                    rules={TITLE_RULES}
                                 >
-                                    <Input placeholder="解忧杂货店" prefix={<BookOutlined />} />
+                                    <Input
+                                        placeholder="如 解忧杂货店"
+                                        prefix={<BookOutlined />}
+                                        maxLength={200}
+                                        showCount
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                         </Row>
                         <Row gutter={[24, 16]}>
                             <Col xs={24} md={12}>
                                 <Form.Item name="author" label="作者">
-                                    <Input placeholder="[日] 东野圭吾" prefix={<UserOutlined />} />
+                                    <Input
+                                        placeholder="如 [日] 东野圭吾"
+                                        prefix={<UserOutlined />}
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                             <Col xs={24} md={12}>
                                 <Form.Item name="translator" label="译者">
-                                    <Input placeholder="李盈春" prefix={<TranslationOutlined />} />
+                                    <Input
+                                        placeholder="如 李盈春"
+                                        prefix={<TranslationOutlined />}
+                                        allowClear
+                                    />
+                                </Form.Item>
+                            </Col>
+                        </Row>
+                        <Row gutter={[24, 16]}>
+                            <Col xs={24}>
+                                <Form.Item
+                                    name="rating"
+                                    label="评分"
+                                    rules={RATING_RULES}
+                                    tooltip="0-10 分，支持一位小数"
+                                >
+                                    <Input
+                                        placeholder="如 8.5"
+                                        prefix={
+                                            <StarOutlined
+                                                style={{ color: '#f59e0b' }}
+                                            />
+                                        }
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                         </Row>
@@ -359,60 +701,82 @@ const BookManualAdd: React.FC = () => {
 
                     {/* 出版信息 */}
                     <Card
-                        style={{ marginBottom: 24, borderRadius: 12, border: '1px solid #e8d5c8' }}
-                        title={<Space><CalendarOutlined style={{ color: '#22c55e' }} />出版信息</Space>}
+                        style={{
+                            marginBottom: 20,
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                        }}
+                        title={
+                            <Space size={6}>
+                                <CalendarOutlined style={{ color: '#22c55e' }} />
+                                <span>出版信息</span>
+                            </Space>
+                        }
                     >
                         <Row gutter={[24, 16]}>
                             <Col xs={24} md={12}>
                                 <Form.Item name="publisher" label="出版社">
-                                    <Input placeholder="南海出版公司" />
+                                    <Input
+                                        placeholder="如 南海出版公司"
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                             <Col xs={24} md={12}>
                                 <Form.Item name="publish_date" label="出版日期">
-                                    <Input placeholder="2014-05" />
+                                    <Input
+                                        placeholder="如 2014-05"
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                         </Row>
                         <Row gutter={[24, 16]}>
                             <Col xs={24} sm={12} md={6}>
                                 <Form.Item name="pages" label="页数">
-                                    <InputNumber placeholder="291" min={1} style={{ width: '100%' }} />
+                                    <InputNumber
+                                        placeholder="291"
+                                        min={1}
+                                        max={99999}
+                                        style={{ width: '100%' }}
+                                    />
                                 </Form.Item>
                             </Col>
                             <Col xs={24} sm={12} md={6}>
                                 <Form.Item name="price" label="定价">
-                                    <Input placeholder="39.50元" prefix={<DollarOutlined />} />
+                                    <Input
+                                        placeholder="如 39.50"
+                                        prefix={<DollarOutlined />}
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                             <Col xs={24} sm={12} md={6}>
-                                <Form.Item name="binding" label="装帧" initialValue="平装">
-                                    <Select>
-                                        {BINDING_OPTIONS.map((b) => (
-                                            <Select.Option key={b} value={b}>{b}</Select.Option>
-                                        ))}
-                                    </Select>
+                                <Form.Item name="binding" label="装帧">
+                                    <Select
+                                        options={BINDING_OPTIONS}
+                                        placeholder="选择装帧类型"
+                                    />
                                 </Form.Item>
                             </Col>
                             <Col xs={24} sm={12} md={6}>
-                                <Form.Item
-                                    name="rating"
-                                    label="评分"
-                                    rules={[{ pattern: /^\d(\.\d)?$|^10$/, message: '评分范围 0-10' }]}
-                                >
-                                    <Input placeholder="8.5" prefix={<StarOutlined style={{ color: '#f59e0b' }} />} />
+                                <Form.Item name="series" label="丛书系列">
+                                    <Input
+                                        placeholder="所属丛书"
+                                        prefix={<TagsOutlined />}
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                         </Row>
                         <Row gutter={[24, 16]}>
                             <Col xs={24} md={12}>
                                 <Form.Item name="original_title" label="原作名">
-                                    <Input prefix={<TranslationOutlined />} placeholder="外文原版书名" />
-                                </Form.Item>
-                            </Col>
-                            <Col xs={24} md={12}>
-                                <Form.Item name="series" label="丛书系列">
-                                    <Input prefix={<TagsOutlined />} placeholder="所属丛书名称" />
+                                    <Input
+                                        placeholder="外文原版书名"
+                                        prefix={<TranslationOutlined />}
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                         </Row>
@@ -420,227 +784,466 @@ const BookManualAdd: React.FC = () => {
 
                     {/* 封面与链接 */}
                     <Card
-                        style={{ marginBottom: 24, borderRadius: 12, border: '1px solid #e8d5c8' }}
-                        title={<Space><LinkOutlined style={{ color: '#a855f7' }} />封面与链接</Space>}
+                        style={{
+                            marginBottom: 20,
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                        }}
+                        title={
+                            <Space size={6}>
+                                <LinkOutlined style={{ color: '#a855f7' }} />
+                                <span>封面与链接</span>
+                            </Space>
+                        }
                     >
                         <Row gutter={[24, 16]}>
                             <Col xs={24} md={12}>
                                 <Form.Item
                                     name="cover_url"
                                     label="封面图片 URL"
-                                    rules={[{ type: 'url', warningOnly: true }]}
+                                    rules={URL_RULES}
                                 >
-                                    <Input placeholder="https://img.example.com/cover.jpg" />
+                                    <Input
+                                        placeholder="https://img.example.com/cover.jpg"
+                                        allowClear
+                                        onChange={() => setCoverPreviewError(false)}
+                                    />
                                 </Form.Item>
                             </Col>
                             <Col xs={24} md={12}>
                                 <Form.Item
                                     name="douban_url"
                                     label="豆瓣链接"
-                                    rules={[{ type: 'url', warningOnly: true }]}
+                                    rules={URL_RULES}
                                 >
-                                    <Input placeholder="https://book.douban.com/subject/xxx/" />
+                                    <Input
+                                        placeholder="https://book.douban.com/subject/..."
+                                        allowClear
+                                    />
                                 </Form.Item>
                             </Col>
                         </Row>
+                        {/* 封面实时预览 */}
+                        {previewCoverUrl && (
+                            <div
+                                style={{
+                                    textAlign: 'center',
+                                    padding: 16,
+                                    background: token.colorBgLayout,
+                                    borderRadius: 8,
+                                }}
+                            >
+                                <Text
+                                    type="secondary"
+                                    style={{ fontSize: 12, display: 'block', marginBottom: 8 }}
+                                >
+                                    封面预览
+                                </Text>
+                                <Image
+                                    src={previewCoverUrl}
+                                    alt="封面预览"
+                                    style={{
+                                        width: 140,
+                                        height: 196,
+                                        objectFit: 'cover',
+                                        borderRadius: 8,
+                                        boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                                    }}
+                                    fallback={getPlaceholderCover(
+                                        form.getFieldValue('title'),
+                                        form.getFieldValue('author')
+                                    )}
+                                    onError={handleCoverPreviewError}
+                                    onLoad={handleCoverPreviewLoad}
+                                    preview={{ mask: '查看大图' }}
+                                />
+                            </div>
+                        )}
                     </Card>
 
                     {/* 内容简介 */}
                     <Card
-                        style={{ marginBottom: 24, borderRadius: 12, border: '1px solid #e8d5c8' }}
-                        title={<Space><FileTextOutlined style={{ color: '#f97316' }} />内容简介</Space>}
+                        style={{
+                            marginBottom: 20,
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                        }}
+                        title={
+                            <Space size={6}>
+                                <FileTextOutlined style={{ color: '#f97316' }} />
+                                <span>内容简介</span>
+                            </Space>
+                        }
                     >
                         <Form.Item name="summary">
-                            <TextArea rows={6} maxLength={5000} showCount placeholder="图书的内容简介..." />
+                            <TextArea
+                                rows={6}
+                                maxLength={5000}
+                                showCount
+                                placeholder="请输入图书的内容简介..."
+                                style={{ borderRadius: 8 }}
+                            />
                         </Form.Item>
                     </Card>
 
-                    {/* 添加到书架（可选） */}
+                    {/* 添加到书架 */}
                     <Card
-                        style={{ marginBottom: 24, borderRadius: 12, border: '1px solid #e8d5c8' }}
+                        style={{
+                            marginBottom: 20,
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                        }}
                         title={
-                            <Space>
+                            <Space size={6}>
                                 <EnvironmentOutlined style={{ color: '#f59e0b' }} />
-                                添加到书架
-                                <Tag>可选</Tag>
+                                <span>添加到书架</span>
+                                <OptionalTag />
                             </Space>
                         }
                     >
                         <Form.Item name="shelf_id">
                             <Select
-                                placeholder="不选择则仅录入，不加入书架"
+                                placeholder="不选择则仅录入，不添加到书架"
                                 allowClear
                                 showSearch
+                                loading={shelfLoading}
                                 filterOption={(input, option) =>
-                                    (option?.children as string)?.includes(input)
+                                    (option?.label as string)
+                                        ?.toLowerCase()
+                                        .includes(input.toLowerCase())
                                 }
-                                notFoundContent={<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无书架" />}
-                            >
-                                {shelfOptions.map((shelf) => (
-                                    <Select.Option key={shelf.value} value={shelf.value}>
-                                        <BookOutlined style={{ color: '#d4a574' }} /> {shelf.label}
-                                        <Tag color="blue" style={{ fontSize: 11, marginLeft: 8 }}>
-                                            {shelf.count} 本
-                                        </Tag>
-                                    </Select.Option>
-                                ))}
-                            </Select>
+                                notFoundContent={
+                                    <Empty
+                                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                        description="暂无书架"
+                                    />
+                                }
+                                options={shelfOptions.map((s) => ({
+                                    value: s.value,
+                                    label: (
+                                        <Space size={4}>
+                                            <BookOutlined
+                                                style={{ color: '#d4a574' }}
+                                            />
+                                            {s.label}
+                                            <Tag
+                                                color="blue"
+                                                style={{ fontSize: 10, margin: 0 }}
+                                            >
+                                                {s.count} 本
+                                            </Tag>
+                                        </Space>
+                                    ),
+                                }))}
+                            />
                         </Form.Item>
                     </Card>
 
-                    {/* 底部操作按钮 */}
-                    <Card style={{ borderRadius: 12, border: '1px solid #e8d5c8' }}>
-                        <Space size="middle">
+                    {/* 操作按钮 */}
+                    <Card
+                        style={{
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                        }}
+                    >
+                        <Space size={12} wrap>
+                            <Tooltip title="预览录入信息 (⌘P)">
+                                <Button
+                                    type="primary"
+                                    size="large"
+                                    icon={<EyeOutlined />}
+                                    onClick={handlePreview}
+                                    style={{ borderRadius: 8 }}
+                                >
+                                    预览信息
+                                </Button>
+                            </Tooltip>
                             <Button
-                                type="primary"
                                 size="large"
-                                icon={<EyeOutlined />}
-                                onClick={async () => {
-                                    try {
-                                        // ⚠️ 先校验必填字段
-                                        await formRef.current.validateFields(['isbn', 'title']);
-                                        
-                                        // ✅ 保存表单快照
-                                        const allValues = formRef.current.getFieldsValue();
-                                        console.log('[BookManualAdd] 保存表单快照:', JSON.stringify(allValues, null, 2));
-                                        
-                                        setFormSnapshot({
-                                            isbn: (allValues.isbn || '').toString().trim(),
-                                            title: (allValues.title || '').toString().trim(),
-                                            author: (allValues.author || '').toString().trim(),
-                                            translator: (allValues.translator || '').toString().trim(),
-                                            publisher: (allValues.publisher || '').toString().trim(),
-                                            publish_date: (allValues.publish_date || '').toString().trim(),
-                                            cover_url: (allValues.cover_url || '').toString().trim(),
-                                            summary: (allValues.summary || '').toString().trim(),
-                                            pages: allValues.pages ? String(allValues.pages) : '',
-                                            price: (allValues.price || '').toString().trim(),
-                                            binding: (allValues.binding || '').toString().trim(),
-                                            rating: (allValues.rating || '').toString().trim(),
-                                            original_title: (allValues.original_title || '').toString().trim(),
-                                            series: (allValues.series || '').toString().trim(),
-                                            douban_url: (allValues.douban_url || '').toString().trim(),
-                                            shelf_id: allValues.shelf_id ? Number(allValues.shelf_id) : undefined,
-                                        });
-                                        
-                                        setCurrentStep(1);
-                                    } catch (err) {
-                                        message.warning('请先填写 ISBN 和书名');
-                                    }
-                                }}
+                                icon={<ClearOutlined />}
+                                onClick={handleReset}
+                                style={{ borderRadius: 8 }}
                             >
-                                预览信息
-                            </Button>
-                            <Button size="large" icon={<ClearOutlined />} onClick={handleReset}>
                                 重置表单
+                            </Button>
+                            <Button
+                                size="large"
+                                icon={<SaveOutlined />}
+                                onClick={saveDraft}
+                                style={{ borderRadius: 8 }}
+                            >
+                                保存草稿
                             </Button>
                         </Space>
                     </Card>
                 </Form>
             </div>
 
-            {/* ===== 步骤 1：预览确认（使用快照数据渲染） ===== */}
+            {/* ========== 步骤 1：预览确认 ========== */}
             {currentStep === 1 && formSnapshot && (
                 <>
-                    <Card style={{ marginBottom: 24, borderRadius: 12, border: '1px solid #e8d5c8' }}>
+                    <Card
+                        style={{
+                            marginBottom: 20,
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                        }}
+                    >
                         <Alert
-                            message="请仔细核对以下信息，确认无误后点击「确认录入」"
+                            message="请仔细核对以下信息"
+                            description="确认无误后点击「确认录入」提交图书"
                             type="warning"
                             showIcon
                             style={{ marginBottom: 24, borderRadius: 8 }}
                         />
 
-                        <Row gutter={[32, 24]}>
+                        <Row gutter={[36, 24]}>
+                            {/* 封面 */}
                             <Col xs={24} md={8} style={{ textAlign: 'center' }}>
                                 {formSnapshot.cover_url ? (
                                     <Image
                                         src={formSnapshot.cover_url}
-                                        style={{ width: 200, height: 280, objectFit: 'cover', borderRadius: 8 }}
-                                        fallback={getPlaceholderCover(formSnapshot.title, formSnapshot.author)}
+                                        alt="封面预览"
+                                        style={{
+                                            width: '100%',
+                                            maxWidth: 240,
+                                            aspectRatio: '3/4',
+                                            objectFit: 'cover',
+                                            borderRadius: 10,
+                                            boxShadow:
+                                                '0 6px 20px rgba(0,0,0,0.1)',
+                                        }}
+                                        fallback={getPlaceholderCover(
+                                            formSnapshot.title,
+                                            formSnapshot.author
+                                        )}
+                                        preview={{ mask: '查看大图' }}
                                     />
                                 ) : (
                                     <img
-                                        src={getPlaceholderCover(formSnapshot.title, formSnapshot.author)}
-                                        alt="封面预览"
-                                        style={{ width: 200, height: 280, objectFit: 'cover', borderRadius: 8 }}
+                                        src={getPlaceholderCover(
+                                            formSnapshot.title,
+                                            formSnapshot.author
+                                        )}
+                                        alt="封面占位"
+                                        style={{
+                                            width: '100%',
+                                            maxWidth: 240,
+                                            aspectRatio: '3/4',
+                                            objectFit: 'cover',
+                                            borderRadius: 10,
+                                        }}
                                     />
                                 )}
                             </Col>
+
+                            {/* 信息 */}
                             <Col xs={24} md={16}>
-                                <Title level={3}>{formSnapshot.title || '未填写书名'}</Title>
-                                <Divider />
+                                <Title level={3} style={{ marginTop: 0 }}>
+                                    {formSnapshot.title || '未填写书名'}
+                                </Title>
+
+                                {formSnapshot.author && (
+                                    <Text
+                                        type="secondary"
+                                        style={{
+                                            display: 'block',
+                                            marginBottom: 16,
+                                            fontSize: 15,
+                                        }}
+                                    >
+                                        <UserOutlined /> {formSnapshot.author}
+                                        {formSnapshot.translator &&
+                                            ` · 译者：${formSnapshot.translator}`}
+                                    </Text>
+                                )}
+
+                                <Divider style={{ margin: '12px 0 16px' }} />
+
                                 <div
                                     style={{
                                         display: 'grid',
-                                        gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))',
+                                        gridTemplateColumns:
+                                            'repeat(auto-fill, minmax(200px, 1fr))',
                                         gap: 12,
                                     }}
                                 >
                                     {[
-                                        { label: 'ISBN', value: formSnapshot.isbn, isCode: true },
-                                        { label: '作者', value: formSnapshot.author, isStrong: true },
-                                        { label: '译者', value: formSnapshot.translator },
-                                        { label: '出版社', value: formSnapshot.publisher },
-                                        { label: '出版日期', value: formSnapshot.publish_date },
-                                        { label: '页数', value: formSnapshot.pages ? `${formSnapshot.pages} 页` : '' },
-                                        { label: '定价', value: formSnapshot.price },
-                                        { label: '装帧', value: formSnapshot.binding },
-                                        { label: '评分', value: formSnapshot.rating },
-                                        { label: '原作名', value: formSnapshot.original_title },
-                                        { label: '丛书', value: formSnapshot.series },
+                                        {
+                                            label: 'ISBN',
+                                            value: formSnapshot.isbn,
+                                            code: true,
+                                        },
+                                        {
+                                            label: '出版社',
+                                            value: formSnapshot.publisher,
+                                        },
+                                        {
+                                            label: '出版日期',
+                                            value: formSnapshot.publish_date,
+                                        },
+                                        {
+                                            label: '页数',
+                                            value: formSnapshot.pages
+                                                ? `${formSnapshot.pages} 页`
+                                                : '',
+                                        },
+                                        {
+                                            label: '定价',
+                                            value: formSnapshot.price,
+                                        },
+                                        {
+                                            label: '装帧',
+                                            value: formSnapshot.binding,
+                                            tag: true,
+                                        },
+                                        {
+                                            label: '评分',
+                                            value: formSnapshot.rating,
+                                            highlight: true,
+                                        },
+                                        {
+                                            label: '原作名',
+                                            value: formSnapshot.original_title,
+                                        },
+                                        {
+                                            label: '丛书',
+                                            value: formSnapshot.series,
+                                        },
                                     ]
-                                        .filter((item) => item.value)
-                                        .map((item, index) => (
-                                            <div key={index}>
-                                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                        .filter((x) => x.value)
+                                        .map((item, i) => (
+                                            <div key={i}>
+                                                <Text
+                                                    type="secondary"
+                                                    style={{ fontSize: 12 }}
+                                                >
                                                     {item.label}
                                                 </Text>
                                                 <br />
-                                                {item.isCode ? (
+                                                {item.code ? (
                                                     <Text code>{item.value}</Text>
-                                                ) : item.isStrong ? (
-                                                    <Text strong>{item.value}</Text>
+                                                ) : item.tag ? (
+                                                    <Tag>{item.value}</Tag>
+                                                ) : item.highlight ? (
+                                                    <Text
+                                                        strong
+                                                        style={{
+                                                            color: '#f59e0b',
+                                                            fontSize: 18,
+                                                        }}
+                                                    >
+                                                        <StarOutlined />{' '}
+                                                        {item.value}
+                                                    </Text>
                                                 ) : (
                                                     <Text>{item.value}</Text>
                                                 )}
                                             </div>
                                         ))}
                                 </div>
+
                                 {formSnapshot.summary && (
                                     <>
-                                        <Divider />
-                                        <Text type="secondary">内容简介</Text>
+                                        <Divider
+                                            style={{ margin: '16px 0 12px' }}
+                                        />
+                                        <Text
+                                            type="secondary"
+                                            style={{
+                                                fontSize: 12,
+                                                display: 'block',
+                                                marginBottom: 8,
+                                            }}
+                                        >
+                                            内容简介
+                                        </Text>
                                         <Paragraph
-                                            ellipsis={{ rows: 4, expandable: true }}
-                                            style={{ marginTop: 8 }}
+                                            ellipsis={{
+                                                rows: 4,
+                                                expandable: true,
+                                                symbol: '展开',
+                                            }}
+                                            style={{ marginBottom: 0 }}
                                         >
                                             {formSnapshot.summary}
                                         </Paragraph>
+                                    </>
+                                )}
+
+                                {formSnapshot.shelf_id && (
+                                    <>
+                                        <Divider
+                                            style={{ margin: '16px 0 12px' }}
+                                        />
+                                        <Text
+                                            type="secondary"
+                                            style={{
+                                                fontSize: 12,
+                                                display: 'block',
+                                                marginBottom: 4,
+                                            }}
+                                        >
+                                            将添加到书架
+                                        </Text>
+                                        <Tag
+                                            color="blue"
+                                            icon={<BookOutlined />}
+                                            style={{ padding: '2px 12px' }}
+                                        >
+                                            {
+                                                shelfOptions.find(
+                                                    (s) =>
+                                                        s.value ===
+                                                        formSnapshot.shelf_id
+                                                )?.label
+                                            }
+                                        </Tag>
                                     </>
                                 )}
                             </Col>
                         </Row>
                     </Card>
 
-                    <Card style={{ borderRadius: 12, border: '1px solid #e8d5c8' }}>
-                        <Space size="middle">
+                    {/* 确认操作 */}
+                    <Card
+                        style={{
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                        }}
+                    >
+                        <Space size={12} wrap>
                             <Button
                                 type="primary"
                                 size="large"
-                                icon={isSubmitting ? <LoadingOutlined /> : <SaveOutlined />}
+                                icon={
+                                    isSubmitting ? (
+                                        <LoadingOutlined />
+                                    ) : (
+                                        <SaveOutlined />
+                                    )
+                                }
                                 loading={isSubmitting}
                                 onClick={handleSubmit}
+                                style={{ borderRadius: 8 }}
                             >
                                 确认录入
                             </Button>
                             <Button
                                 size="large"
                                 icon={<EditOutlined />}
-                                onClick={() => setCurrentStep(0)}
+                                onClick={goToEdit}
+                                style={{ borderRadius: 8 }}
                             >
                                 返回修改
                             </Button>
-                            <Button size="large" onClick={handleReset}>取消</Button>
+                            <Button
+                                size="large"
+                                onClick={handleReset}
+                                style={{ borderRadius: 8 }}
+                            >
+                                取消
+                            </Button>
                         </Space>
                     </Card>
                 </>

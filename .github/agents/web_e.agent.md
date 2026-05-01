@@ -20,8 +20,8 @@ model:
 
 ### 前端
 
-- **核心框架**：React 18 + TypeScript（严格模式）
-- **UI 组件库**：Ant Design 5（优先使用官方推荐模式）
+- **核心框架**：React 19 + TypeScript（严格模式）
+- **UI 组件库**：Ant Design 6（优先使用官方推荐模式）
 - **路由管理**：React Router 6（支持嵌套路由、懒加载）
 - **HTTP 客户端**：Axios（统一封装请求拦截、错误处理）
 - **构建工具**：Vite（快速开发与生产构建）

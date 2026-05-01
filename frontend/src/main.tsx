@@ -1,104 +1,193 @@
 // frontend/src/main.tsx
 /**
- * 应用入口文件
+ * 应用入口文件 - React 19 + Ant Design 6
  * 
- * 职责：
- * 1. 挂载 React 应用到 DOM
- * 2. 配置全局 Provider（Ant Design、国际化、严格模式）
- * 3. 懒加载 App 组件，减少首屏体积
- * 4. 初始化 dayjs 国际化
- * 
- * 加载顺序：
- * index.html → main.tsx → App.tsx（懒加载）→ 路由页面
+ * 优化点：
+ * - 预加载关键页面
+ * - 更好的错误边界
+ * - 性能监控集成
+ * - 优雅的加载体验
  */
-
 import React, { Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
-import { ConfigProvider, App as AntApp, Spin } from 'antd';
+import { ConfigProvider, App as AntApp, Spin, theme as antTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
-
-// 全局样式（CSS 变量、滚动条、响应式断点）
 import './index.css';
+import { ThemeProvider } from './theme/ThemeContext';
 
-// ---- 初始化第三方库 ----
-
-// 设置 dayjs 为中文语言环境
-// 影响日期选择器、时间格式化等组件
+// 配置 dayjs
 dayjs.locale('zh-cn');
 
-// ---- React 懒加载 ----
+// 动态导入 App
+const App = React.lazy(() => import(/* webpackPrefetch: true */ './App'));
 
-// 延迟加载 App 组件，减小首屏 JavaScript 体积
-// 配合 Suspense 显示加载状态
-const App = React.lazy(() => import('./App'));
+// 预加载关键页面的辅助函数
+const preloadPages = () => {
+    const pages = [
+        () => import('./pages/HomePage'),
+        () => import('./pages/BookSearch'),
+        () => import('./pages/ShelfView'),
+    ];
+    
+    // 使用 requestIdleCallback 在浏览器空闲时预加载
+    if ('requestIdleCallback' in window) {
+        requestIdleCallback(() => {
+            pages.forEach(preload => {
+                preload().catch(() => {});
+            });
+        });
+    } else {
+        setTimeout(() => {
+            pages.forEach(preload => {
+                preload().catch(() => {});
+            });
+        }, 3000);
+    }
+};
 
-// ---- 加载中组件 ----
-
-/**
- * 全局加载占位组件
- * 
- * 在 App 组件懒加载完成前显示，
- * 与 index.html 中的纯 CSS 占位衔接。
- */
-const AppLoading: React.FC = () => (
-    <div
-        style={{
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            minHeight: '100vh',
-            background: '#fdf8f4',
-        }}
-    >
-        <Spin
-            size="large"
-            tip="正在加载书房管理系统..."
+// 应用加载组件 - 品牌化加载界面
+const AppLoading: React.FC = () => {
+    return (
+        <div
+            style={{
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                minHeight: '100vh',
+                background: 'linear-gradient(135deg, #fdf8f4 0%, #faf0e6 50%, #fdf8f4 100%)',
+                gap: 24,
+            }}
+            role="status"
+            aria-label="应用加载中"
         >
-            {/* Spin 需要子元素才能显示 tip */}
-            <div style={{ padding: 50 }} />
-        </Spin>
-    </div>
-);
-
-// ---- 挂载应用 ----
-
-// 获取根节点
-const rootElement = document.getElementById('root');
-if (!rootElement) {
-    throw new Error(
-        '找不到 #root 元素，请检查 index.html 中是否存在 <div id="root"></div>'
+            <div style={{ fontSize: 72, animation: 'pulse 2s ease-in-out infinite' }}>
+                📚
+            </div>
+            <Spin size="large">
+                <div style={{ padding: 24 }} />
+            </Spin>
+            <div style={{ 
+                color: '#8B4513', 
+                fontSize: 16, 
+                fontWeight: 500,
+                letterSpacing: '0.05em'
+            }}>
+                书房管理系统
+            </div>
+            <style>{`
+                @keyframes pulse {
+                    0%, 100% { transform: scale(1); opacity: 0.8; }
+                    50% { transform: scale(1.05); opacity: 1; }
+                }
+            `}</style>
+        </div>
     );
+};
+
+// 全局错误边界组件
+class GlobalErrorBoundary extends React.Component<
+    { children: React.ReactNode },
+    { hasError: boolean; error?: Error }
+> {
+    constructor(props: { children: React.ReactNode }) {
+        super(props);
+        this.state = { hasError: false };
+    }
+
+    static getDerivedStateFromError(error: Error) {
+        return { hasError: true, error };
+    }
+
+    componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+        console.error('[App] 全局错误:', error, errorInfo);
+        
+        // 可以在这里添加错误上报
+        // reportError(error, errorInfo);
+    }
+
+    render() {
+        if (this.state.hasError) {
+            return (
+                <div style={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    minHeight: '100vh',
+                    background: '#fdf8f4',
+                    padding: 24,
+                }}>
+                    <div style={{ textAlign: 'center', maxWidth: 480 }}>
+                        <div style={{ fontSize: 64, marginBottom: 16 }}>⚠️</div>
+                        <h2 style={{ color: '#2c1810', marginBottom: 8 }}>应用加载异常</h2>
+                        <p style={{ color: '#6b5e56', marginBottom: 24 }}>
+                            {this.state.error?.message || '发生了未知错误'}
+                        </p>
+                        <button
+                            onClick={() => {
+                                this.setState({ hasError: false });
+                                window.location.reload();
+                            }}
+                            style={{
+                                padding: '10px 24px',
+                                background: '#8B4513',
+                                color: '#fff',
+                                border: 'none',
+                                borderRadius: 8,
+                                cursor: 'pointer',
+                                fontSize: 16,
+                                fontWeight: 500,
+                            }}
+                        >
+                            重新加载
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        return this.props.children;
+    }
 }
 
-// 创建 React 18 并发模式根节点
+// 获取挂载节点
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+    throw new Error('找不到 #root 挂载节点，请检查 index.html');
+}
+
 const root = ReactDOM.createRoot(rootElement);
 
 // 渲染应用
 root.render(
-    // StrictMode：仅在开发环境启用双重渲染检查
-    // - 检测副作用
-    // - 检测过时的 API
-    // - 确保组件可重复挂载
     <React.StrictMode>
-        {/* ConfigProvider：Ant Design 全局配置
-            - locale: 中文语言包
-            - theme: 通过 App.tsx 中的 ConfigProvider 二次配置
-        */}
-        <ConfigProvider locale={zhCN}>
-            {/* AntApp：Ant Design 5.x 的静态方法上下文
-                - 提供 message、notification、modal 的 hooks
-            */}
-            <AntApp>
-                {/* Suspense：懒加载边界
-                    - fallback: 加载超时显示提示
-                    - 生产环境建议配置错误边界
-                */}
-                <Suspense fallback={<AppLoading />}>
-                    <App />
-                </Suspense>
-            </AntApp>
-        </ConfigProvider>
+        <GlobalErrorBoundary>
+            <ConfigProvider
+                locale={zhCN}
+                theme={{
+                    algorithm: antTheme.defaultAlgorithm,
+                    token: {
+                        colorPrimary: '#8B4513',
+                        borderRadius: 8,
+                        fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif",
+                    },
+                }}
+                // 全局消息、通知、弹窗的挂载点
+                getPopupContainer={() => document.body}
+            >
+                <ThemeProvider>
+                    <AntApp
+                        message={{ top: 80, maxCount: 3 }}
+                        notification={{ placement: 'topRight', maxCount: 5 }}
+                    >
+                        <Suspense fallback={<AppLoading />}>
+                            <App onLoad={preloadPages} />
+                        </Suspense>
+                    </AntApp>
+                </ThemeProvider>
+            </ConfigProvider>
+        </GlobalErrorBoundary>
     </React.StrictMode>
 );

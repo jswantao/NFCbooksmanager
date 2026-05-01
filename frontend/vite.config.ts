@@ -1,81 +1,252 @@
 // frontend/vite.config.ts
 /**
- * Vite 构建配置
+ * Vite 构建配置 - React 19 + Ant Design 6
  * 
- * 开发环境：
- * - 监听所有网络接口（0.0.0.0），便于手机访问调试 NFC 功能
- * - 代理 /api 请求到后端 FastAPI 服务（端口 8000）
- * 
- * 生产构建：
- * - 使用 React 插件进行 JSX 转换和优化
- * - 自动代码分割和 Tree Shaking
+ * 优化点：
+ * - 更精细的代码分割策略
+ * - 图片资源优化
+ * - CSS 模块化支持
+ * - 构建性能提升
  */
-
-import { defineConfig } from 'vite';
+import { defineConfig, type PluginOption } from 'vite';
 import react from '@vitejs/plugin-react';
+import path from 'path';
+import { visualizer } from 'rollup-plugin-visualizer';
 
-export default defineConfig({
-    // React 插件：支持 JSX 自动引入、Fast Refresh
-    plugins: [react()],
+export default defineConfig(({ mode }) => {
+    const isProd = mode === 'production';
+    const isAnalyze = process.env.ANALYZE === 'true';
     
-    // 开发服务器配置
-    server: {
-        // 监听所有网络接口，允许局域网设备（手机）访问
-        host: '0.0.0.0',
-        
-        // 开发服务器端口（与后端 NFC 回调中的 FRONTEND_PORT 保持一致）
-        port: 5173,
-        
-        // API 代理配置
-        proxy: {
-            '/api': {
-                // 后端 FastAPI 服务地址
-                target: 'http://localhost:8000',
+    return {
+        plugins: [
+            react({
+                jsxRuntime: 'automatic',
+                // React 19 编译器优化
+                babel: {
+                    plugins: [
+                        // 生产环境移除 PropTypes
+                        isProd && ['babel-plugin-transform-react-remove-prop-types', { mode: 'remove' }],
+                    ].filter(Boolean),
+                },
+            }),
+            
+            // 构建分析（可选，通过 ANALYZE=true 启用）
+            isAnalyze && visualizer({
+                open: true,
+                gzipSize: true,
+                brotliSize: true,
+                filename: 'dist/stats.html',
+            }),
+        ].filter(Boolean) as PluginOption[],
+
+        resolve: {
+            // 强制单例，防止多副本冲突
+            dedupe: [
+                'react',
+                'react-dom',
+                'react-router',
+                'react-router-dom',
+                '@ant-design/icons',
+                'dayjs',
+            ],
+            alias: {
+                '@': path.resolve(__dirname, './src'),
+                '@components': path.resolve(__dirname, './src/components'),
+                '@pages': path.resolve(__dirname, './src/pages'),
+                '@services': path.resolve(__dirname, './src/services'),
+                '@utils': path.resolve(__dirname, './src/utils'),
+                '@hooks': path.resolve(__dirname, './src/hooks'),
+                '@types': path.resolve(__dirname, './src/types'),
+                '@theme': path.resolve(__dirname, './src/theme'),
+                '@assets': path.resolve(__dirname, './src/assets'),
                 
-                // 修改请求头中的 Origin 为目标地址
-                changeOrigin: true,
-                
-                // 注意：WebSocket 代理暂未启用，如需实时推送可添加 ws: true
+                // React 单例强制
+                'react': path.resolve(__dirname, './node_modules/react'),
+                'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
+                'react/jsx-runtime': path.resolve(__dirname, './node_modules/react/jsx-runtime'),
+                'react/jsx-dev-runtime': path.resolve(__dirname, './node_modules/react/jsx-dev-runtime'),
             },
         },
-    },
-    
-    // 生产构建优化
-    build: {
-        // 目标浏览器（现代浏览器，减小 polyfill 体积）
-        target: 'es2020',
-        
-        // 启用 CSS 代码分割
-        cssCodeSplit: true,
-        
-        //  chunk 大小警告阈值（KB）
-        chunkSizeWarningLimit: 1000,
-        
-        // Rollup 配置
-        rollupOptions: {
-            output: {
-                // 手动分包策略：将大型依赖独立打包
-                manualChunks: {
-                    // React 核心
-                    'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-                    // Ant Design 组件库
-                    'antd-vendor': ['antd', '@ant-design/icons'],
-                    // 数据可视化（如有使用）
-                    // 'chart-vendor': ['@ant-design/charts'],
+
+        // CSS 配置
+        css: {
+            modules: {
+                localsConvention: 'camelCaseOnly',
+                generateScopedName: isProd ? '[hash:base64:8]' : '[name]__[local]___[hash:base64:5]',
+            },
+            preprocessorOptions: {
+                less: {
+                    javascriptEnabled: true,
+                    modifyVars: {
+                        'primary-color': '#8B4513',
+                        'border-radius-base': '8px',
+                    },
+                },
+            },
+            devSourcemap: !isProd,
+        },
+
+        // 依赖预构建优化
+        optimizeDeps: {
+            include: [
+                'react',
+                'react-dom',
+                'react/jsx-runtime',
+                'react/jsx-dev-runtime',
+                'react-router-dom',
+                'antd',
+                '@ant-design/icons',
+                '@ant-design/pro-components',
+                'dayjs',
+                'axios',
+                'recharts',
+            ],
+            exclude: [],
+        },
+
+        server: {
+            host: '0.0.0.0',
+            port: 5173,
+            strictPort: false,
+            open: false,
+            cors: true,
+            proxy: {
+                '/api': {
+                    target: 'http://localhost:8000',
+                    changeOrigin: true,
+                    secure: false,
+                    timeout: 30000,
+                    configure: (proxy) => {
+                        proxy.on('error', (err) => {
+                            console.warn('[Proxy] API 代理错误:', err.message);
+                        });
+                    },
+                },
+            },
+            // 开发服务器预热
+            warmup: {
+                clientFiles: [
+                    './src/main.tsx',
+                    './src/App.tsx',
+                    './src/pages/HomePage.tsx',
+                ],
+            },
+        },
+
+        build: {
+            target: 'es2020',
+            outDir: 'dist',
+            assetsDir: 'assets',
+            
+            // CSS 代码分割
+            cssCodeSplit: true,
+            cssMinify: 'lightningcss',
+            
+            // 资源内联阈值
+            assetsInlineLimit: 4096,
+            
+            // chunk 大小警告
+            chunkSizeWarningLimit: 500,
+            
+            // Source Map（仅生产环境）
+            sourcemap: !isProd,
+            
+            // Terser 压缩配置
+            minify: 'terser',
+            terserOptions: {
+                compress: {
+                    drop_console: isProd,
+                    drop_debugger: isProd,
+                    pure_funcs: isProd ? ['console.log', 'console.info', 'console.debug'] : [],
+                    passes: 2,
+                },
+                format: {
+                    comments: false,
+                },
+            },
+            
+            // Rollup 配置
+            rollupOptions: {
+                output: {
+                    // 精细分包策略
+                    manualChunks: (id) => {
+                        // React 核心
+                        if (id.includes('node_modules/react-dom') || 
+                            id.includes('node_modules/react-router') ||
+                            id.includes('node_modules/react-router-dom')) {
+                            return 'react-vendor';
+                        }
+                        if (id.includes('node_modules/react')) {
+                            return 'react-core';
+                        }
+                        
+                        // Ant Design 主库
+                        if (id.includes('node_modules/antd') && 
+                            !id.includes('@ant-design/icons') &&
+                            !id.includes('@rc-component')) {
+                            return 'antd-core';
+                        }
+                        
+                        // Ant Design 图标
+                        if (id.includes('node_modules/@ant-design/icons')) {
+                            return 'antd-icons';
+                        }
+                        
+                        // Ant Design 其他组件
+                        if (id.includes('node_modules/@rc-component') ||
+                            id.includes('node_modules/@ant-design')) {
+                            return 'antd-components';
+                        }
+                        
+                        // 图表库（较大的依赖）
+                        if (id.includes('node_modules/recharts') ||
+                            id.includes('node_modules/d3-') ||
+                            id.includes('node_modules/d3-array') ||
+                            id.includes('node_modules/d3-scale') ||
+                            id.includes('node_modules/d3-shape')) {
+                            return 'charts';
+                        }
+                        
+                        // 其他较大的第三方库
+                        if (id.includes('node_modules/axios')) {
+                            return 'utils-axios';
+                        }
+                        if (id.includes('node_modules/dayjs')) {
+                            return 'utils-dayjs';
+                        }
+                        
+                        // 剩余 node_modules
+                        if (id.includes('node_modules')) {
+                            return 'vendor-common';
+                        }
+                        
+                        // 业务代码按页面分包
+                        if (id.includes('/pages/')) {
+                            const pageName = id.split('/pages/')[1]?.split('/')[0];
+                            if (pageName) {
+                                return `page-${pageName.toLowerCase()}`;
+                            }
+                        }
+                    },
+                    
+                    // 入口 chunk 命名
+                    entryFileNames: 'js/[name]-[hash:10].js',
+                    chunkFileNames: 'js/[name]-[hash:10].js',
+                    assetFileNames: (assetInfo) => {
+                        const extType = assetInfo.name?.split('.').pop();
+                        if (/png|jpe?g|svg|gif|tiff|bmp|ico/i.test(extType || '')) {
+                            return 'images/[name]-[hash:10].[ext]';
+                        }
+                        if (/woff2?|ttf|eot/i.test(extType || '')) {
+                            return 'fonts/[name]-[hash:10].[ext]';
+                        }
+                        return 'assets/[name]-[hash:10].[ext]';
+                    },
                 },
             },
         },
-    },
-    
-    // CSS 预处理配置
-    css: {
-        // 全局 CSS 变量注入（如需要）
-        preprocessorOptions: {
-            less: {
-                // Ant Design 主题变量覆盖（如需要定制主题）
-                // modifyVars: { 'primary-color': '#8B4513' },
-                javascriptEnabled: true,
-            },
-        },
-    },
+        
+        // 环境变量前缀
+        envPrefix: 'VITE_',
+    };
 });

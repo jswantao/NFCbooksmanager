@@ -794,31 +794,13 @@ class DoubanService:
         return ""
     
     def _convert_to_hd_cover(self, url: str) -> str:
-        """
-        将豆瓣封面 URL 转换为高清版本
-        
-        豆瓣图片 URL 命名规则：
-        - spst → lpst（小图 → 大图）
-        - mpic → lpic（中图 → 大图）
-        - spic → lpic（小图 → 大图）
-        
-        同时将 http 升级为 https。
-        
-        Args:
-            url: 原始封面 URL
-        
-        Returns:
-            高清封面 URL
-        """
-        # 替换图片尺寸标识
+        """将豆瓣封面 URL 转换为高清版本"""
         for old, new in [
-            ("spst", "lpst"),
-            ("mpic", "lpic"),
-            ("spic", "lpic"),
+            ("spst", "lpst"),  # 小图 → 大图
+            ("mpic", "lpic"),  # 中图 → 大图
+            ("spic", "lpic"),  # 小图 → 大图
         ]:
             url = url.replace(old, new)
-        
-        # 升级为 HTTPS
         return url.replace("http://", "https://", 1)
     
     def _extract_summary(self, soup: BeautifulSoup) -> str:

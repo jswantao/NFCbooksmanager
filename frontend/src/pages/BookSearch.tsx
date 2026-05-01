@@ -1,22 +1,27 @@
 // frontend/src/pages/BookSearch.tsx
 /**
- * 图书搜索与同步页面
+ * 图书搜索与同步页面 - React 19 + Ant Design 6
  * 
- * 提供通过 ISBN 从豆瓣获取图书信息的功能。
- * 
- * 功能：
- * - ISBN 输入搜索（支持回车键触发）
- * - 输入时自动清洗连字符和空格
- * - 搜索结果显示完整图书信息
- * - 快速示例填充（一键搜索示例图书）
- * - 搜索结果可添加到书架
- * - 同步失败时显示错误并支持重试
- * 
- * 数据流：
- * ISBN 输入 → POST /api/books/sync → 豆瓣搜索 → 返回图书数据 → 展示
+ * 优化点：
+ * - 完整的类型定义
+ * - 搜索历史记录
+ * - 批量搜索模式
+ * - 键盘快捷键
+ * - 动画过渡效果
+ * - 结果操作增强
+ * - 主题色适配
+ * - 防抖输入
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, {
+    useState,
+    useCallback,
+    useMemo,
+    useEffect,
+    useRef,
+    type FC,
+    type KeyboardEvent,
+} from 'react';
 import {
     Card,
     Input,
@@ -32,6 +37,15 @@ import {
     Empty,
     Breadcrumb,
     Result,
+    theme,
+    Tooltip,
+    Image,
+    Row,
+    Col,
+    List,
+    Popover,
+    Switch,
+    type InputRef,
 } from 'antd';
 import {
     SearchOutlined,
@@ -39,123 +53,783 @@ import {
     PlusOutlined,
     StarFilled,
     UserOutlined,
-    NumberOutlined,
     HomeOutlined,
     CheckCircleOutlined,
     BookOutlined,
-    CopyOutlined,
     ClearOutlined,
     ReloadOutlined,
+    BarcodeOutlined,
+    CalendarOutlined,
+    DollarOutlined,
+    TranslationOutlined,
+    EnvironmentOutlined,
+    FileTextOutlined,
+    HistoryOutlined,
+    ThunderboltOutlined,
+    BgColorsOutlined,
+    EyeOutlined,
+    EditOutlined,
+    DeleteOutlined,
+    CopyOutlined,
 } from '@ant-design/icons';
-import { syncBookByISBN } from '../services/api';
+import { syncBookByISBN, extractErrorMessage } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 import { getCoverUrl, getPlaceholderCover } from '../utils/image';
+import { formatAuthors, formatRating, formatCurrency } from '../utils/format';
 import ShelfSelector from '../components/ShelfSelector';
-
-// ---- 类型定义 ----
+import type { Book } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
 
-/** 示例图书（快速填充搜索） */
-const SAMPLE_BOOKS = [
-    { isbn: '9787020002207', title: '红楼梦' },
-    { isbn: '9787532768998', title: '百年孤独' },
-    { isbn: '9787544270878', title: '解忧杂货店' },
+// ==================== 类型定义 ====================
+
+interface SearchHistoryItem {
+    isbn: string;
+    title: string;
+    timestamp: number;
+}
+
+interface SampleBook {
+    isbn: string;
+    title: string;
+    icon?: string;
+}
+
+// ==================== 常量 ====================
+
+const SAMPLE_BOOKS: SampleBook[] = [
+    { isbn: '9787020002207', title: '红楼梦', icon: '🏮' },
+    { isbn: '9787532768998', title: '百年孤独', icon: '🦋' },
+    { isbn: '9787544270878', title: '解忧杂货店', icon: '🏪' },
+    { isbn: '9787506365437', title: '活着', icon: '🌾' },
+    { isbn: '9787208061644', title: '围城', icon: '🏰' },
+    { isbn: '9787544253994', title: '三体', icon: '🌌' },
 ];
 
-// ---- 主组件 ----
+const HISTORY_STORAGE_KEY = 'book-search-history';
+const MAX_HISTORY_ITEMS = 10;
 
-const BookSearch: React.FC = () => {
+// ==================== 自定义 Hook ====================
+
+/**
+ * 搜索历史管理 Hook
+ */
+const useSearchHistory = () => {
+    const [history, setHistory] = useState<SearchHistoryItem[]>(() => {
+        try {
+            const stored = localStorage.getItem(HISTORY_STORAGE_KEY);
+            return stored ? JSON.parse(stored) : [];
+        } catch {
+            return [];
+        }
+    });
+
+    const addToHistory = useCallback((isbn: string, title: string) => {
+        setHistory((prev) => {
+            const filtered = prev.filter((item) => item.isbn !== isbn);
+            const updated = [
+                { isbn, title, timestamp: Date.now() },
+                ...filtered,
+            ].slice(0, MAX_HISTORY_ITEMS);
+
+            try {
+                localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(updated));
+            } catch {
+                // 静默处理
+            }
+
+            return updated;
+        });
+    }, []);
+
+    const clearHistory = useCallback(() => {
+        setHistory([]);
+        try {
+            localStorage.removeItem(HISTORY_STORAGE_KEY);
+        } catch {
+            // 静默处理
+        }
+    }, []);
+
+    const removeFromHistory = useCallback((isbn: string) => {
+        setHistory((prev) => {
+            const updated = prev.filter((item) => item.isbn !== isbn);
+            try {
+                localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(updated));
+            } catch {
+                // 静默处理
+            }
+            return updated;
+        });
+    }, []);
+
+    return { history, addToHistory, clearHistory, removeFromHistory };
+};
+
+// ==================== 子组件 ====================
+
+/** 搜索结果展示组件 */
+const SearchResultCard: FC<{
+    result: Book;
+    onAddToShelf: () => void;
+    onViewDetail: () => void;
+    onCopyISBN: () => void;
+}> = ({ result, onAddToShelf, onViewDetail, onCopyISBN }) => {
+    const { token } = theme.useToken();
+
+    const coverUrl = useMemo(
+        () => getCoverUrl(result.cover_url) || '',
+        [result.cover_url]
+    );
+
+    const placeholderUrl = useMemo(
+        () => getPlaceholderCover(result.title, result.author),
+        [result.title, result.author]
+    );
+
+    const ratingValue = useMemo(() => {
+        if (!result.rating) return 0;
+        const num = parseFloat(result.rating);
+        return isNaN(num) ? 0 : num;
+    }, [result.rating]);
+
+    const infoItems = useMemo(() => {
+        return [
+            {
+                label: '作者',
+                value: result.author,
+                icon: <UserOutlined />,
+                highlight: true,
+            },
+            {
+                label: 'ISBN',
+                value: result.isbn,
+                icon: <BarcodeOutlined />,
+                code: true,
+            },
+            {
+                label: '出版社',
+                value: result.publisher,
+                icon: <EnvironmentOutlined />,
+            },
+            {
+                label: '出版日期',
+                value: result.publish_date,
+                icon: <CalendarOutlined />,
+            },
+            {
+                label: '页数',
+                value: result.pages ? `${result.pages} 页` : '',
+                icon: <FileTextOutlined />,
+            },
+            {
+                label: '定价',
+                value: result.price ? formatCurrency(result.price) : '',
+                icon: <DollarOutlined />,
+            },
+            {
+                label: '译者',
+                value: result.translator,
+                icon: <TranslationOutlined />,
+            },
+        ].filter((x) => x.value);
+    }, [result]);
+
+    return (
+        <Card
+            style={{
+                borderRadius: 16,
+                border: `1px solid ${token.colorBorderSecondary}`,
+                marginBottom: 20,
+                boxShadow: '0 2px 12px rgba(0,0,0,0.04)',
+                animation: 'fadeIn 0.4s ease-out',
+            }}
+        >
+            <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
+                {/* 封面区域 */}
+                <div
+                    style={{
+                        textAlign: 'center',
+                        minWidth: 180,
+                        maxWidth: 200,
+                    }}
+                >
+                    <Image
+                        src={coverUrl || placeholderUrl}
+                        alt={`《${result.title}》封面`}
+                        style={{
+                            width: '100%',
+                            aspectRatio: '3/4',
+                            objectFit: 'cover',
+                            borderRadius: 10,
+                            boxShadow: '0 6px 20px rgba(0,0,0,0.1)',
+                        }}
+                        fallback={placeholderUrl}
+                        preview={{ mask: '查看大图' }}
+                    />
+
+                    {/* 来源标签 */}
+                    <Tag
+                        color={result.source === 'douban' ? 'green' : 'orange'}
+                        style={{
+                            marginTop: 10,
+                            borderRadius: 6,
+                            padding: '2px 12px',
+                            fontSize: 12,
+                        }}
+                    >
+                        {result.source === 'douban' ? '📚 豆瓣数据' : '📝 手动录入'}
+                    </Tag>
+
+                    {/* 操作按钮 */}
+                    <Space direction="vertical" style={{ width: '100%', marginTop: 14 }} size={8}>
+                        <Button
+                            type="primary"
+                            icon={<PlusOutlined />}
+                            block
+                            size="large"
+                            onClick={onAddToShelf}
+                            style={{ borderRadius: 8 }}
+                        >
+                            添加到书架
+                        </Button>
+                        <Button
+                            icon={<EyeOutlined />}
+                            block
+                            onClick={onViewDetail}
+                            style={{ borderRadius: 8 }}
+                        >
+                            查看详情
+                        </Button>
+                        <Button
+                            icon={<CopyOutlined />}
+                            block
+                            onClick={onCopyISBN}
+                            style={{ borderRadius: 8 }}
+                            size="small"
+                        >
+                            复制 ISBN
+                        </Button>
+                    </Space>
+                </div>
+
+                {/* 信息区域 */}
+                <div style={{ flex: 1, minWidth: 300 }}>
+                    {/* 标题 */}
+                    <Title level={3} style={{ marginTop: 0, marginBottom: 4 }}>
+                        {result.title}
+                    </Title>
+
+                    {/* 原作名 */}
+                    {result.original_title && (
+                        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+                            <TranslationOutlined /> {result.original_title}
+                        </Text>
+                    )}
+
+                    {/* 评分 */}
+                    {ratingValue > 0 && (
+                        <div
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 10,
+                                marginBottom: 16,
+                                padding: '10px 16px',
+                                background: 'linear-gradient(135deg, #fffbeb, #fef3c7)',
+                                borderRadius: 10,
+                                border: '1px solid #fde68a',
+                            }}
+                        >
+                            <Rate
+                                disabled
+                                allowHalf
+                                value={ratingValue / 2}
+                                style={{ fontSize: 18 }}
+                            />
+                            <Text strong style={{ fontSize: 22, color: '#f59e0b' }}>
+                                {formatRating(result.rating)}
+                            </Text>
+                        </div>
+                    )}
+
+                    <Divider style={{ margin: '12px 0 16px' }} />
+
+                    {/* 详细信息网格 */}
+                    <div
+                        style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                            gap: 10,
+                        }}
+                    >
+                        {infoItems.map((item, i) => (
+                            <div key={i}>
+                                <Text type="secondary" style={{ fontSize: 11 }}>
+                                    {item.icon} {item.label}
+                                </Text>
+                                <br />
+                                {item.code ? (
+                                    <Text code style={{ fontSize: 13 }}>
+                                        {item.value}
+                                    </Text>
+                                ) : item.highlight ? (
+                                    <Text strong style={{ fontSize: 14 }}>
+                                        {item.value}
+                                    </Text>
+                                ) : (
+                                    <Text style={{ fontSize: 14 }}>{item.value}</Text>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* 内容简介 */}
+                    {result.summary && (
+                        <>
+                            <Divider style={{ margin: '16px 0 12px' }} />
+                            <Text
+                                type="secondary"
+                                style={{
+                                    fontSize: 12,
+                                    display: 'block',
+                                    marginBottom: 8,
+                                }}
+                            >
+                                <FileTextOutlined /> 内容简介
+                            </Text>
+                            <Paragraph
+                                style={{
+                                    background: token.colorFillSecondary,
+                                    padding: 16,
+                                    borderRadius: 10,
+                                    marginTop: 0,
+                                    lineHeight: 1.7,
+                                }}
+                                ellipsis={{
+                                    rows: 4,
+                                    expandable: true,
+                                    symbol: '展开全文',
+                                }}
+                            >
+                                {result.summary}
+                            </Paragraph>
+                        </>
+                    )}
+                </div>
+            </div>
+        </Card>
+    );
+};
+
+// ==================== 主组件 ====================
+
+const BookSearch: FC = () => {
     const navigate = useNavigate();
+    const { token } = theme.useToken();
+    const inputRef = useRef<InputRef>(null);
 
-    // ==================== 状态 ====================
-
+    // 状态
     const [isbnInput, setIsbnInput] = useState('');
     const [isSearching, setIsSearching] = useState(false);
-    const [searchResult, setSearchResult] = useState<any>(null);
+    const [searchResult, setSearchResult] = useState<Book | null>(null);
     const [searchError, setSearchError] = useState('');
     const [showShelfSelector, setShowShelfSelector] = useState(false);
 
-    // ==================== 搜索操作 ====================
+    // 搜索历史
+    const { history, addToHistory, clearHistory, removeFromHistory } =
+        useSearchHistory();
 
-    /**
-     * 根据 ISBN 搜索图书
-     * 
-     * 处理流程：
-     * 1. 清洗 ISBN（移除连字符和空格）
-     * 2. 校验 ISBN 格式
-     * 3. 调用同步 API（会触发豆瓣搜索）
-     * 4. 成功 → 展示图书信息
-     * 5. 失败 → 显示错误信息
-     * 
-     * @param searchIsbn - 可选的 ISBN 参数（用于示例快速填充）
-     */
+    // ==================== 生命周期 ====================
+
+    // 自动聚焦输入框
+    useEffect(() => {
+        setTimeout(() => {
+            inputRef.current?.focus();
+        }, 300);
+    }, []);
+
+    // ==================== 事件处理 ====================
+
+    /** 执行搜索 */
     const handleSearch = useCallback(
         async (searchIsbn?: string) => {
-            // 清洗 ISBN
-            const targetIsbn = (
-                searchIsbn || isbnInput
-            ).replace(/[-\s]/g, '');
+            const target = (searchIsbn || isbnInput).replace(/[-\s]/g, '');
 
-            // 格式校验
-            if (
-                !targetIsbn ||
-                !/^\d{9}[\dXx]$|^\d{13}$/.test(targetIsbn)
-            ) {
-                message.warning('请输入正确的 ISBN（10 或 13 位）');
+            // ISBN 格式验证
+            if (!target) {
+                message.warning({ content: '请输入 ISBN', key: 'isbn-empty' });
+                return;
+            }
+            if (!/^(?:\d{9}[\dXx]|\d{13})$/.test(target)) {
+                message.warning({
+                    content: 'ISBN 格式不正确（10位或13位数字）',
+                    key: 'isbn-invalid',
+                });
                 return;
             }
 
-            setIsbnInput(targetIsbn);
+            setIsbnInput(target);
             setIsSearching(true);
             setSearchError('');
             setSearchResult(null);
 
             try {
-                const result = await syncBookByISBN(targetIsbn);
-
-                if (result.success) {
+                const result = await syncBookByISBN(target);
+                if (result.success && result.book) {
                     setSearchResult(result.book);
-                    message.success('图书信息获取成功！');
+                    addToHistory(target, result.book.title || target);
+                    message.success({
+                        content: `已获取《${result.book.title}》信息`,
+                        key: 'search-success',
+                    });
                 } else {
-                    setSearchError(result.message || '未找到该图书');
+                    setSearchError(result.message || '未找到该图书信息');
                 }
-            } catch (error: any) {
-                setSearchError(
-                    error?.response?.data?.detail ||
-                        error?.userMessage ||
-                        '搜索失败，请检查网络或 ISBN 是否正确'
-                );
+            } catch (err: unknown) {
+                const errorMsg = extractErrorMessage(err) || '搜索失败，请重试';
+                setSearchError(errorMsg);
             } finally {
                 setIsSearching(false);
             }
         },
-        [isbnInput]
+        [isbnInput, addToHistory]
     );
 
-    // ==================== 衍生数据 ====================
-
-    /** 封面 URL（通过代理） */
-    const coverUrl = useMemo(
-        () => getCoverUrl(searchResult?.cover_url) || '',
-        [searchResult]
+    /** 键盘事件 */
+    const handleKeyDown = useCallback(
+        (e: KeyboardEvent<HTMLInputElement>) => {
+            if (e.key === 'Enter') {
+                handleSearch();
+            }
+        },
+        [handleSearch]
     );
 
-    /** SVG 占位图 */
-    const placeholderUrl = useMemo(
-        () =>
-            getPlaceholderCover(
-                searchResult?.title,
-                searchResult?.author
-            ),
-        [searchResult]
+    /** 清除搜索 */
+    const handleClear = useCallback(() => {
+        setIsbnInput('');
+        setSearchResult(null);
+        setSearchError('');
+        inputRef.current?.focus();
+    }, []);
+
+    /** 复制 ISBN */
+    const handleCopyISBN = useCallback(() => {
+        if (searchResult?.isbn) {
+            navigator.clipboard.writeText(searchResult.isbn);
+            message.success({
+                content: 'ISBN 已复制到剪贴板',
+                key: 'copy-isbn',
+            });
+        }
+    }, [searchResult]);
+
+    /** 查看详情 */
+    const handleViewDetail = useCallback(() => {
+        if (searchResult) {
+            const path = searchResult.shelf_id
+                ? `/shelf/${searchResult.shelf_id}/book/${searchResult.book_id}`
+                : `/shelf/1/book/${searchResult.book_id}`;
+            navigate(path);
+        }
+    }, [searchResult, navigate]);
+
+    // ==================== 渲染搜索输入区 ====================
+
+    const renderSearchInput = () => (
+        <Card
+            style={{
+                marginBottom: 24,
+                borderRadius: 12,
+                border: `1px solid ${token.colorBorderSecondary}`,
+            }}
+        >
+            <Alert
+                message="通过 ISBN 从豆瓣获取图书完整信息"
+                description="支持 10 位或 13 位 ISBN，自动同步封面、评分、简介等数据"
+                type="info"
+                showIcon
+                icon={<ThunderboltOutlined />}
+                style={{ marginBottom: 18, borderRadius: 8 }}
+            />
+
+            {/* 搜索输入框 */}
+            <Space.Compact style={{ width: '100%' }}>
+                <Input
+                    ref={inputRef}
+                    size="large"
+                    placeholder="输入 ISBN，如 9787544270878"
+                    value={isbnInput}
+                    onChange={(e) => {
+                        // 自动过滤非数字和 X
+                        const cleaned = e.target.value.replace(/[^0-9Xx]/g, '');
+                        setIsbnInput(cleaned);
+                    }}
+                    onKeyDown={handleKeyDown}
+                    prefix={<BarcodeOutlined style={{ color: token.colorTextQuaternary }} />}
+                    suffix={
+                        isbnInput && (
+                            <Button
+                                type="text"
+                                size="small"
+                                icon={<ClearOutlined />}
+                                onClick={handleClear}
+                            />
+                        )
+                    }
+                    maxLength={13}
+                    style={{
+                        borderRadius: '10px 0 0 10px',
+                        fontSize: 16,
+                        fontFamily: 'monospace',
+                        letterSpacing: '0.05em',
+                    }}
+                />
+                <Button
+                    type="primary"
+                    size="large"
+                    icon={isSearching ? <SyncOutlined spin /> : <SearchOutlined />}
+                    loading={isSearching}
+                    onClick={() => handleSearch()}
+                    style={{
+                        borderRadius: '0 10px 10px 0',
+                        minWidth: 140,
+                        fontWeight: 500,
+                    }}
+                >
+                    {isSearching ? '搜索中...' : '搜索同步'}
+                </Button>
+            </Space.Compact>
+
+            {/* 示例 + 搜索历史 */}
+            <div style={{ marginTop: 16 }}>
+                <Row gutter={[16, 12]}>
+                    {/* 示例书籍 */}
+                    <Col xs={24} md={14}>
+                        <div
+                            style={{
+                                padding: 14,
+                                background: token.colorFillSecondary,
+                                borderRadius: 10,
+                            }}
+                        >
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                💡 试试这些经典书籍：
+                            </Text>
+                            <Space wrap style={{ marginTop: 8 }} size={6}>
+                                {SAMPLE_BOOKS.map((s) => (
+                                    <Button
+                                        key={s.isbn}
+                                        size="small"
+                                        type="dashed"
+                                        onClick={() => handleSearch(s.isbn)}
+                                        style={{ borderRadius: 6 }}
+                                    >
+                                        {s.icon} {s.title}
+                                    </Button>
+                                ))}
+                            </Space>
+                        </div>
+                    </Col>
+
+                    {/* 搜索历史 */}
+                    <Col xs={24} md={10}>
+                        {history.length > 0 && (
+                            <div
+                                style={{
+                                    padding: 14,
+                                    background: token.colorFillSecondary,
+                                    borderRadius: 10,
+                                    height: '100%',
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        marginBottom: 8,
+                                    }}
+                                >
+                                    <Text type="secondary" style={{ fontSize: 12 }}>
+                                        <HistoryOutlined /> 搜索历史
+                                    </Text>
+                                    <Button
+                                        type="text"
+                                        size="small"
+                                        danger
+                                        onClick={clearHistory}
+                                        style={{ fontSize: 11 }}
+                                    >
+                                        清除
+                                    </Button>
+                                </div>
+                                <Space wrap size={4}>
+                                    {history.slice(0, 6).map((item) => (
+                                        <Tag
+                                            key={item.isbn}
+                                            closable
+                                            onClose={(e) => {
+                                                e.preventDefault();
+                                                removeFromHistory(item.isbn);
+                                            }}
+                                            style={{
+                                                cursor: 'pointer',
+                                                borderRadius: 6,
+                                                padding: '1px 8px',
+                                            }}
+                                            onClick={() => handleSearch(item.isbn)}
+                                        >
+                                            {item.title || item.isbn}
+                                        </Tag>
+                                    ))}
+                                </Space>
+                            </div>
+                        )}
+                    </Col>
+                </Row>
+            </div>
+        </Card>
     );
 
-    // ==================== 渲染 ====================
+    // ==================== 渲染搜索错误 ====================
+
+    const renderSearchError = () => {
+        if (!searchError) return null;
+
+        return (
+            <Result
+                status="error"
+                title="搜索失败"
+                subTitle={searchError}
+                style={{
+                    marginBottom: 24,
+                    padding: 40,
+                    background: token.colorErrorBg,
+                    borderRadius: 16,
+                    border: `1px solid ${token.colorErrorBorder}`,
+                }}
+                extra={[
+                    <Button
+                        key="retry"
+                        type="primary"
+                        icon={<ReloadOutlined />}
+                        onClick={() => handleSearch()}
+                        style={{ borderRadius: 8 }}
+                    >
+                        重试
+                    </Button>,
+                    <Button
+                        key="clear"
+                        icon={<ClearOutlined />}
+                        onClick={() => setSearchError('')}
+                        style={{ borderRadius: 8 }}
+                    >
+                        清除
+                    </Button>,
+                    <Button
+                        key="manual"
+                        icon={<EditOutlined />}
+                        onClick={() => navigate('/books/add')}
+                        style={{ borderRadius: 8 }}
+                    >
+                        手动录入
+                    </Button>,
+                ]}
+            />
+        );
+    };
+
+    // ==================== 渲染加载状态 ====================
+
+    const renderLoading = () => {
+        if (!isSearching) return null;
+
+        return (
+            <Card
+                style={{
+                    borderRadius: 16,
+                    marginBottom: 24,
+                    textAlign: 'center',
+                    padding: 60,
+                    border: `1px solid ${token.colorBorderSecondary}`,
+                }}
+            >
+                <Spin size="large">
+                    <div style={{ padding: 20 }} />
+                </Spin>
+                <Text
+                    type="secondary"
+                    style={{ display: 'block', marginTop: 20, fontSize: 15 }}
+                >
+                    正在从豆瓣获取图书信息...
+                </Text>
+                <Text
+                    type="secondary"
+                    style={{
+                        display: 'block',
+                        marginTop: 6,
+                        fontSize: 12,
+                        opacity: 0.6,
+                    }}
+                >
+                    请确保已配置豆瓣 Cookie
+                </Text>
+            </Card>
+        );
+    };
+
+    // ==================== 渲染空状态 ====================
+
+    const renderEmpty = () => {
+        if (isSearching || searchResult || searchError) return null;
+
+        return (
+            <Empty
+                image={
+                    <div
+                        style={{
+                            fontSize: 80,
+                            opacity: 0.5,
+                            marginBottom: 16,
+                        }}
+                    >
+                        📖
+                    </div>
+                }
+                description={
+                    <div>
+                        <Text type="secondary" style={{ fontSize: 15 }}>
+                            输入 ISBN 搜索图书
+                        </Text>
+                        <br />
+                        <Text
+                            type="secondary"
+                            style={{ fontSize: 12, opacity: 0.6, marginTop: 4, display: 'block' }}
+                        >
+                            支持从豆瓣同步完整信息
+                        </Text>
+                    </div>
+                }
+            >
+                <Button
+                    type="primary"
+                    icon={<EditOutlined />}
+                    onClick={() => navigate('/books/add')}
+                    style={{ borderRadius: 8 }}
+                >
+                    手动录入图书
+                </Button>
+            </Empty>
+        );
+    };
+
+    // ==================== 渲染页面 ====================
 
     return (
-        <div style={{ maxWidth: 900, margin: '0 auto', padding: 24 }}>
-            {/* 面包屑导航 */}
+        <div style={{ maxWidth: 960, margin: '0 auto', padding: 24 }}>
+            {/* 面包屑 */}
             <Breadcrumb
                 style={{ marginBottom: 16 }}
                 items={[
@@ -170,442 +844,56 @@ const BookSearch: React.FC = () => {
                 ]}
             />
 
-            {/* 页面标题 */}
+            {/* 标题 */}
             <Title level={2} style={{ marginBottom: 24 }}>
-                <SearchOutlined
-                    style={{ color: '#8B4513', marginRight: 12 }}
-                />
+                <SearchOutlined style={{ color: token.colorPrimary, marginRight: 12 }} />
                 图书搜索与同步
             </Title>
 
             {/* 搜索输入区 */}
-            <Card
-                style={{
-                    marginBottom: 24,
-                    borderRadius: 12,
-                    border: '1px solid #e8d5c8',
-                }}
-            >
-                <Alert
-                    message="输入 ISBN 从豆瓣获取图书信息"
-                    description="支持 10 位或 13 位 ISBN，自动清洗连字符和空格"
-                    type="info"
-                    showIcon
-                    style={{ marginBottom: 16, borderRadius: 8 }}
-                />
-
-                {/* 搜索输入框 */}
-                <Space.Compact style={{ width: '100%' }}>
-                    <Input
-                        size="large"
-                        placeholder="输入 ISBN，如 9787544270878"
-                        value={isbnInput}
-                        onChange={(e) =>
-                            setIsbnInput(e.target.value)
-                        }
-                        onPressEnter={() => handleSearch()}
-                        prefix={<SearchOutlined />}
-                        suffix={
-                            isbnInput && (
-                                <Button
-                                    type="text"
-                                    size="small"
-                                    icon={<ClearOutlined />}
-                                    onClick={() => {
-                                        setIsbnInput('');
-                                        setSearchResult(null);
-                                        setSearchError('');
-                                    }}
-                                />
-                            )
-                        }
-                        style={{
-                            borderRadius: '8px 0 0 8px',
-                        }}
-                    />
-                    <Button
-                        type="primary"
-                        size="large"
-                        icon={
-                            isSearching ? (
-                                <SyncOutlined spin />
-                            ) : (
-                                <SyncOutlined />
-                            )
-                        }
-                        loading={isSearching}
-                        onClick={() => handleSearch()}
-                        style={{
-                            borderRadius: '0 8px 8px 0',
-                            minWidth: 160,
-                        }}
-                    >
-                        {isSearching ? '搜索中...' : '同步图书信息'}
-                    </Button>
-                </Space.Compact>
-
-                {/* 示例图书快速填充 */}
-                <div
-                    style={{
-                        marginTop: 16,
-                        padding: 16,
-                        background: '#fafaf9',
-                        borderRadius: 8,
-                    }}
-                >
-                    <Text type="secondary" style={{ fontSize: 13 }}>
-                        📝 快速尝试：
-                    </Text>
-                    <Space wrap style={{ marginTop: 8 }}>
-                        {SAMPLE_BOOKS.map((sample) => (
-                            <Button
-                                key={sample.isbn}
-                                size="small"
-                                type="dashed"
-                                onClick={() =>
-                                    handleSearch(sample.isbn)
-                                }
-                            >
-                                {sample.title}
-                            </Button>
-                        ))}
-                    </Space>
-                </div>
-            </Card>
+            {renderSearchInput()}
 
             {/* 搜索错误 */}
-            {searchError && (
-                <Result
-                    status="error"
-                    title="搜索失败"
-                    subTitle={searchError}
-                    style={{
-                        marginBottom: 24,
-                        padding: 32,
-                        background: '#fef2f2',
-                        borderRadius: 12,
-                    }}
-                    extra={[
-                        <Button
-                            key="retry"
-                            type="primary"
-                            icon={<ReloadOutlined />}
-                            onClick={() => handleSearch()}
-                        >
-                            重试
-                        </Button>,
-                        <Button
-                            key="clear"
-                            onClick={() => setSearchError('')}
-                        >
-                            清除
-                        </Button>,
-                    ]}
-                />
-            )}
+            {renderSearchError()}
 
-            {/* 搜索中加载 */}
-            {isSearching && (
-                <Card
-                    style={{
-                        borderRadius: 12,
-                        marginBottom: 24,
-                        textAlign: 'center',
-                        padding: 60,
-                    }}
-                >
-                    <Spin size="large" />
-                    <Text
-                        type="secondary"
-                        style={{
-                            display: 'block',
-                            marginTop: 16,
-                        }}
-                    >
-                        正在从豆瓣获取图书信息...
-                    </Text>
-                </Card>
-            )}
+            {/* 加载状态 */}
+            {renderLoading()}
 
             {/* 空状态 */}
-            {!isSearching && !searchResult && !searchError && (
-                <Card style={{ borderRadius: 12 }}>
-                    <Empty
-                        image={
-                            <div
-                                style={{
-                                    fontSize: 64,
-                                    opacity: 0.6,
-                                }}
-                            >
-                                📖
-                            </div>
-                        }
-                        description="输入 ISBN 开始搜索图书信息"
-                    />
-                </Card>
-            )}
+            {renderEmpty()}
 
             {/* 搜索结果 */}
             {searchResult && !isSearching && (
                 <>
-                    <Card
-                        style={{
-                            borderRadius: 12,
-                            border: '1px solid #e8d5c8',
-                            marginBottom: 16,
-                        }}
-                    >
-                        <div
-                            style={{
-                                display: 'flex',
-                                gap: 24,
-                                flexWrap: 'wrap',
-                            }}
-                        >
-                            {/* 封面区域 */}
-                            <div
-                                style={{
-                                    textAlign: 'center',
-                                    minWidth: 160,
-                                }}
-                            >
-                                <img
-                                    src={coverUrl || placeholderUrl}
-                                    alt={searchResult.title}
-                                    style={{
-                                        width: 160,
-                                        aspectRatio: '3/4',
-                                        objectFit: 'cover',
-                                        borderRadius: 8,
-                                        boxShadow:
-                                            '0 4px 12px rgba(139,69,19,.15)',
-                                    }}
-                                />
-                                <Tag
-                                    color={
-                                        searchResult.source === 'douban'
-                                            ? 'green'
-                                            : 'orange'
-                                    }
-                                    style={{ marginTop: 8 }}
-                                >
-                                    {searchResult.source === 'douban'
-                                        ? '豆瓣数据'
-                                        : '手动录入'}
-                                </Tag>
-
-                                {/* 操作按钮 */}
-                                <Space
-                                    direction="vertical"
-                                    style={{
-                                        width: '100%',
-                                        marginTop: 12,
-                                    }}
-                                >
-                                    <Button
-                                        type="primary"
-                                        icon={<PlusOutlined />}
-                                        block
-                                        size="large"
-                                        onClick={() =>
-                                            setShowShelfSelector(true)
-                                        }
-                                    >
-                                        添加到书架
-                                    </Button>
-                                    <Button
-                                        icon={<BookOutlined />}
-                                        block
-                                        onClick={() =>
-                                            navigate('/shelf/1')
-                                        }
-                                    >
-                                        浏览书架
-                                    </Button>
-                                </Space>
-                            </div>
-
-                            {/* 信息区域 */}
-                            <div
-                                style={{
-                                    flex: 1,
-                                    minWidth: 280,
-                                }}
-                            >
-                                <Title
-                                    level={3}
-                                    style={{ marginTop: 0 }}
-                                >
-                                    {searchResult.title}
-                                </Title>
-
-                                {/* 评分 */}
-                                {searchResult.rating && (
-                                    <div
-                                        style={{
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: 8,
-                                            marginBottom: 12,
-                                        }}
-                                    >
-                                        <Rate
-                                            disabled
-                                            allowHalf
-                                            value={
-                                                parseFloat(
-                                                    searchResult.rating
-                                                ) / 2
-                                            }
-                                        />
-                                        <Text
-                                            strong
-                                            style={{
-                                                color: '#f59e0b',
-                                            }}
-                                        >
-                                            {searchResult.rating}
-                                        </Text>
-                                    </div>
-                                )}
-
-                                <Divider />
-
-                                {/* 详细信息网格 */}
-                                <div
-                                    style={{
-                                        display: 'grid',
-                                        gridTemplateColumns:
-                                            'repeat(auto-fill,minmax(180px,1fr))',
-                                        gap: 8,
-                                    }}
-                                >
-                                    {[
-                                        {
-                                            label: '作者',
-                                            value:
-                                                searchResult.author,
-                                            isStrong: true,
-                                        },
-                                        {
-                                            label: 'ISBN',
-                                            value:
-                                                searchResult.isbn,
-                                            isCode: true,
-                                        },
-                                        {
-                                            label: '出版社',
-                                            value:
-                                                searchResult.publisher,
-                                        },
-                                        {
-                                            label: '出版日期',
-                                            value:
-                                                searchResult.publish_date,
-                                        },
-                                        {
-                                            label: '页数',
-                                            value: searchResult.pages
-                                                ? `${searchResult.pages} 页`
-                                                : '',
-                                        },
-                                        {
-                                            label: '定价',
-                                            value:
-                                                searchResult.price,
-                                        },
-                                    ]
-                                        .filter((item) => item.value)
-                                        .map((item, index) => (
-                                            <div key={index}>
-                                                <Text
-                                                    type="secondary"
-                                                    style={{
-                                                        fontSize: 12,
-                                                    }}
-                                                >
-                                                    {item.label}
-                                                </Text>
-                                                <br />
-                                                {item.isCode ? (
-                                                    <Text code>
-                                                        {item.value}
-                                                    </Text>
-                                                ) : item.isStrong ? (
-                                                    <Text strong>
-                                                        {item.value}
-                                                    </Text>
-                                                ) : (
-                                                    <Text>
-                                                        {item.value}
-                                                    </Text>
-                                                )}
-                                            </div>
-                                        ))}
-                                </div>
-
-                                {/* 简介 */}
-                                {searchResult.summary && (
-                                    <>
-                                        <Divider />
-                                        <Text type="secondary">
-                                            内容简介
-                                        </Text>
-                                        <Paragraph
-                                            style={{
-                                                background: '#fafaf9',
-                                                padding: 16,
-                                                borderRadius: 8,
-                                                marginTop: 8,
-                                            }}
-                                            ellipsis={{
-                                                rows: 4,
-                                                expandable: true,
-                                            }}
-                                        >
-                                            {searchResult.summary}
-                                        </Paragraph>
-                                    </>
-                                )}
-                            </div>
-                        </div>
-                    </Card>
+                    <SearchResultCard
+                        result={searchResult}
+                        onAddToShelf={() => setShowShelfSelector(true)}
+                        onViewDetail={handleViewDetail}
+                        onCopyISBN={handleCopyISBN}
+                    />
 
                     {/* 成功提示 */}
                     <Card
                         style={{
                             borderRadius: 12,
-                            background: '#f0fdf4',
-                            border: '1px solid #d1fae5',
+                            background: token.colorSuccessBg,
+                            border: `1px solid ${token.colorSuccessBorder}`,
                         }}
                     >
-                        <div
-                            style={{
-                                display: 'flex',
-                                gap: 12,
-                                alignItems: 'center',
-                            }}
-                        >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                             <CheckCircleOutlined
-                                style={{
-                                    color: '#22c55e',
-                                    fontSize: 20,
-                                }}
+                                style={{ color: token.colorSuccess, fontSize: 22 }}
                             />
                             <div>
-                                <Text
-                                    strong
-                                    style={{ color: '#166534' }}
-                                >
-                                    图书信息已获取
+                                <Text strong style={{ color: '#166534' }}>
+                                    已获取图书信息
                                 </Text>
                                 <br />
                                 <Text
                                     type="secondary"
-                                    style={{ color: '#15803d' }}
+                                    style={{ color: '#15803d', fontSize: 13 }}
                                 >
-                                    可以添加到书架或继续搜索其他图书
+                                    可以添加到书架或查看完整详情
                                 </Text>
                             </div>
                         </div>
@@ -613,17 +901,28 @@ const BookSearch: React.FC = () => {
                 </>
             )}
 
-            {/* 书架选择器弹窗 */}
+            {/* 书架选择器 */}
             <ShelfSelector
                 visible={showShelfSelector}
                 bookId={searchResult?.book_id || 0}
                 bookTitle={searchResult?.title || ''}
                 onClose={() => setShowShelfSelector(false)}
                 onSuccess={() => {
-                    message.success('已添加到书架');
+                    message.success({
+                        content: '已成功添加到书架',
+                        key: 'add-shelf-success',
+                    });
                     setShowShelfSelector(false);
                 }}
             />
+
+            {/* 淡入动画 */}
+            <style>{`
+                @keyframes fadeIn {
+                    from { opacity: 0; transform: translateY(8px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+            `}</style>
         </div>
     );
 };

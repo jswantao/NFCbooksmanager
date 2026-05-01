@@ -2,59 +2,143 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=5.0" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     
     <!-- SEO 元信息 -->
-    <meta name="description" content="书房管理系统 - 基于 NFC 技术的智能图书管理，支持豆瓣数据同步" />
-    <meta name="keywords" content="书房管理,NFC,图书管理,豆瓣,书房" />
+    <meta name="description" content="书房管理系统 - 基于 NFC 技术的智能图书管理，支持豆瓣数据同步、封面墙展示" />
+    <meta name="keywords" content="书房管理,NFC,图书管理,豆瓣,书房,PWA,虚拟书架" />
+    <meta name="author" content="NFC Books Manager" />
+    <meta name="robots" content="index, follow" />
     
-    <!-- PWA 相关 -->
-    <meta name="theme-color" content="#8B4513" />
+    <!-- Open Graph / 社交媒体 -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="书房管理系统 - NFC 智能图书管理" />
+    <meta property="og:description" content="基于 NFC 技术连接实体书架与数字信息，支持豆瓣数据同步" />
+    <meta property="og:image" content="/icon-512.png" />
+    
+    <!-- PWA 增强配置 -->
+    <meta name="theme-color" content="#8B4513" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1a1a2e" media="(prefers-color-scheme: dark)" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="书房管理" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="format-detection" content="telephone=no" />
     
-    <!-- 资源链接 -->
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <!-- PWA 清单 -->
     <link rel="manifest" href="/manifest.json" />
+    
+    <!-- 图标 - 多尺寸适配 -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" />
+    
+    <!-- iOS Splash Screen -->
+    <link rel="apple-touch-startup-image" href="/icon-512.png" />
+    
+    <!-- 性能优化：资源预连接和预加载 -->
+    <link rel="dns-prefetch" href="http://localhost:8000" />
+    <link rel="preconnect" href="http://localhost:8000" />
+    <link rel="preload" as="image" href="/icon-192.png" fetchpriority="high" />
+    
+    <!-- 字体预连接（如使用 Google Fonts） -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     
     <title>书房管理系统 - NFC 智能图书管理</title>
     
-    <!-- 首屏加载样式（内联，避免额外请求） -->
+    <!-- 关键 CSS 内联 - 首屏渲染优化 -->
     <style>
-        /* 基础重置 */
+        /* 字体加载策略 */
+        @font-face {
+            font-family: 'Inter';
+            font-style: normal;
+            font-weight: 400;
+            font-display: swap;
+            src: local('Inter'), local('Inter-Regular');
+        }
+        
+        /* 基础重置 - 防止 FOUC */
+        *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+        html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+        
         body {
             margin: 0;
             padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+            min-height: 100vh;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
                          'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
             background: #fdf8f4;
+            color: #2c1810;
+            line-height: 1.6;
+            font-size: 16px;
         }
         
-        /* 加载占位动画（应用未渲染前显示） */
+        /* 优雅的加载动画 */
+        #root:empty::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #fdf8f4 0%, #faf0e6 50%, #fdf8f4 100%);
+            z-index: 9999;
+        }
+        
         #root:empty::after {
             content: '📚';
-            position: absolute;
+            position: fixed;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            font-size: 48px;
-            animation: root-pulse 1.5s ease-in-out infinite;
+            font-size: 64px;
+            z-index: 10000;
+            animation: root-appear 0.6s ease-out;
+        }
+        
+        /* 加载进度条 */
+        #root:not(:empty) + .app-loading-bar {
+            display: none;
+        }
+        
+        @keyframes root-appear {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+            100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
         }
         
         @keyframes root-pulse {
             0%, 100% { opacity: 0.4; transform: translate(-50%, -50%) scale(1); }
-            50% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+            50% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
         }
         
-        /* 减少动画偏好（尊重用户系统设置） */
-        @media (prefers-reduced-motion: reduce) {
+        /* 移动端优化 */
+        @media (max-width: 768px) {
             #root:empty::after {
-                animation: none;
+                font-size: 48px;
+            }
+        }
+        
+        /* 深色模式初始支持 */
+        @media (prefers-color-scheme: dark) {
+            body {
+                background: #1a1a2e;
+                color: #e8e6e3;
+            }
+        }
+        
+        /* 减少动画偏好 */
+        @media (prefers-reduced-motion: reduce) {
+            #root:empty::after { animation: none; }
+            *,*::before,*::after {
+                animation-duration: 0.01ms !important;
+                transition-duration: 0.01ms !important;
             }
         }
     </style>
@@ -63,28 +147,123 @@
     <!-- React 应用挂载节点 -->
     <div id="root"></div>
     
-    <!-- JavaScript 禁用时的降级展示 -->
+    <!-- JavaScript 禁用时的优雅降级 -->
     <noscript>
         <div style="
             display: flex;
             justify-content: center;
             align-items: center;
             min-height: 100vh;
-            background: #fdf8f4;
+            background: linear-gradient(135deg, #fdf8f4 0%, #faf0e6 100%);
             text-align: center;
-            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
+            padding: 24px;
+            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
         ">
-            <div>
-                <div style="font-size: 64px; margin-bottom: 16px;">📚</div>
-                <h1 style="color: #8B4513; margin: 0 0 8px;">书房管理系统</h1>
-                <p style="color: #6b5e56; margin: 0;">
-                    请启用 JavaScript 后访问本应用
+            <div style="max-width: 480px;">
+                <div style="font-size: 80px; margin-bottom: 24px; animation: float 3s ease-in-out infinite;">📚</div>
+                <h1 style="color: #8B4513; margin: 0 0 12px; font-size: 32px; font-weight: 700;">书房管理系统</h1>
+                <p style="color: #6b5e56; margin: 0 0 24px; font-size: 18px; line-height: 1.6;">
+                    基于 NFC 技术的智能图书管理系统
+                </p>
+                <p style="color: #a0522d; margin: 0; font-size: 16px;">
+                    ⚠️ 请启用 JavaScript 以访问完整功能
                 </p>
             </div>
         </div>
+        <style>
+            @keyframes float {
+                0%, 100% { transform: translateY(0px); }
+                50% { transform: translateY(-10px); }
+            }
+        </style>
     </noscript>
     
-    <!-- 应用入口脚本 -->
+    <!-- 应用入口脚本 - type="module" 确保现代浏览器 -->
     <script type="module" src="/src/main.tsx"></script>
+    
+    <!-- Service Worker 注册 - 增强版 -->
+    <script>
+        (function() {
+            'use strict';
+            
+            // Service Worker 注册管理
+            const SWManager = {
+                canRegister() {
+                    if (!('serviceWorker' in navigator)) return false;
+                    
+                    const { hostname, protocol } = window.location;
+                    return (
+                        hostname === 'localhost' ||
+                        hostname === '[::1]' ||
+                        /^127\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?){3}$/.test(hostname) ||
+                        /^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(hostname) ||
+                        protocol === 'https:'
+                    );
+                },
+                
+                async register() {
+                    if (!this.canRegister()) {
+                        console.info('[SW] 💡 当前环境不支持 Service Worker');
+                        return;
+                    }
+                    
+                    try {
+                        console.log('[SW] 🚀 正在注册 Service Worker...');
+                        
+                        const registration = await navigator.serviceWorker.register('/sw.js', {
+                            scope: '/',
+                            updateViaCache: 'none'
+                        });
+                        
+                        const state = registration.active ? '运行中' : 
+                                       registration.waiting ? '等待中' : '安装中';
+                        console.log(`[SW] ✅ 注册成功 | 状态: ${state} | 范围: ${registration.scope}`);
+                        
+                        // 监听更新
+                        registration.addEventListener('updatefound', () => {
+                            const newWorker = registration.installing;
+                            if (!newWorker) return;
+                            
+                            console.log('[SW] 🔄 检测到新版本');
+                            
+                            newWorker.addEventListener('statechange', () => {
+                                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                    console.log('[SW] 📦 新版本已就绪，将在下次访问时激活');
+                                    
+                                    // 可以在这里显示更新提示
+                                    // window.dispatchEvent(new CustomEvent('sw-update-available'));
+                                }
+                            });
+                        });
+                        
+                        // 监听控制器变化
+                        let refreshing = false;
+                        navigator.serviceWorker.addEventListener('controllerchange', () => {
+                            if (refreshing) return;
+                            refreshing = true;
+                            console.log('[SW] 🎯 Service Worker 已接管页面');
+                        });
+                        
+                        return registration;
+                        
+                    } catch (error) {
+                        console.warn(`[SW] ⚠️ 注册失败: ${error.message}`);
+                        
+                        // 开发环境下的常见问题提示
+                        if (error.message.includes('MIME type')) {
+                            console.warn('[SW] 💡 提示: 请确保 sw.js 文件位于 public 目录下');
+                        }
+                    }
+                }
+            };
+            
+            // 延迟注册（页面加载后），避免影响首屏
+            if (document.readyState === 'complete') {
+                SWManager.register();
+            } else {
+                window.addEventListener('load', () => SWManager.register(), { once: true });
+            }
+        })();
+    </script>
 </body>
 </html>

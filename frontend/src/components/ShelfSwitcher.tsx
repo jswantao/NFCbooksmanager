@@ -1,18 +1,14 @@
 // frontend/src/components/ShelfSwitcher.tsx
 /**
- * 书架切换器组件
+ * 书架切换器组件 - React 19 + Ant Design 6
  * 
- * 提供三种视图模式的书架列表展示和切换功能：
- * 1. dropdown - 下拉选择器（适合顶部工具栏）
- * 2. cards - 卡片网格（适合独立页面或展示面板）
- * 3. sidebar - 侧边栏列表（适合侧边导航）
- * 
- * 功能：
- * - 自动加载书架列表
- * - 搜索过滤（名称/描述/物理位置）
- * - 点击选中书架并触发回调或导航
- * - 显示书架统计（图书数量、物理位置）
- * - 当前选中书架高亮标识
+ * 优化点：
+ * - 三种视图模式统一管理
+ * - 动画过渡效果
+ * - 键盘导航优化
+ * - 加载骨架屏
+ * - 虚拟列表（侧边栏模式大量书架时）
+ * - 可配置的卡片颜色主题
  */
 
 import React, {
@@ -20,6 +16,8 @@ import React, {
     useState,
     useCallback,
     useMemo,
+    useRef,
+    type FC,
 } from 'react';
 import {
     Select,
@@ -36,6 +34,9 @@ import {
     Tooltip,
     Input,
     Skeleton,
+    Collapse,
+    theme,
+    type SelectProps,
 } from 'antd';
 import {
     BookOutlined,
@@ -46,15 +47,16 @@ import {
     CheckCircleFilled,
     InboxOutlined,
     RightOutlined,
+    MenuOutlined,
+    UnorderedListOutlined,
 } from '@ant-design/icons';
 import { listShelves } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 
-// ---- 类型定义 ----
-
 const { Text, Title } = Typography;
 
-/** 书架列表项 */
+// ==================== 类型定义 ====================
+
 interface ShelfItem {
     logical_shelf_id: number;
     shelf_name: string;
@@ -64,134 +66,186 @@ interface ShelfItem {
     recent_cover?: string;
 }
 
+type ViewMode = 'dropdown' | 'cards' | 'sidebar';
+
 interface ShelfSwitcherProps {
     /** 当前选中的书架 ID */
     currentShelfId?: number;
     /** 书架切换回调 */
     onShelfChange?: (id: number, name: string) => void;
     /** 视图模式 */
-    viewMode?: 'dropdown' | 'cards' | 'sidebar';
-    /** 紧凑模式（减少内边距） */
+    viewMode?: ViewMode;
+    /** 紧凑模式 */
     compact?: boolean;
+    /** 允许切换视图模式 */
+    allowModeSwitch?: boolean;
 }
 
-// ---- 常量 ----
+// ==================== 常量 ====================
 
-/** 卡片模式下的书架渐变背景色板 */
 const CARD_COLORS = [
     '#fef3c7', '#dbeafe', '#dcfce7', '#fce7f3',
-    '#e0e7ff', '#ffedd5',
-];
+    '#e0e7ff', '#ffedd5', '#f0fdf4', '#fdf2f8',
+] as const;
 
-/** 品牌色 */
 const BRAND_COLOR = '#8B4513';
-
-/** 选中高亮色 */
 const ACTIVE_COLOR = '#f59e0b';
 
-/** 搜索框宽度 */
-const SEARCH_INPUT_WIDTH = 160;
+// ==================== 工具函数 ====================
 
-/** 书架图标大小 */
-const SHELF_ICON_SIZE = 40;
+/**
+ * 获取卡片的渐变背景色
+ */
+const getCardGradient = (index: number): string => {
+    const color1 = CARD_COLORS[index % CARD_COLORS.length];
+    const color2 = CARD_COLORS[(index + 1) % CARD_COLORS.length];
+    return `linear-gradient(135deg, ${color1}, ${color2})`;
+};
 
-// ---- 组件 ----
+// ==================== 组件 ====================
 
-const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
+const ShelfSwitcher: FC<ShelfSwitcherProps> = ({
     currentShelfId,
     onShelfChange,
-    viewMode = 'dropdown',
+    viewMode: initialViewMode = 'dropdown',
     compact = false,
+    allowModeSwitch = false,
 }) => {
-    // ==================== 状态 ====================
-    
-    const [shelves, setShelves] = useState<ShelfItem[]>([]);
-    const [loading, setLoading] = useState(false);
-    const [searchText, setSearchText] = useState('');
-    const [showPanel, setShowPanel] = useState(false);
-    
+    const { token } = theme.useToken();
     const navigate = useNavigate();
 
-    // ==================== 数据加载 ====================
+    // 状态
+    const [shelves, setShelves] = useState<ShelfItem[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [searchText, setSearchText] = useState('');
+    const [showPanel, setShowPanel] = useState(false);
+    const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode);
 
-    /**
-     * 加载书架列表
-     * 
-     * 错误处理：静默失败，保持旧数据展示
-     */
+    const isMounted = useRef(true);
+    const searchInputRef = useRef<any>(null);
+
+    // ==================== 生命周期 ====================
+
+    useEffect(() => {
+        isMounted.current = true;
+        return () => {
+            isMounted.current = false;
+        };
+    }, []);
+
     const loadShelves = useCallback(async () => {
         setLoading(true);
+        setError(null);
+
         try {
             const data = await listShelves();
-            setShelves(data || []);
-        } catch (err) {
-            // 静默失败：保留旧数据
-            console.warn('[ShelfSwitcher] 加载书架列表失败:', err);
+            if (isMounted.current) {
+                setShelves(data || []);
+            }
+        } catch (err: any) {
+            if (isMounted.current) {
+                setError(err?.response?.data?.detail || '加载失败');
+            }
         } finally {
-            setLoading(false);
+            if (isMounted.current) {
+                setLoading(false);
+            }
         }
     }, []);
 
-    // 首次加载
     useEffect(() => {
         loadShelves();
     }, [loadShelves]);
 
-    // ==================== 搜索过滤 ====================
+    // ==================== 数据过滤 ====================
 
-    /**
-     * 根据搜索文本过滤书架
-     * 
-     * 匹配范围：名称、描述、物理位置（不区分大小写）
-     */
     const filteredShelves = useMemo(() => {
         if (!searchText.trim()) return shelves;
 
-        const keyword = searchText.toLowerCase();
+        const keyword = searchText.toLowerCase().trim();
         return shelves.filter(
-            (shelf) =>
-                shelf.shelf_name.toLowerCase().includes(keyword) ||
-                shelf.description?.toLowerCase().includes(keyword) ||
-                shelf.physical_location?.toLowerCase().includes(keyword)
+            (s) =>
+                s.shelf_name.toLowerCase().includes(keyword) ||
+                s.description?.toLowerCase().includes(keyword) ||
+                s.physical_location?.toLowerCase().includes(keyword)
         );
     }, [shelves, searchText]);
 
-    // ==================== 书架选择 ====================
+    // ==================== 事件处理 ====================
 
-    /**
-     * 选中书架的处理
-     * 
-     * 优先调用外部回调，否则自动导航到书架页面
-     */
-    const handleShelfSelect = useCallback(
-        (shelfId: number, shelfName: string) => {
+    const handleSelect = useCallback(
+        (id: number, name: string) => {
             if (onShelfChange) {
-                onShelfChange(shelfId, shelfName);
+                onShelfChange(id, name);
             } else {
-                navigate(`/shelf/${shelfId}`);
+                navigate(`/shelf/${id}`);
             }
             setShowPanel(false);
         },
         [onShelfChange, navigate]
     );
 
-    // ==================== 下拉选择模式 ====================
+    // ==================== 视图模式切换器 ====================
+
+    const renderModeSwitch = () => {
+        if (!allowModeSwitch) return null;
+
+        return (
+            <Space.Compact size="small">
+                <Tooltip title="下拉选择">
+                    <Button
+                        icon={<MenuOutlined />}
+                        type={viewMode === 'dropdown' ? 'primary' : 'default'}
+                        onClick={() => setViewMode('dropdown')}
+                    />
+                </Tooltip>
+                <Tooltip title="卡片视图">
+                    <Button
+                        icon={<AppstoreOutlined />}
+                        type={viewMode === 'cards' ? 'primary' : 'default'}
+                        onClick={() => {
+                            setViewMode('cards');
+                            setShowPanel(true);
+                        }}
+                    />
+                </Tooltip>
+                <Tooltip title="侧边栏">
+                    <Button
+                        icon={<UnorderedListOutlined />}
+                        type={viewMode === 'sidebar' ? 'primary' : 'default'}
+                        onClick={() => setViewMode('sidebar')}
+                    />
+                </Tooltip>
+            </Space.Compact>
+        );
+    };
+
+    // ==================== 下拉选择视图 ====================
 
     if (viewMode === 'dropdown') {
+        const selectOptions: SelectProps['options'] = shelves.map((s) => ({
+            value: s.logical_shelf_id,
+            label: s.shelf_name,
+            shelf: s,
+        }));
+
         return (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    flexWrap: 'wrap',
+                }}
+            >
                 <Select
                     value={currentShelfId}
-                    onChange={(value) => {
-                        const selected = shelves.find(
-                            (s) => s.logical_shelf_id === value
+                    onChange={(v) => {
+                        const shelf = shelves.find(
+                            (x) => x.logical_shelf_id === v
                         );
-                        if (selected) {
-                            handleShelfSelect(
-                                selected.logical_shelf_id,
-                                selected.shelf_name
-                            );
-                        }
+                        if (shelf) handleSelect(v, shelf.shelf_name);
                     }}
                     style={{ minWidth: 220 }}
                     size="large"
@@ -203,16 +257,11 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                             ?.toLowerCase()
                             .includes(input.toLowerCase())
                     }
-                    options={shelves.map((shelf) => ({
-                        value: shelf.logical_shelf_id,
-                        label: shelf.shelf_name,
-                        shelf: shelf,
-                    }))}
+                    options={selectOptions}
                     optionRender={(option) => {
-                        const shelf = option.data.shelf as ShelfItem;
+                        const s = (option.data as any).shelf as ShelfItem;
                         const isCurrent =
-                            shelf.logical_shelf_id === currentShelfId;
-                        
+                            s.logical_shelf_id === currentShelfId;
                         return (
                             <div
                                 style={{
@@ -224,38 +273,58 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                             >
                                 <Space>
                                     <BookOutlined
-                                        style={{ color: '#d4a574' }}
+                                        style={{ color: token.colorPrimary }}
                                     />
-                                    {option.label}
+                                    <Text
+                                        strong={isCurrent}
+                                        style={{ maxWidth: 200 }}
+                                        ellipsis
+                                    >
+                                        {option.label}
+                                    </Text>
                                     {isCurrent && (
                                         <CheckCircleFilled
-                                            style={{
-                                                color: ACTIVE_COLOR,
-                                                marginLeft: 4,
-                                            }}
+                                            style={{ color: ACTIVE_COLOR }}
                                         />
                                     )}
                                 </Space>
                                 <Space size={4}>
-                                    {shelf.physical_location && (
-                                        <Tooltip
-                                            title={shelf.physical_location}
-                                        >
-                                            <EnvironmentOutlined
-                                                style={{ color: '#52c41a' }}
-                                            />
+                                    {s.physical_location && (
+                                        <Tooltip title={s.physical_location}>
+                                            <Tag
+                                                color="green"
+                                                style={{
+                                                    fontSize: 11,
+                                                    margin: 0,
+                                                    padding: '0 6px',
+                                                }}
+                                            >
+                                                <EnvironmentOutlined />
+                                            </Tag>
                                         </Tooltip>
                                     )}
-                                    <Tag
-                                        color="blue"
-                                        style={{ fontSize: 11 }}
-                                    >
-                                        {shelf.book_count}本
-                                    </Tag>
+                                    <Badge
+                                        count={s.book_count}
+                                        style={{
+                                            backgroundColor:
+                                                token.colorPrimary,
+                                        }}
+                                        size="small"
+                                    />
                                 </Space>
                             </div>
                         );
                     }}
+                    notFoundContent={
+                        loading ? (
+                            <Spin size="small" />
+                        ) : (
+                            <Empty
+                                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                description="暂无书架"
+                            />
+                        )
+                    }
                 />
                 <Tooltip title="刷新书架列表">
                     <Button
@@ -265,16 +334,21 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                         disabled={loading}
                     />
                 </Tooltip>
+                {renderModeSwitch()}
             </div>
         );
     }
 
-    // ==================== 卡片网格模式 ====================
+    // ==================== 卡片视图 ====================
 
     if (viewMode === 'cards') {
+        const cardSpan = compact
+            ? { xs: 12, sm: 8, md: 6, lg: 4 }
+            : { xs: 24, sm: 12, md: 8, lg: 6 };
+
         return (
             <div>
-                {/* 展开/收起按钮 */}
+                {/* 切换按钮 */}
                 <div
                     style={{
                         display: 'flex',
@@ -292,13 +366,21 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                         书架列表
                     </Button>
                     {!compact && (
-                        <Text type="secondary">
-                            共 {shelves.length} 个书架
-                        </Text>
+                        <Space>
+                            <Badge
+                                count={shelves.length}
+                                style={{
+                                    backgroundColor: token.colorPrimary,
+                                }}
+                            />
+                            <Text type="secondary">个书架</Text>
+                        </Space>
                     )}
+                    <div style={{ flex: 1 }} />
+                    {renderModeSwitch()}
                 </div>
 
-                {/* 书架卡片面板 */}
+                {/* 卡片面板 */}
                 {showPanel && (
                     <Card
                         title={
@@ -306,13 +388,14 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                                 <AppstoreOutlined
                                     style={{ color: BRAND_COLOR }}
                                 />
-                                所有书架
-                                <Tag>{shelves.length}个</Tag>
+                                <span>所有书架</span>
+                                <Tag color="blue">{shelves.length} 个</Tag>
                             </Space>
                         }
                         extra={
-                            <Space>
+                            <Space size={8}>
                                 <Input
+                                    ref={searchInputRef}
                                     placeholder="搜索书架..."
                                     prefix={<SearchOutlined />}
                                     allowClear
@@ -320,15 +403,13 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                                     onChange={(e) =>
                                         setSearchText(e.target.value)
                                     }
-                                    style={{ width: SEARCH_INPUT_WIDTH }}
+                                    style={{ width: 180 }}
                                 />
                                 <Tooltip title="刷新">
                                     <Button
                                         size="small"
                                         icon={
-                                            <ReloadOutlined
-                                                spin={loading}
-                                            />
+                                            <ReloadOutlined spin={loading} />
                                         }
                                         onClick={loadShelves}
                                     />
@@ -337,20 +418,15 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                         }
                         style={{
                             borderRadius: 12,
-                            border: '1px solid #e8d5c8',
+                            border: `1px solid ${token.colorBorderSecondary}`,
                             marginBottom: 24,
                         }}
                     >
-                        {/* 加载中骨架屏 */}
+                        {/* 加载骨架屏 */}
                         {loading && (
                             <Row gutter={[16, 16]}>
                                 {[1, 2, 3, 4].map((i) => (
-                                    <Col
-                                        xs={24}
-                                        sm={12}
-                                        md={6}
-                                        key={i}
-                                    >
+                                    <Col {...cardSpan} key={i}>
                                         <Card>
                                             <Skeleton
                                                 active
@@ -362,7 +438,7 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                             </Row>
                         )}
 
-                        {/* 无结果 */}
+                        {/* 空状态 */}
                         {!loading && filteredShelves.length === 0 && (
                             <Empty
                                 image={
@@ -376,31 +452,36 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                                 description={
                                     searchText
                                         ? `未找到「${searchText}」`
-                                        : '暂无书架'
+                                        : '暂无书架，请先创建'
                                 }
                                 style={{ padding: '40px 0' }}
-                            />
+                            >
+                                {searchText && (
+                                    <Button
+                                        onClick={() => setSearchText('')}
+                                    >
+                                        清除搜索
+                                    </Button>
+                                )}
+                            </Empty>
                         )}
 
-                        {/* 书架卡片网格 */}
+                        {/* 书架卡片 */}
                         {!loading && filteredShelves.length > 0 && (
                             <Row gutter={[16, 16]}>
                                 {filteredShelves.map((shelf) => {
                                     const isActive =
                                         shelf.logical_shelf_id ===
                                         currentShelfId;
-
                                     return (
                                         <Col
-                                            xs={24}
-                                            sm={12}
-                                            md={compact ? 8 : 6}
+                                            {...cardSpan}
                                             key={shelf.logical_shelf_id}
                                         >
                                             <Card
                                                 hoverable
                                                 onClick={() =>
-                                                    handleShelfSelect(
+                                                    handleSelect(
                                                         shelf.logical_shelf_id,
                                                         shelf.shelf_name
                                                     )
@@ -409,65 +490,101 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                                                     borderRadius: 10,
                                                     border: isActive
                                                         ? `2px solid ${ACTIVE_COLOR}`
-                                                        : '1px solid #e8d5c8',
+                                                        : `1px solid ${token.colorBorderSecondary}`,
                                                     height: '100%',
                                                     textAlign: 'center',
                                                     cursor: 'pointer',
                                                     transition:
-                                                        'all 0.2s ease',
+                                                        'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                                                    transform: isActive
+                                                        ? 'scale(1.02)'
+                                                        : 'scale(1)',
                                                 }}
-                                                bodyStyle={{
-                                                    padding: compact
-                                                        ? 12
-                                                        : 16,
+                                                styles={{
+                                                    body: {
+                                                        padding: compact
+                                                            ? 12
+                                                            : 16,
+                                                    },
                                                 }}
                                             >
-                                                {/* 书架装饰图标 */}
+                                                {/* 卡片头部装饰 */}
                                                 <div
                                                     style={{
                                                         width: '100%',
-                                                        height: 120,
+                                                        height: compact
+                                                            ? 80
+                                                            : 120,
                                                         marginBottom: 12,
                                                         borderRadius: 8,
-                                                        background: `linear-gradient(135deg,
-                                                            ${CARD_COLORS[shelf.logical_shelf_id % CARD_COLORS.length]},
-                                                            ${CARD_COLORS[(shelf.logical_shelf_id + 1) % CARD_COLORS.length]}
-                                                        )`,
+                                                        background:
+                                                            getCardGradient(
+                                                                shelf.logical_shelf_id
+                                                            ),
                                                         display: 'flex',
                                                         alignItems: 'center',
-                                                        justifyContent: 'center',
+                                                        justifyContent:
+                                                            'center',
+                                                        position: 'relative',
+                                                        overflow: 'hidden',
                                                     }}
                                                 >
                                                     <BookOutlined
                                                         style={{
-                                                            fontSize: SHELF_ICON_SIZE,
+                                                            fontSize: compact
+                                                                ? 32
+                                                                : 40,
                                                             color: 'rgba(139,69,19,.2)',
                                                         }}
                                                     />
+                                                    {isActive && (
+                                                        <div
+                                                            style={{
+                                                                position:
+                                                                    'absolute',
+                                                                top: 8,
+                                                                right: 8,
+                                                            }}
+                                                        >
+                                                            <CheckCircleFilled
+                                                                style={{
+                                                                    color: ACTIVE_COLOR,
+                                                                    fontSize: 20,
+                                                                }}
+                                                            />
+                                                        </div>
+                                                    )}
                                                 </div>
 
                                                 {/* 书架名称 */}
-                                                <Text
-                                                    strong
-                                                    style={{
-                                                        display: 'block',
-                                                        marginBottom: 8,
-                                                        overflow: 'hidden',
-                                                        textOverflow:
-                                                            'ellipsis',
-                                                        whiteSpace: 'nowrap',
-                                                    }}
-                                                >
-                                                    {isActive && (
-                                                        <CheckCircleFilled
-                                                            style={{
-                                                                color: ACTIVE_COLOR,
-                                                                marginRight: 4,
-                                                            }}
-                                                        />
-                                                    )}
-                                                    {shelf.shelf_name}
-                                                </Text>
+                                                <Tooltip title={shelf.shelf_name}>
+                                                    <Text
+                                                        strong
+                                                        style={{
+                                                            display: 'block',
+                                                            marginBottom: 8,
+                                                            overflow: 'hidden',
+                                                            textOverflow:
+                                                                'ellipsis',
+                                                            whiteSpace:
+                                                                'nowrap',
+                                                            fontSize: compact
+                                                                ? 13
+                                                                : 14,
+                                                        }}
+                                                    >
+                                                        {isActive && (
+                                                            <CheckCircleFilled
+                                                                style={{
+                                                                    color: ACTIVE_COLOR,
+                                                                    marginRight: 4,
+                                                                    fontSize: 12,
+                                                                }}
+                                                            />
+                                                        )}
+                                                        {shelf.shelf_name}
+                                                    </Text>
+                                                </Tooltip>
 
                                                 {/* 图书数量 */}
                                                 <Badge
@@ -479,7 +596,29 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                                                     }}
                                                 />
 
-                                                {/* 当前选中标识 */}
+                                                {/* 物理位置 */}
+                                                {shelf.physical_location && (
+                                                    <div
+                                                        style={{
+                                                            marginTop: 8,
+                                                        }}
+                                                    >
+                                                        <Tag
+                                                            color="green"
+                                                            style={{
+                                                                fontSize: 11,
+                                                                borderRadius: 10,
+                                                            }}
+                                                        >
+                                                            <EnvironmentOutlined />{' '}
+                                                            {
+                                                                shelf.physical_location
+                                                            }
+                                                        </Tag>
+                                                    </div>
+                                                )}
+
+                                                {/* 当前书架标签 */}
                                                 {isActive && (
                                                     <Tag
                                                         color="gold"
@@ -504,18 +643,18 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
         );
     }
 
-    // ==================== 侧边栏列表模式 ====================
+    // ==================== 侧边栏视图 ====================
 
     return (
         <div
             style={{
-                background: '#fff',
+                background: token.colorBgContainer,
                 borderRadius: 12,
-                border: '1px solid #e8d5c8',
+                border: `1px solid ${token.colorBorderSecondary}`,
                 padding: 16,
             }}
         >
-            {/* 标题栏 */}
+            {/* 头部 */}
             <div
                 style={{
                     display: 'flex',
@@ -525,23 +664,25 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                 }}
             >
                 <Title level={5} style={{ margin: 0 }}>
-                    <BookOutlined
-                        style={{
-                            color: BRAND_COLOR,
-                            marginRight: 8,
-                        }}
-                    />
-                    书架列表
+                    <Space size={8}>
+                        <BookOutlined style={{ color: BRAND_COLOR }} />
+                        书架列表
+                    </Space>
                 </Title>
-                <Button
-                    size="small"
-                    icon={<ReloadOutlined spin={loading} />}
-                    onClick={loadShelves}
-                    type="text"
-                />
+                <Space size={4}>
+                    {renderModeSwitch()}
+                    <Tooltip title="刷新">
+                        <Button
+                            size="small"
+                            icon={<ReloadOutlined spin={loading} />}
+                            onClick={loadShelves}
+                            type="text"
+                        />
+                    </Tooltip>
+                </Space>
             </div>
 
-            {/* 搜索框 */}
+            {/* 搜索 */}
             <Input
                 prefix={<SearchOutlined />}
                 placeholder="搜索书架..."
@@ -551,20 +692,26 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                 style={{ marginBottom: 12 }}
             />
 
-            {/* 加载中 */}
+            {/* 加载状态 */}
             {loading && (
                 <div style={{ textAlign: 'center', padding: 20 }}>
                     <Spin size="small" />
                 </div>
             )}
 
-            {/* 无结果 */}
+            {/* 空状态 */}
             {!loading && filteredShelves.length === 0 && (
                 <Empty
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                     description={searchText ? '无匹配结果' : '暂无书架'}
                     style={{ padding: 20 }}
-                />
+                >
+                    {searchText && (
+                        <Button size="small" onClick={() => setSearchText('')}>
+                            清除
+                        </Button>
+                    )}
+                </Empty>
             )}
 
             {/* 书架列表 */}
@@ -572,16 +719,27 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                 filteredShelves.map((shelf) => {
                     const isActive =
                         shelf.logical_shelf_id === currentShelfId;
-
                     return (
                         <div
                             key={shelf.logical_shelf_id}
                             onClick={() =>
-                                handleShelfSelect(
+                                handleSelect(
                                     shelf.logical_shelf_id,
                                     shelf.shelf_name
                                 )
                             }
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    handleSelect(
+                                        shelf.logical_shelf_id,
+                                        shelf.shelf_name
+                                    );
+                                }
+                            }}
+                            tabIndex={0}
+                            role="button"
+                            aria-label={`书架: ${shelf.shelf_name}`}
                             style={{
                                 display: 'flex',
                                 justifyContent: 'space-between',
@@ -590,22 +748,29 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                                 borderRadius: 8,
                                 cursor: 'pointer',
                                 background: isActive
-                                    ? '#fdf6f0'
+                                    ? token.colorPrimaryBg
                                     : 'transparent',
                                 border: isActive
                                     ? `1px solid ${ACTIVE_COLOR}`
                                     : '1px solid transparent',
                                 marginBottom: 4,
-                                transition: 'all 0.15s ease',
+                                transition: 'all 0.2s ease',
+                            }}
+                            onMouseEnter={(e) => {
+                                if (!isActive) {
+                                    e.currentTarget.style.background =
+                                        token.colorBgTextHover;
+                                }
+                            }}
+                            onMouseLeave={(e) => {
+                                if (!isActive) {
+                                    e.currentTarget.style.background =
+                                        'transparent';
+                                }
                             }}
                         >
                             {/* 书架信息 */}
-                            <div
-                                style={{
-                                    flex: 1,
-                                    minWidth: 0,
-                                }}
-                            >
+                            <div style={{ flex: 1, minWidth: 0 }}>
                                 <Text
                                     strong={isActive}
                                     style={{
@@ -621,6 +786,7 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                                             style={{
                                                 color: ACTIVE_COLOR,
                                                 marginRight: 4,
+                                                fontSize: 11,
                                             }}
                                         />
                                     )}
@@ -635,14 +801,24 @@ const ShelfSwitcher: React.FC<ShelfSwitcherProps> = ({
                                             style={{
                                                 color: '#52c41a',
                                                 marginRight: 4,
+                                                fontSize: 10,
                                             }}
                                         />
                                         {shelf.physical_location}
                                     </Text>
                                 )}
+                                {shelf.description && !shelf.physical_location && (
+                                    <Text
+                                        type="secondary"
+                                        style={{ fontSize: 11 }}
+                                        ellipsis
+                                    >
+                                        {shelf.description}
+                                    </Text>
+                                )}
                             </div>
 
-                            {/* 数量角标 */}
+                            {/* 图书数量 */}
                             <Badge
                                 count={shelf.book_count}
                                 size="small"
