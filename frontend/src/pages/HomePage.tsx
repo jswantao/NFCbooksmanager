@@ -1,63 +1,21 @@
 // frontend/src/pages/HomePage.tsx
 /**
  * 系统首页 - React 19 + Ant Design 6
- * 
- * 优化点：
- * - 自定义 Hook 封装数据加载
- * - 快捷操作卡片交互增强
- * - 欢迎横幅动画
- * - 最近图书骨架屏优化
- * - 书架概览进度条
- * - 响应式布局优化
- * - 键盘导航支持
- * - 主题色适配
  */
 
-import React, {
-    useEffect,
-    useState,
-    useCallback,
-    useMemo,
-    type FC,
-} from 'react';
+import React, { useEffect, useState, useCallback, type FC } from 'react';
 import {
-    Card,
-    Row,
-    Col,
-    Typography,
-    Button,
-    Space,
-    Statistic,
-    List,
-    Avatar,
-    Tag,
-    Skeleton,
-    Empty,
-    Progress,
-    Tooltip,
-    theme,
-    Badge,
+    Card, Row, Col, Typography, Button, Space, Statistic,
+    List, Avatar, Tag, Skeleton, Empty, Progress, Tooltip, theme, Badge,
 } from 'antd';
 import {
-    ScanOutlined,
-    SearchOutlined,
-    PlusOutlined,
-    BookOutlined,
-    AppstoreOutlined,
-    ImportOutlined,
-    DashboardOutlined,
-    EnvironmentOutlined,
-    RightOutlined,
-    SyncOutlined,
-    RocketOutlined,
-    ThunderboltOutlined,
-    StarFilled,
-    HomeOutlined,
+    ScanOutlined, SearchOutlined, ImportOutlined,
+    BookOutlined, PlusOutlined, SettingOutlined,
+    AppstoreOutlined, ReadOutlined, StarFilled, EnvironmentOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { getDashboardStats, extractErrorMessage } from '../services/api';
-import { formatNumber } from '../utils/format';
-import type { DashboardStats } from '../types';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { getDashboardStats } from '../services/api';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -78,948 +36,227 @@ interface QuickAction {
 // ==================== 常量 ====================
 
 const QUICK_ACTIONS: QuickAction[] = [
-    {
-        key: 'nfc',
-        title: 'NFC 扫描',
-        description: '使用手机扫描 NFC 标签，自动跳转到对应书架',
-        icon: <ScanOutlined />,
-        color: '#3b82f6',
-        bgColor: '#eff6ff',
-        path: '/api/nfc/mobile',
-        external: true,
-        shortcut: '📱',
-    },
-    {
-        key: 'search',
-        title: '图书搜索',
-        description: '通过 ISBN 搜索并同步豆瓣图书信息',
-        icon: <SearchOutlined />,
-        color: '#22c55e',
-        bgColor: '#f0fdf4',
-        path: '/search',
-        shortcut: '⌘K',
-    },
-    {
-        key: 'add',
-        title: '手动录入',
-        description: '手动添加图书信息，支持完整元数据录入',
-        icon: <PlusOutlined />,
-        color: '#f97316',
-        bgColor: '#fff7ed',
-        path: '/books/add',
-        shortcut: '✍️',
-    },
-    {
-        key: 'wall',
-        title: '封面墙',
-        description: '以封面网格形式浏览所有藏书',
-        icon: <AppstoreOutlined />,
-        color: '#a855f7',
-        bgColor: '#faf5ff',
-        path: '/wall',
-        shortcut: '🖼️',
-    },
-    {
-        key: 'import',
-        title: '批量导入',
-        description: '从 Excel/CSV 文件批量导入图书',
-        icon: <ImportOutlined />,
-        color: '#06b6d4',
-        bgColor: '#ecfeff',
-        path: '/import',
-        shortcut: '📥',
-    },
-    {
-        key: 'dashboard',
-        title: '管理仪表盘',
-        description: '查看系统统计数据和图表分析',
-        icon: <DashboardOutlined />,
-        color: '#8B4513',
-        bgColor: '#fdf6f0',
-        path: '/admin',
-        shortcut: '📊',
-    },
+    { key: 'nfc', title: 'NFC 扫描', description: '使用手机扫描 NFC 标签，自动跳转到对应书架',
+        icon: <ScanOutlined />, color: '#3b82f6', bgColor: '#eff6ff', path: '/api/nfc/mobile', external: true, shortcut: '📱' },
+    { key: 'search', title: '图书搜索', description: '通过 ISBN 搜索并同步豆瓣图书信息',
+        icon: <SearchOutlined />, color: '#22c55e', bgColor: '#f0fdf4', path: '/search', shortcut: '⌘K' },
+    { key: 'import', title: '批量导入', description: '从 Excel/CSV/TXT 文件批量导入图书',
+        icon: <ImportOutlined />, color: '#f59e0b', bgColor: '#fffbeb', path: '/import' },
+    { key: 'books', title: '全部图书', description: '浏览和管理全部馆藏图书',
+        icon: <ReadOutlined />, color: '#8b5cf6', bgColor: '#f5f3ff', path: '/admin/books' },
+    { key: 'add', title: '添加图书', description: '手动录入新图书信息',
+        icon: <PlusOutlined />, color: '#ec4899', bgColor: '#fdf2f8', path: '/books/add' },
+    { key: 'shelves', title: '书架管理', description: '管理逻辑书架和分类',
+        icon: <AppstoreOutlined />, color: '#14b8a6', bgColor: '#f0fdfa', path: '/admin/shelves' },
+    { key: 'admin', title: '管理后台', description: '系统统计、日志和数据库管理',
+        icon: <SettingOutlined />, color: '#64748b', bgColor: '#f8fafc', path: '/admin' },
 ];
 
-// ==================== 自定义 Hook ====================
+// ==================== ActionCard 子组件 ====================
 
-/**
- * 首页数据加载 Hook
- */
-const useHomeData = () => {
-    const [loading, setLoading] = useState(true);
-    const [stats, setStats] = useState<DashboardStats | null>(null);
+const ActionCard: FC<{ action: QuickAction; onClick: () => void; delay: number }> = React.memo(
+    ({ action, onClick, delay }) => {
+        const [visible, setVisible] = useState(false);
+        useEffect(() => { const t = setTimeout(() => setVisible(true), delay); return () => clearTimeout(t); }, [delay]);
 
-    const loadStats = useCallback(async () => {
-        setLoading(true);
-        try {
-            const data = await getDashboardStats();
-            setStats(data);
-        } catch (err: unknown) {
-            console.error('[HomePage] 加载统计失败:', extractErrorMessage(err));
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    useEffect(() => {
-        loadStats();
-    }, [loadStats]);
-
-    return { stats, loading, refresh: loadStats };
-};
-
-// ==================== 子组件 ====================
-
-/**
- * 快捷操作卡片
- */
-const ActionCard: FC<{
-    action: QuickAction;
-    onClick: () => void;
-    delay: number;
-}> = React.memo(({ action, onClick, delay }) => {
-    const [visible, setVisible] = useState(false);
-
-    useEffect(() => {
-        const timer = setTimeout(() => setVisible(true), delay);
-        return () => clearTimeout(timer);
-    }, [delay]);
-
-    const handleKeyDown = useCallback(
-        (e: React.KeyboardEvent) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                onClick();
-            }
-        },
-        [onClick]
-    );
-
-    return (
-        <Card
-            hoverable
-            onClick={onClick}
-            onKeyDown={handleKeyDown}
-            tabIndex={0}
-            role="button"
-            aria-label={`${action.title}: ${action.description}`}
-            style={{
-                borderRadius: 14,
-                border: `1px solid ${action.color}20`,
-                height: '100%',
-                cursor: 'pointer',
-                transition: 'all 0.35s cubic-bezier(0.4, 0, 0.2, 1)',
-                transform: visible ? 'translateY(0)' : 'translateY(20px)',
-                opacity: visible ? 1 : 0,
-            }}
-            styles={{ body: { padding: 22 } }}
-        >
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-                {/* 图标 */}
-                <div
-                    style={{
-                        width: 56,
-                        height: 56,
-                        borderRadius: 14,
-                        background: action.bgColor,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        flexShrink: 0,
-                        color: action.color,
-                        fontSize: 26,
-                        transition: 'transform 0.2s ease',
-                    }}
-                    className="action-icon"
-                >
-                    {action.icon}
-                </div>
-
-                {/* 内容 */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            marginBottom: 4,
-                        }}
-                    >
-                        <Text strong style={{ fontSize: 16 }}>
-                            {action.title}
-                        </Text>
+        return (
+            <Card hoverable onClick={onClick} role="button" tabIndex={0}
+                aria-label={`${action.title}: ${action.description}`}
+                style={{
+                    borderRadius: 14, border: `1px solid ${action.color}20`, height: '100%',
+                    cursor: 'pointer', transition: 'all 0.35s cubic-bezier(0.4, 0, 0.2, 1)',
+                    transform: visible ? 'translateY(0)' : 'translateY(20px)', opacity: visible ? 1 : 0,
+                }}
+                styles={{ body: { padding: 22 } }}>
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <div style={{ width: 44, height: 44, borderRadius: 12, display: 'flex',
+                            alignItems: 'center', justifyContent: 'center',
+                            background: action.bgColor, color: action.color, fontSize: 20, flexShrink: 0 }}>
+                            {action.icon}
+                        </div>
                         {action.shortcut && (
-                            <Text
-                                style={{
-                                    fontSize: 14,
-                                    opacity: 0.6,
-                                }}
-                            >
-                                {action.shortcut}
-                            </Text>
+                            <Text type="secondary" style={{ fontSize: 13, fontFamily: 'monospace' }}>{action.shortcut}</Text>
                         )}
                     </div>
-                    <Text
-                        type="secondary"
-                        style={{
-                            fontSize: 13,
-                            lineHeight: 1.5,
-                            display: 'block',
-                        }}
-                    >
-                        {action.description}
-                    </Text>
-                </div>
+                    <div>
+                        <Text strong style={{ fontSize: 15 }}>{action.title}</Text>
+                        <br />
+                        <Text type="secondary" style={{ fontSize: 12, lineHeight: 1.5 }}>{action.description}</Text>
+                    </div>
+                </Space>
+            </Card>
+        );
+    }
+);
 
-                {/* 箭头 */}
-                <RightOutlined
-                    style={{
-                        color: '#8c7b72',
-                        fontSize: 14,
-                        marginTop: 6,
-                        flexShrink: 0,
-                        transition: 'transform 0.2s ease',
-                    }}
-                    className="action-arrow"
-                />
-            </div>
-        </Card>
-    );
-});
-ActionCard.displayName = 'ActionCard';
-
-// ==================== 主组件 ====================
+// ==================== HomePage 主组件 ====================
 
 const HomePage: FC = () => {
     const navigate = useNavigate();
     const { token } = theme.useToken();
+    const { data: stats, loading } = useAsyncData(getDashboardStats);
 
-    // 数据
-    const { stats, loading } = useHomeData();
+    const handleNavigate = useCallback((path: string, external?: boolean) => {
+        if (external) { window.open(path, '_blank'); return; }
+        navigate(path);
+    }, [navigate]);
 
-    // ==================== 事件处理 ====================
+    const handleBookClick = useCallback((id: number) => navigate(`/shelf/1/book/${id}`), [navigate]);
+    const handleShelfClick = useCallback((id: number) => navigate(`/shelf/${id}`), [navigate]);
 
-    const handleActionClick = useCallback(
-        (action: QuickAction) => {
-            if (action.external) {
-                window.open(action.path, '_blank');
-            } else {
-                navigate(action.path);
-            }
-        },
-        [navigate]
-    );
+    // ==================== 渲染函数 ====================
 
-    const handleBookClick = useCallback(
-        (bookId: number) => {
-            navigate(`/shelf/1/book/${bookId}`);
-        },
-        [navigate]
-    );
-
-    const handleShelfClick = useCallback(
-        (shelfId?: number) => {
-            navigate(shelfId ? `/shelf/${shelfId}` : '/shelf/1');
-        },
-        [navigate]
-    );
-
-    // ==================== 渲染欢迎横幅 ====================
-
-    const renderHeroBanner = () => {
-        const gradientColors = [
-            token.colorPrimary,
-            token.colorPrimaryHover || '#a0522d',
-            '#6b3410',
-        ];
-
-        return (
-            <Card
-                style={{
-                    marginBottom: 28,
-                    borderRadius: 20,
-                    background: `linear-gradient(135deg, ${gradientColors[0]} 0%, ${gradientColors[1]} 50%, ${gradientColors[2]} 100%)`,
-                    border: 'none',
-                    overflow: 'hidden',
-                    position: 'relative',
-                    boxShadow: '0 8px 32px rgba(139, 69, 19, 0.25)',
-                }}
-                styles={{ body: { padding: '32px 36px' } }}
-            >
-                {/* 装饰背景 */}
-                <div
-                    style={{
-                        position: 'absolute',
-                        top: -50,
-                        right: -30,
-                        fontSize: 160,
-                        opacity: 0.06,
-                        color: '#fff',
-                        pointerEvents: 'none',
-                        animation: 'hero-float 6s ease-in-out infinite',
-                    }}
-                >
-                    📚
+    const renderBookItem = (book: any) => (
+        <div style={{ padding: '10px 0', cursor: 'pointer', borderRadius: 8, transition: 'background 0.15s ease' }}
+            onClick={() => handleBookClick(book.book_id)}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = token.colorFillSecondary}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
+            <Space align="start" size={12}>
+                <Avatar shape="square" size={44} icon={<BookOutlined />}
+                    style={{ background: token.colorPrimaryBg, color: token.colorPrimary, borderRadius: 8 }} />
+                <div>
+                    <Text style={{ fontSize: 14 }} ellipsis>{book.title}</Text>
+                    <br />
+                    <Space size={6} wrap>
+                        <Text type="secondary" style={{ fontSize: 11 }}>{book.isbn}</Text>
+                        <Tag color={book.source === 'douban' ? 'green' : 'orange'}
+                            style={{ fontSize: 10, margin: 0, padding: '0 6px', lineHeight: '18px' }}>
+                            {book.source === 'douban' ? '豆瓣' : '手动'}
+                        </Tag>
+                        {book.rating && (
+                            <Text type="secondary" style={{ fontSize: 11 }}>
+                                <StarFilled style={{ color: '#f59e0b', fontSize: 10, marginRight: 2 }} />
+                                {book.rating}
+                            </Text>
+                        )}
+                    </Space>
                 </div>
-                <div
-                    style={{
-                        position: 'absolute',
-                        bottom: -30,
-                        left: '20%',
-                        fontSize: 80,
-                        opacity: 0.04,
-                        color: '#fff',
-                        pointerEvents: 'none',
-                        animation: 'hero-float 8s ease-in-out infinite reverse',
-                    }}
-                >
-                    📖
-                </div>
+            </Space>
+        </div>
+    );
 
-                <Row gutter={[28, 28]} align="middle">
-                    {/* 左侧文本 */}
+    const renderShelfItem = (shelf: any) => (
+        <div style={{ padding: '10px 0', cursor: 'pointer', borderRadius: 8, transition: 'background 0.15s ease' }}
+            onClick={() => handleShelfClick(shelf.logical_shelf_id)}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = token.colorFillSecondary}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}>
+            <Space align="start" size={12}>
+                <div style={{ width: 44, height: 44, borderRadius: 10,
+                    background: 'linear-gradient(135deg, #fef3c7, #fde68a)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <BookOutlined style={{ color: '#92400e', fontSize: 18 }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Text strong style={{ fontSize: 14 }}>{shelf.shelf_name}</Text>
+                        <Badge count={shelf.book_count || 0} overflowCount={999} style={{ background: token.colorPrimary }} />
+                    </div>
+                    {shelf.physical_location && (
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                            <EnvironmentOutlined style={{ marginRight: 4, fontSize: 11 }} />
+                            {shelf.physical_location}
+                        </Text>
+                    )}
+                    {shelf.book_count > 0 && (
+                        <Progress percent={Math.min(100, ((shelf.book_count || 0) / 50) * 100)}
+                            showInfo={false} size="small" strokeColor={token.colorPrimary}
+                            style={{ marginTop: 4, marginBottom: 0 }} />
+                    )}
+                </div>
+            </Space>
+        </div>
+    );
+
+    // ==================== 主渲染 ====================
+
+    return (
+        <div style={{ maxWidth: 1280, margin: '0 auto', padding: '24px 24px 48px' }}>
+            {/* 欢迎横幅 */}
+            <Card style={{
+                borderRadius: 20, overflow: 'hidden', border: 'none',
+                background: `linear-gradient(135deg, ${token.colorPrimary}, ${token.colorPrimaryActive})`,
+                boxShadow: `0 8px 32px ${token.colorPrimary}20`,
+            }} styles={{ body: { padding: '40px 36px' } }}>
+                <Row align="middle" gutter={[24, 24]}>
                     <Col xs={24} md={16}>
-                        <div style={{ position: 'relative', zIndex: 1 }}>
-                            <Title
-                                level={1}
-                                style={{
-                                    color: '#fff',
-                                    marginBottom: 10,
-                                    fontSize: 'clamp(24px, 4vw, 38px)',
-                                    fontWeight: 800,
-                                    letterSpacing: '-0.02em',
-                                }}
-                            >
-                                📚 书房管理系统
-                            </Title>
-                            <Paragraph
-                                style={{
-                                    color: 'rgba(255,255,255,0.88)',
-                                    fontSize: 'clamp(14px, 2vw, 17px)',
-                                    marginBottom: 20,
-                                    maxWidth: 560,
-                                    lineHeight: 1.6,
-                                }}
-                            >
-                                基于 NFC 技术连接实体书架与数字信息，支持豆瓣数据同步、
-                                封面墙展示、批量导入等智能图书管理功能
+                        <Space direction="vertical" size={12}>
+                            <Title level={2} style={{ color: '#fff', margin: 0, fontSize: 28 }}>欢迎回到书房 📚</Title>
+                            <Paragraph style={{ color: 'rgba(255,255,255,0.85)', fontSize: 16, margin: 0, maxWidth: 500 }}>
+                                智能管理您的藏书，通过 NFC 标签追踪位置，与豆瓣同步图书信息
                             </Paragraph>
-                            <Space wrap size={12}>
-                                <Button
-                                    type="primary"
-                                    size="large"
-                                    icon={<ScanOutlined />}
-                                    onClick={() =>
-                                        window.open('/api/nfc/mobile', '_blank')
-                                    }
-                                    style={{
-                                        borderRadius: 10,
-                                        background: '#fff',
-                                        color: token.colorPrimary,
-                                        border: 'none',
-                                        fontWeight: 600,
-                                        height: 48,
-                                        paddingInline: 24,
-                                        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                                    }}
-                                >
-                                    打开手机端 NFC
-                                </Button>
-                                <Button
-                                    size="large"
-                                    ghost
-                                    icon={<SearchOutlined />}
-                                    onClick={() => navigate('/search')}
-                                    style={{
-                                        borderRadius: 10,
-                                        color: '#fff',
-                                        borderColor: 'rgba(255,255,255,0.4)',
-                                        height: 48,
-                                        paddingInline: 24,
-                                    }}
-                                >
-                                    搜索图书 (⌘K)
-                                </Button>
-                            </Space>
-                        </div>
+                        </Space>
                     </Col>
-
-                    {/* 右侧统计 */}
                     <Col xs={24} md={8}>
-                        {loading ? (
-                            <div style={{ position: 'relative', zIndex: 1 }}>
-                                <Skeleton
-                                    active
-                                    paragraph={{ rows: 2 }}
-                                    title={false}
-                                />
-                            </div>
-                        ) : stats ? (
-                            <Row
-                                gutter={[12, 12]}
-                                style={{ position: 'relative', zIndex: 1 }}
-                            >
-                                <Col span={12}>
-                                    <Card
-                                        size="small"
-                                        style={{
-                                            borderRadius: 12,
-                                            background: 'rgba(255,255,255,0.14)',
-                                            border: '1px solid rgba(255,255,255,0.18)',
-                                            textAlign: 'center',
-                                            backdropFilter: 'blur(8px)',
-                                        }}
-                                    >
-                                        <Statistic
-                                            title={
-                                                <span
-                                                    style={{
-                                                        color: 'rgba(255,255,255,0.7)',
-                                                        fontSize: 12,
-                                                    }}
-                                                >
-                                                    📚 馆藏图书
-                                                </span>
-                                            }
-                                            value={stats.total_books || 0}
-                                            styles={{
-                                                content: {
-                                                    color: '#fff',
-                                                    fontSize: 26,
-                                                    fontWeight: 700,
-                                                },
-                                            }}
-                                            suffix={
-                                                <span
-                                                    style={{
-                                                        color: 'rgba(255,255,255,0.5)',
-                                                        fontSize: 13,
-                                                    }}
-                                                >
-                                                    本
-                                                </span>
-                                            }
-                                        />
-                                    </Card>
-                                </Col>
-                                <Col span={12}>
-                                    <Card
-                                        size="small"
-                                        style={{
-                                            borderRadius: 12,
-                                            background: 'rgba(255,255,255,0.14)',
-                                            border: '1px solid rgba(255,255,255,0.18)',
-                                            textAlign: 'center',
-                                            backdropFilter: 'blur(8px)',
-                                        }}
-                                    >
-                                        <Statistic
-                                            title={
-                                                <span
-                                                    style={{
-                                                        color: 'rgba(255,255,255,0.7)',
-                                                        fontSize: 12,
-                                                    }}
-                                                >
-                                                    📂 书架数量
-                                                </span>
-                                            }
-                                            value={stats.logical_shelves || 0}
-                                            styles={{
-                                                content: {
-                                                    color: '#fff',
-                                                    fontSize: 26,
-                                                    fontWeight: 700,
-                                                },
-                                            }}
-                                            suffix={
-                                                <span
-                                                    style={{
-                                                        color: 'rgba(255,255,255,0.5)',
-                                                        fontSize: 13,
-                                                    }}
-                                                >
-                                                    个
-                                                </span>
-                                            }
-                                        />
-                                    </Card>
-                                </Col>
-                                <Col span={12}>
-                                    <Card
-                                        size="small"
-                                        style={{
-                                            borderRadius: 12,
-                                            background: 'rgba(255,255,255,0.14)',
-                                            border: '1px solid rgba(255,255,255,0.18)',
-                                            textAlign: 'center',
-                                            backdropFilter: 'blur(8px)',
-                                        }}
-                                    >
-                                        <Statistic
-                                            title={
-                                                <span
-                                                    style={{
-                                                        color: 'rgba(255,255,255,0.7)',
-                                                        fontSize: 12,
-                                                    }}
-                                                >
-                                                    🆕 今日新增
-                                                </span>
-                                            }
-                                            value={stats.today_books || 0}
-                                            styles={{
-                                                content: {
-                                                    color: '#fff',
-                                                    fontSize: 26,
-                                                    fontWeight: 700,
-                                                },
-                                            }}
-                                            suffix={
-                                                <span
-                                                    style={{
-                                                        color: 'rgba(255,255,255,0.5)',
-                                                        fontSize: 13,
-                                                    }}
-                                                >
-                                                    本
-                                                </span>
-                                            }
-                                        />
-                                    </Card>
-                                </Col>
-                                <Col span={12}>
-                                    <Card
-                                        size="small"
-                                        style={{
-                                            borderRadius: 12,
-                                            background: 'rgba(255,255,255,0.14)',
-                                            border: '1px solid rgba(255,255,255,0.18)',
-                                            textAlign: 'center',
-                                            backdropFilter: 'blur(8px)',
-                                        }}
-                                    >
-                                        <Statistic
-                                            title={
-                                                <span
-                                                    style={{
-                                                        color: 'rgba(255,255,255,0.7)',
-                                                        fontSize: 12,
-                                                    }}
-                                                >
-                                                    🔗 活跃映射
-                                                </span>
-                                            }
-                                            value={stats.active_mappings || 0}
-                                            styles={{
-                                                content: {
-                                                    color: '#fff',
-                                                    fontSize: 26,
-                                                    fontWeight: 700,
-                                                },
-                                            }}
-                                            suffix={
-                                                <span
-                                                    style={{
-                                                        color: 'rgba(255,255,255,0.5)',
-                                                        fontSize: 13,
-                                                    }}
-                                                >
-                                                    个
-                                                </span>
-                                            }
-                                        />
-                                    </Card>
-                                </Col>
-                            </Row>
-                        ) : null}
+                        <Row gutter={[16, 16]}>
+                            <Col span={8}>
+                                <Statistic title={<Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>馆藏</Text>}
+                                    value={stats?.total_books || 0}
+                                    valueStyle={{ color: '#fff', fontSize: 32, fontWeight: 700 }} />
+                            </Col>
+                            <Col span={8}>
+                                <Statistic title={<Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>书架</Text>}
+                                    value={stats?.total_shelves || 0}
+                                    valueStyle={{ color: '#fff', fontSize: 32, fontWeight: 700 }} />
+                            </Col>
+                            <Col span={8}>
+                                <Statistic title={<Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>在架</Text>}
+                                    value={stats?.books_in_shelf || 0}
+                                    valueStyle={{ color: '#fff', fontSize: 32, fontWeight: 700 }} />
+                            </Col>
+                        </Row>
                     </Col>
                 </Row>
             </Card>
-        );
-    };
-
-    // ==================== 渲染快捷操作 ====================
-
-    const renderQuickActions = () => (
-        <>
-            <div
-                style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginBottom: 18,
-                }}
-            >
-                <Title level={3} style={{ margin: 0 }}>
-                    <ThunderboltOutlined
-                        style={{ marginRight: 10, color: token.colorPrimary }}
-                    />
-                    快捷操作
-                </Title>
-                <Text type="secondary" style={{ fontSize: 13 }}>
-                    点击或使用快捷键
-                </Text>
-            </div>
-            <Row gutter={[16, 16]} style={{ marginBottom: 28 }}>
-                {QUICK_ACTIONS.map((action, index) => (
-                    <Col xs={24} sm={12} md={8} lg={8} key={action.key}>
-                        <ActionCard
-                            action={action}
-                            onClick={() => handleActionClick(action)}
-                            delay={index * 80}
-                        />
-                    </Col>
-                ))}
-            </Row>
-        </>
-    );
-
-    // ==================== 渲染最近添加 + 书架概览 ====================
-
-    const renderBottomSection = () => (
-        <Row gutter={[24, 24]}>
-            {/* 最近添加 */}
-            <Col xs={24} md={12}>
-                <Card
-                    title={
-                        <Space size={6}>
-                            <StarFilled style={{ color: '#f59e0b' }} />
-                            <span>最近添加</span>
-                            {stats?.recent_books?.length ? (
-                                <Badge
-                                    count={stats.recent_books.length}
-                                    size="small"
-                                    style={{ backgroundColor: token.colorPrimary }}
-                                />
-                            ) : null}
-                        </Space>
-                    }
-                    extra={
-                        <Button
-                            type="text"
-                            size="small"
-                            onClick={() => navigate('/wall')}
-                        >
-                            查看全部 <RightOutlined />
-                        </Button>
-                    }
-                    style={{
-                        borderRadius: 14,
-                        border: `1px solid ${token.colorBorderSecondary}`,
-                        height: '100%',
-                    }}
-                    styles={{ body: { padding: '12px 20px' } }}
-                >
-                    {loading ? (
-                        <div>
-                            {[1, 2, 3, 4, 5].map((i) => (
-                                <Skeleton
-                                    key={i}
-                                    active
-                                    avatar={{ size: 40, shape: 'square' }}
-                                    paragraph={{ rows: 1 }}
-                                    title={{ width: '60%' }}
-                                />
-                            ))}
-                        </div>
-                    ) : stats?.recent_books?.length ? (
-                        <List
-                            dataSource={stats.recent_books.slice(0, 5)}
-                            renderItem={(book) => (
-                                <List.Item
-                                    style={{
-                                        padding: '10px 0',
-                                        cursor: 'pointer',
-                                        borderRadius: 8,
-                                        transition: 'background 0.15s ease',
-                                    }}
-                                    onClick={() => handleBookClick(book.book_id)}
-                                    onMouseEnter={(e) => {
-                                        e.currentTarget.style.background =
-                                            token.colorFillSecondary;
-                                    }}
-                                    onMouseLeave={(e) => {
-                                        e.currentTarget.style.background = 'transparent';
-                                    }}
-                                >
-                                    <List.Item.Meta
-                                        avatar={
-                                            <Avatar
-                                                shape="square"
-                                                size={44}
-                                                icon={<BookOutlined />}
-                                                style={{
-                                                    background: token.colorPrimaryBg,
-                                                    color: token.colorPrimary,
-                                                    borderRadius: 8,
-                                                }}
-                                            />
-                                        }
-                                        title={
-                                            <Text
-                                                style={{ fontSize: 14 }}
-                                                ellipsis
-                                                title={book.title}
-                                            >
-                                                {book.title}
-                                            </Text>
-                                        }
-                                        description={
-                                            <Space size={6} wrap>
-                                                <Text
-                                                    type="secondary"
-                                                    style={{ fontSize: 11 }}
-                                                >
-                                                    {book.isbn}
-                                                </Text>
-                                                <Tag
-                                                    color={
-                                                        book.source === 'douban'
-                                                            ? 'green'
-                                                            : 'orange'
-                                                    }
-                                                    style={{
-                                                        fontSize: 10,
-                                                        margin: 0,
-                                                        padding: '0 6px',
-                                                        lineHeight: '18px',
-                                                    }}
-                                                >
-                                                    {book.source === 'douban'
-                                                        ? '豆瓣'
-                                                        : '手动'}
-                                                </Tag>
-                                                {book.rating && (
-                                                    <Text
-                                                        style={{
-                                                            fontSize: 11,
-                                                            color: '#f59e0b',
-                                                        }}
-                                                    >
-                                                        ⭐ {book.rating}
-                                                    </Text>
-                                                )}
-                                            </Space>
-                                        }
-                                    />
-                                </List.Item>
-                            )}
-                            split
-                        />
-                    ) : (
-                        <Empty
-                            description="暂无图书"
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            style={{ padding: 20 }}
-                        >
-                            <Button
-                                type="primary"
-                                icon={<PlusOutlined />}
-                                onClick={() => navigate('/books/add')}
-                                size="small"
-                            >
-                                添加图书
-                            </Button>
-                        </Empty>
-                    )}
-                </Card>
-            </Col>
-
-            {/* 书架概览 */}
-            <Col xs={24} md={12}>
-                <Card
-                    title={
-                        <Space size={6}>
-                            <EnvironmentOutlined
-                                style={{ color: token.colorPrimary }}
-                            />
-                            <span>书架概览</span>
-                            {stats?.shelf_utilization?.length ? (
-                                <Badge
-                                    count={stats.shelf_utilization.length}
-                                    size="small"
-                                    style={{ backgroundColor: token.colorPrimary }}
-                                />
-                            ) : null}
-                        </Space>
-                    }
-                    extra={
-                        <Button
-                            type="text"
-                            size="small"
-                            onClick={() => navigate('/admin/shelves')}
-                        >
-                            管理书架 <RightOutlined />
-                        </Button>
-                    }
-                    style={{
-                        borderRadius: 14,
-                        border: `1px solid ${token.colorBorderSecondary}`,
-                        height: '100%',
-                    }}
-                    styles={{ body: { padding: '12px 20px' } }}
-                >
-                    {loading ? (
-                        <div>
-                            {[1, 2, 3, 4, 5].map((i) => (
-                                <Skeleton
-                                    key={i}
-                                    active
-                                    paragraph={{ rows: 1 }}
-                                    title={{ width: '40%' }}
-                                />
-                            ))}
-                        </div>
-                    ) : stats?.shelf_utilization?.length ? (
-                        <List
-                            dataSource={stats.shelf_utilization.slice(0, 5)}
-                            renderItem={(shelf) => {
-                                const percent = Math.round(shelf.percentage);
-                                const strokeColor =
-                                    percent > 80
-                                        ? '#ef4444'
-                                        : percent > 60
-                                        ? '#f59e0b'
-                                        : '#22c55e';
-
-                                return (
-                                    <List.Item
-                                        style={{
-                                            padding: '10px 0',
-                                            cursor: 'pointer',
-                                            borderRadius: 8,
-                                            transition: 'background 0.15s ease',
-                                        }}
-                                        onClick={() =>
-                                            handleShelfClick(
-                                                (shelf as any).shelf_id
-                                            )
-                                        }
-                                        onMouseEnter={(e) => {
-                                            e.currentTarget.style.background =
-                                                token.colorFillSecondary;
-                                        }}
-                                        onMouseLeave={(e) => {
-                                            e.currentTarget.style.background =
-                                                'transparent';
-                                        }}
-                                    >
-                                        <List.Item.Meta
-                                            avatar={
-                                                <div
-                                                    style={{
-                                                        width: 44,
-                                                        height: 44,
-                                                        borderRadius: 10,
-                                                        background:
-                                                            'linear-gradient(135deg, #fef3c7, #fde68a)',
-                                                        display: 'flex',
-                                                        alignItems: 'center',
-                                                        justifyContent: 'center',
-                                                        flexShrink: 0,
-                                                    }}
-                                                >
-                                                    <BookOutlined
-                                                        style={{
-                                                            color: '#92400e',
-                                                            fontSize: 18,
-                                                        }}
-                                                    />
-                                                </div>
-                                            }
-                                            title={
-                                                <div
-                                                    style={{
-                                                        display: 'flex',
-                                                        justifyContent:
-                                                            'space-between',
-                                                        alignItems: 'center',
-                                                    }}
-                                                >
-                                                    <Text
-                                                        style={{ fontSize: 14 }}
-                                                        ellipsis
-                                                    >
-                                                        {shelf.shelf_name}
-                                                    </Text>
-                                                    <Text
-                                                        strong
-                                                        style={{
-                                                            fontSize: 13,
-                                                            color: strokeColor,
-                                                        }}
-                                                    >
-                                                        {shelf.book_count} 本
-                                                    </Text>
-                                                </div>
-                                            }
-                                            description={
-                                                <Progress
-                                                    percent={percent}
-                                                    strokeColor={strokeColor}
-                                                    railColor={
-                                                        token.colorFillSecondary
-                                                    }
-                                                    size="small"
-                                                    showInfo={false}
-                                                    style={{ marginBottom: 0 }}
-                                                />
-                                            }
-                                        />
-                                    </List.Item>
-                                );
-                            }}
-                            split
-                        />
-                    ) : (
-                        <Empty
-                            description="暂无书架"
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            style={{ padding: 20 }}
-                        >
-                            <Button
-                                type="primary"
-                                icon={<PlusOutlined />}
-                                onClick={() => navigate('/admin/shelves')}
-                                size="small"
-                            >
-                                创建书架
-                            </Button>
-                        </Empty>
-                    )}
-                </Card>
-            </Col>
-        </Row>
-    );
-
-    // ==================== 渲染页面 ====================
-
-    return (
-        <div style={{ maxWidth: 1400, margin: '0 auto', padding: 24 }}>
-            {/* 欢迎横幅 */}
-            {renderHeroBanner()}
 
             {/* 快捷操作 */}
-            {renderQuickActions()}
+            <div style={{ marginTop: 24 }}>
+                <Title level={4} style={{ marginBottom: 16 }}>快捷操作</Title>
+                <Row gutter={[16, 16]}>
+                    {QUICK_ACTIONS.map((action, i) => (
+                        <Col key={action.key} xs={24} sm={12} md={8} lg={6}>
+                            <ActionCard action={action} delay={i * 80}
+                                onClick={() => handleNavigate(action.path, action.external)} />
+                        </Col>
+                    ))}
+                </Row>
+            </div>
 
-            {/* 最近添加 + 书架概览 */}
-            {renderBottomSection()}
-
-            {/* 悬停动画样式 */}
-            <style>{`
-                @keyframes hero-float {
-                    0%, 100% { transform: translateY(0px) rotate(0deg); }
-                    50% { transform: translateY(-15px) rotate(5deg); }
-                }
-                .action-card:hover .action-icon {
-                    transform: scale(1.08);
-                }
-                .action-card:hover .action-arrow {
-                    transform: translateX(4px);
-                }
-            `}</style>
+            {/* 最近活动 */}
+            <div style={{ marginTop: 32 }}>
+                <Title level={4} style={{ marginBottom: 16 }}>最近活动</Title>
+                <Row gutter={[24, 24]}>
+                    <Col xs={24} lg={14}>
+                        <Card title={<Space><BookOutlined /> 最近添加</Space>} style={{ borderRadius: 14 }}
+                            styles={{ body: { padding: '8px 20px 16px' } }}>
+                            {loading ? (
+                                <div style={{ padding: 12 }}>
+                                    {[1,2,3,4,5].map(i => <Skeleton key={i} active avatar={{ size: 40, shape: 'square' }}
+                                        paragraph={{ rows: 1 }} title={{ width: '60%' }} />)}
+                                </div>
+                            ) : stats?.recent_books?.length ? (
+                                <List dataSource={stats.recent_books.slice(0, 5)}
+                                    renderItem={(book: any) => <List.Item style={{ padding: 0 }}>{renderBookItem(book)}</List.Item>}
+                                    split={false} />
+                            ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无图书" />}
+                        </Card>
+                    </Col>
+                    <Col xs={24} lg={10}>
+                        <Card title={<Space><AppstoreOutlined /> 书架概览</Space>} style={{ borderRadius: 14 }}
+                            styles={{ body: { padding: '8px 20px 16px' } }}>
+                            {loading ? (
+                                <div style={{ padding: 12 }}>
+                                    {[1,2,3,4].map(i => <Skeleton key={i} active paragraph={{ rows: 1 }} />)}
+                                </div>
+                            ) : stats?.recent_shelves?.length ? (
+                                <List dataSource={stats.recent_shelves.slice(0, 5)}
+                                    renderItem={(shelf: any) => <List.Item style={{ padding: 0 }}>{renderShelfItem(shelf)}</List.Item>}
+                                    split={false} />
+                            ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无书架" />}
+                        </Card>
+                    </Col>
+                </Row>
+            </div>
         </div>
     );
 };

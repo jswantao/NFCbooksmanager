@@ -73,6 +73,7 @@ import {
     CopyOutlined,
 } from '@ant-design/icons';
 import { syncBookByISBN, extractErrorMessage } from '../services/api';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useNavigate } from 'react-router-dom';
 import { getCoverUrl, getPlaceholderCover } from '../utils/image';
 import { formatAuthors, formatRating, formatCurrency } from '../utils/format';
@@ -80,6 +81,8 @@ import ShelfSelector from '../components/ShelfSelector';
 import type { Book } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
+
+const ELLIPSIS_4_EXPANDABLE = { rows: 4, expandable: true, symbol: '展开全文' } as const;
 
 // ==================== 类型定义 ====================
 
@@ -406,11 +409,7 @@ const SearchResultCard: FC<{
                                     marginTop: 0,
                                     lineHeight: 1.7,
                                 }}
-                                ellipsis={{
-                                    rows: 4,
-                                    expandable: true,
-                                    symbol: '展开全文',
-                                }}
+                                ellipsis={ELLIPSIS_4_EXPANDABLE}
                             >
                                 {result.summary}
                             </Paragraph>
@@ -534,6 +533,17 @@ const BookSearch: FC = () => {
             navigate(path);
         }
     }, [searchResult, navigate]);
+
+    /** 添加书架相关回调 */
+    const handleShowShelfSelector = useCallback(() => setShowShelfSelector(true), []);
+    const handleCloseShelfSelector = useCallback(() => setShowShelfSelector(false), []);
+    const handleShelfAddSuccess = useCallback(() => {
+        message.success({
+            content: '已成功添加到书架',
+            key: 'add-shelf-success',
+        });
+        setShowShelfSelector(false);
+    }, []);
 
     // ==================== 渲染搜索输入区 ====================
 
@@ -867,7 +877,7 @@ const BookSearch: FC = () => {
                 <>
                     <SearchResultCard
                         result={searchResult}
-                        onAddToShelf={() => setShowShelfSelector(true)}
+                        onAddToShelf={handleShowShelfSelector}
                         onViewDetail={handleViewDetail}
                         onCopyISBN={handleCopyISBN}
                     />
@@ -906,14 +916,8 @@ const BookSearch: FC = () => {
                 visible={showShelfSelector}
                 bookId={searchResult?.book_id || 0}
                 bookTitle={searchResult?.title || ''}
-                onClose={() => setShowShelfSelector(false)}
-                onSuccess={() => {
-                    message.success({
-                        content: '已成功添加到书架',
-                        key: 'add-shelf-success',
-                    });
-                    setShowShelfSelector(false);
-                }}
+                onClose={handleCloseShelfSelector}
+                onSuccess={handleShelfAddSuccess}
             />
 
             {/* 淡入动画 */}

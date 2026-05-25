@@ -24,7 +24,7 @@
 """
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -65,7 +65,7 @@ async def get_dashboard_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
         包含所有统计维度的字典，前端直接用于渲染仪表盘
     """
     # ---- 当前日期（用于今日统计） ----
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
     # ---- 基础实体计数 ----
     physical_count = (
@@ -182,7 +182,7 @@ def _get_monthly_growth(db: Session) -> List[Dict[str, Any]]:
     Returns:
         [{"year": 2025, "month": "1月", "count": 15}, ...]
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     current_year = now.year
     current_month = now.month
     
@@ -473,7 +473,7 @@ def _get_fallback_activities(db: Session, limit: int) -> List[Dict[str, Any]]:
     
     按时间倒序合并排序，取前 limit 条。
     """
-    since = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
     activities = []
     
     # 1. 同步活动
@@ -588,7 +588,7 @@ async def get_logs(
     """
     if _table_exists(db, "activity_logs"):
         query = db.query(ActivityLog).filter(
-            ActivityLog.created_at >= datetime.utcnow() - timedelta(days=days)
+            ActivityLog.created_at >= datetime.now(timezone.utc) - timedelta(days=days)
         )
         if action_type:
             query = query.filter(ActivityLog.action == action_type)
@@ -746,11 +746,18 @@ def _format_relative_time(dt: datetime) -> str:
     """
     if not dt:
         return ""
-    
-    # 统一处理时区
-    if dt.tzinfo:
+
+    # SQLite raw query 返回字符串，统一转换为 datetime
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt)
+        except (ValueError, TypeError):
+            return dt
+
+    # 统一转为 naive datetime 进行比较
+    if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
         dt = dt.replace(tzinfo=None)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     
     diff_seconds = (now - dt).total_seconds()
     

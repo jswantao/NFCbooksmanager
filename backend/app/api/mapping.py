@@ -25,12 +25,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.utils.activity_logger import log_activity
 from app.models.models import (
     PhysicalShelf,
     LogicalShelf,
     PhysicalLogicalMapping,
 )
-from app.schemas.schemas import (
+from app.schemas import (
     MappingResolveRequest,
     MappingResolveResponse,
 )
@@ -142,27 +143,37 @@ async def list_mappings(
         映射关系列表，包含物理位置和逻辑书架信息
     """
     mappings = db.query(PhysicalLogicalMapping).all()
-    
+
+    if not mappings:
+        return []
+
+    # 批量获取物理书架和逻辑书架（避免 N+1 查询）
+    physical_ids = list({m.physical_shelf_id for m in mappings})
+    logical_ids = list({m.logical_shelf_id for m in mappings})
+
+    physical_map = {}
+    if physical_ids:
+        physical_shelves = (
+            db.query(PhysicalShelf)
+            .filter(PhysicalShelf.physical_shelf_id.in_(physical_ids))
+            .all()
+        )
+        physical_map = {p.physical_shelf_id: p for p in physical_shelves}
+
+    logical_map = {}
+    if logical_ids:
+        logical_shelves = (
+            db.query(LogicalShelf)
+            .filter(LogicalShelf.logical_shelf_id.in_(logical_ids))
+            .all()
+        )
+        logical_map = {l.logical_shelf_id: l for l in logical_shelves}
+
     result = []
     for mapping in mappings:
-        # 获取物理书架信息（防御性查询）
-        physical_shelf = (
-            db.query(PhysicalShelf)
-            .filter(
-                PhysicalShelf.physical_shelf_id == mapping.physical_shelf_id
-            )
-            .first()
-        )
-        
-        # 获取逻辑书架信息（防御性查询）
-        logical_shelf = (
-            db.query(LogicalShelf)
-            .filter(
-                LogicalShelf.logical_shelf_id == mapping.logical_shelf_id
-            )
-            .first()
-        )
-        
+        physical_shelf = physical_map.get(mapping.physical_shelf_id)
+        logical_shelf = logical_map.get(mapping.logical_shelf_id)
+
         result.append({
             "mapping_id": mapping.mapping_id,
             "physical_location": (
@@ -189,7 +200,7 @@ async def list_mappings(
                 if mapping.updated_at else None
             ),
         })
-    
+
     return result
 
 

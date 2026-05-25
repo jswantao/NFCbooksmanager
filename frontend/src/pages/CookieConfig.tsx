@@ -83,6 +83,7 @@ import {
     deleteCookieConfig,
     extractErrorMessage,
 } from '../services/api';
+import { useAsyncData } from '../hooks/useAsyncData';
 import { getCoverUrl } from '../utils/image';
 import { formatDate } from '../utils/format';
 
@@ -257,7 +258,7 @@ const CookieConfig: FC = () => {
     const { token } = theme.useToken();
 
     // 数据
-    const { cookieInfo, loading, error, load } = useCookieConfig();
+    const { data: cookieInfo, loading, error, refresh: load } = useAsyncData(() => import('../services/api').then(m => m.getCookieConfig()), []);
 
     // 表单状态
     const [cookieInput, setCookieInput] = useState('');

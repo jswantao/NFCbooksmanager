@@ -415,7 +415,83 @@ try {
 
 ---
 
-## 十二、常见问题
+## 十二、前端组件开发规范
+
+### 核心原则：容器/展示分离
+
+所有新增页面组件必须遵循 **容器组件（业务逻辑）+ 展示组件（UI 渲染）** 的职责分离模式：
+
+| 层 | 职责 | 包含 |
+|----|------|------|
+| Hook（业务逻辑层） | 状态管理、数据加载、事件处理、API 调用 | `useState`、`useEffect`、`useCallback`、`useAsyncData` |
+| Component（UI 渲染层） | 接收 props、渲染 JSX、样式布局 | Ant Design 组件、条件渲染、`<Table>`、`<Form>` |
+
+### 可复用逻辑提取标准
+
+以下场景必须将逻辑提取到 `src/hooks/` 目录：
+
+1. **数据加载**：任何包含 `useAsyncData` / `useEffect` + API 调用的数据获取逻辑 → `useXxxData.ts`
+2. **操作处理**：包含 3 个以上 `handle*` 回调的 CRUD 操作 → `useXxxOperations.ts`
+3. **状态机**：多步骤流程（向导、进度追踪）→ `useXxxWizard.ts` / `useXxxState.ts`
+4. **表单管理**：包含草稿保存、校验、提交逻辑的表单 → `useXxxForm.ts`
+
+### 组件模板
+
+```typescript
+// ✅ 正确：干净的展示组件
+// pages/ExamplePage.tsx
+export default function ExamplePage() {
+    const { data, loading } = useExampleData();
+    const { handleCreate, handleDelete } = useExampleOperations();
+
+    if (loading) return <Skeleton />;
+    return (
+        <div>
+            <Button onClick={handleCreate}>创建</Button>
+            <Table dataSource={data} />
+        </div>
+    );
+}
+
+// ❌ 错误：组件内直接写 fetch 和复杂状态
+export default function ExamplePage() {
+    const [data, setData] = useState([]);
+    useEffect(() => { fetch('/api/...').then(...) }, []);
+    const handleClick = async () => { ... 20 行逻辑 ... };
+    // ...
+}
+```
+
+### 现有参考实现
+
+| 模式 | 参考文件 |
+|------|----------|
+| 数据加载 Hook | `hooks/useBackupData.ts`（36 行，4 个 useAsyncData 合并） |
+| 操作处理 Hook | `hooks/useBackupOperations.ts`（129 行，8 个操作处理器 + 加载状态） |
+| 向导状态机 Hook | `hooks/useRestoreWizard.ts`（123 行，3 步状态机 + 冲突解决） |
+| 通用数据加载 | `hooks/useAsyncData.ts`（56 行，通用 loading/data/error 三态） |
+| BookService 封装 | `services/bookService.ts`（BookReference 双模式定位） |
+| 统一编辑组件 | `pages/BookEditor.tsx`（支持 /books/:id/edit 和 /shelves/:id/books/:idx/edit） |
+
+### 页面组件行数限制
+
+| 类型 | 建议上限 | 说明 |
+|------|----------|------|
+| 展示页面组件 | ≤ 350 行 | 超出应提取 Hook |
+| 复杂管理页面 | ≤ 500 行 | 超出应拆分子组件 |
+| 自定义 Hook | ≤ 150 行 | 超出应拆分多个 Hook |
+| API 函数文件 | ≤ 600 行 | 超出应按域拆分 |
+
+当前重构成效：
+
+| 组件 | 重构前 | 重构后 | Hook 行数 |
+|------|--------|--------|-----------|
+| BackupManager | 534 行 | 290 行 | useBackupData(36) + useBackupOperations(129) |
+| BackupRestore | 343 行 | 171 行 | useRestoreWizard(123) |
+
+---
+
+## 十三、常见问题
 
 ### 后端启动失败
 1. 检查是否在 `backend/` 目录下执行命令

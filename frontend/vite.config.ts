@@ -21,13 +21,6 @@ export default defineConfig(({ mode }) => {
         plugins: [
             react({
                 jsxRuntime: 'automatic',
-                // React 19 编译器优化
-                babel: {
-                    plugins: [
-                        // 生产环境移除 PropTypes
-                        isProd && ['babel-plugin-transform-react-remove-prop-types', { mode: 'remove' }],
-                    ].filter(Boolean),
-                },
             }),
             
             // 构建分析（可选，通过 ANALYZE=true 启用）
@@ -96,7 +89,6 @@ export default defineConfig(({ mode }) => {
                 'react-router-dom',
                 'antd',
                 '@ant-design/icons',
-                '@ant-design/pro-components',
                 'dayjs',
                 'axios',
                 'recharts',

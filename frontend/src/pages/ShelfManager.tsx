@@ -14,7 +14,7 @@
  * - 响应式统计卡片
  */
 
-import React, {
+import {
     useEffect,
     useState,
     useCallback,
@@ -37,15 +37,13 @@ import {
     Breadcrumb,
     Empty,
     Tooltip,
-    Skeleton,
     Badge,
     Row,
     Col,
     Statistic,
     Alert,
     theme,
-    type ColumnsType,
-    type FormInstance,
+    type TableColumnsType,
 } from 'antd';
 import {
     PlusOutlined,
@@ -59,8 +57,6 @@ import {
     ExclamationCircleOutlined,
     InboxOutlined,
     SearchOutlined,
-    CheckCircleOutlined,
-    ArrowRightOutlined,
     ClearOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -72,7 +68,8 @@ import {
     extractErrorMessage,
 } from '../services/api';
 import type { ShelfInfo } from '../types';
-import { debounce } from '../utils/helpers';
+import { useAsyncData } from '../hooks/useAsyncData';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -102,69 +99,6 @@ const SEARCH_DEBOUNCE_MS = 300;
 /**
  * 书架数据管理 Hook
  */
-const useShelfData = () => {
-    const [shelves, setShelves] = useState<ShelfInfo[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [searchKeyword, setSearchKeyword] = useState('');
-    const isMounted = useRef(true);
-
-    useEffect(() => {
-        isMounted.current = true;
-        return () => {
-            isMounted.current = false;
-        };
-    }, []);
-
-    const loadShelves = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-
-        try {
-            const data = await listShelves();
-            if (isMounted.current) {
-                setShelves(data || []);
-            }
-        } catch (err: unknown) {
-            if (isMounted.current) {
-                const errorMsg = extractErrorMessage(err) || '加载书架列表失败';
-                setError(errorMsg);
-            }
-        } finally {
-            if (isMounted.current) {
-                setLoading(false);
-            }
-        }
-    }, []);
-
-    useEffect(() => {
-        loadShelves();
-    }, [loadShelves]);
-
-    /** 过滤后的书架列表 */
-    const filteredShelves = useMemo(() => {
-        if (!searchKeyword.trim()) return shelves;
-        const keyword = searchKeyword.toLowerCase().trim();
-        return shelves.filter(
-            (s) =>
-                s.shelf_name.toLowerCase().includes(keyword) ||
-                s.description?.toLowerCase().includes(keyword) ||
-                s.physical_location?.toLowerCase().includes(keyword)
-        );
-    }, [shelves, searchKeyword]);
-
-    return {
-        shelves: filteredShelves,
-        allShelves: shelves,
-        total: filteredShelves.length,
-        loading,
-        error,
-        searchKeyword,
-        setSearchKeyword,
-        loadShelves,
-        setShelves,
-    };
-};
 
 /**
  * 弹窗表单管理 Hook
@@ -222,17 +156,27 @@ const ShelfManager: FC = () => {
     const { token } = theme.useToken();
 
     // 数据管理
-    const {
-        shelves,
-        allShelves,
-        total,
-        loading,
-        error,
-        searchKeyword,
-        setSearchKeyword,
-        loadShelves,
-        setShelves,
-    } = useShelfData();
+    const { data: allShelves, loading, error, refresh: loadShelves } = useAsyncData(() => listShelves(), []);
+    const [shelves, setShelves] = useState<ShelfInfo[]>([]);
+    const setError = useState<string | null>(null)[1];
+    const [rawSearch, setRawSearch] = useState('');
+    const searchKeyword = useDebouncedValue(rawSearch, SEARCH_DEBOUNCE_MS);
+    const setSearchKeyword = setRawSearch;
+    const [deletingId, setDeletingId] = useState<number | null>(null);
+
+    // 同步 allShelves 到本地 state（用于乐观更新）
+    useEffect(() => { if (allShelves) setShelves(allShelves); }, [allShelves]);
+
+    // 本地过滤
+    const filteredShelves = useMemo(() => {
+        if (!searchKeyword.trim()) return shelves;
+        const kw = searchKeyword.toLowerCase().trim();
+        return shelves.filter(s =>
+            s.shelf_name.toLowerCase().includes(kw) ||
+            s.description?.toLowerCase().includes(kw) ||
+            s.physical_location?.toLowerCase().includes(kw)
+        );
+    }, [shelves, searchKeyword]);
 
     // 表单管理
     const {
@@ -246,18 +190,6 @@ const ShelfManager: FC = () => {
         openEdit,
         closeModal,
     } = useShelfForm();
-
-    const [deletingId, setDeletingId] = useState<number | null>(null);
-
-    // ==================== 搜索防抖 ====================
-
-    const debouncedSearch = useMemo(
-        () =>
-            debounce((value: string) => {
-                setSearchKeyword(value);
-            }, SEARCH_DEBOUNCE_MS),
-        [setSearchKeyword]
-    );
 
     // ==================== CRUD 操作 ====================
 
@@ -344,10 +276,11 @@ const ShelfManager: FC = () => {
     // ==================== 统计数据 ====================
 
     const stats = useMemo(() => {
-        const totalBooks = allShelves.reduce((sum, s) => sum + s.book_count, 0);
-        const withLocation = allShelves.filter((s) => s.physical_location).length;
+        const shelves = allShelves ?? []; // 空值合并
+        const totalBooks = shelves.reduce((sum, s) => sum + s.book_count, 0);
+        const withLocation = shelves.filter((s) => s.physical_location).length;
         return {
-            shelfCount: allShelves.length,
+            shelfCount: shelves.length,
             totalBooks,
             withLocation,
         };
@@ -355,7 +288,7 @@ const ShelfManager: FC = () => {
 
     // ==================== 表格列配置 ====================
 
-    const columns: ColumnsType<ShelfInfo> = useMemo(
+    const columns: TableColumnsType<ShelfInfo> = useMemo(
         () => [
             {
                 title: 'ID',
@@ -374,7 +307,7 @@ const ShelfManager: FC = () => {
                 dataIndex: 'shelf_name',
                 key: 'shelf_name',
                 width: 240,
-                sorter: (a, b) => a.shelf_name.localeCompare(b.shelf_name),
+                sorter: (a: ShelfInfo, b: ShelfInfo) => a.shelf_name.localeCompare(b.shelf_name),
                 render: (name: string, record: ShelfInfo) => (
                     <a
                         onClick={() => handleViewShelf(record.logical_shelf_id)}
@@ -410,7 +343,7 @@ const ShelfManager: FC = () => {
                 key: 'book_count',
                 width: 110,
                 align: 'center',
-                sorter: (a, b) => a.book_count - b.book_count,
+                sorter: (a: ShelfInfo, b: ShelfInfo) => a.book_count - b.book_count,
                 defaultSortOrder: 'descend',
                 render: (count: number) => (
                     <Badge
@@ -603,7 +536,7 @@ const ShelfManager: FC = () => {
             )}
 
             {/* 统计卡片 */}
-            {!loading && allShelves.length > 0 && (
+            {!loading && (allShelves?.length ?? 0) > 0 && (
                 <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
                     <Col xs={24} sm={8}>
                         <Card
@@ -661,7 +594,7 @@ const ShelfManager: FC = () => {
             )}
 
             {/* 搜索栏 */}
-            {allShelves.length > 0 && (
+            {(allShelves?.length ?? 0) > 0 && (
                 <Card
                     style={{
                         marginBottom: 24,
@@ -675,7 +608,7 @@ const ShelfManager: FC = () => {
                             placeholder="搜索书架名称、描述或物理位置..."
                             allowClear
                             defaultValue={searchKeyword}
-                            onChange={(e) => debouncedSearch(e.target.value)}
+                            onChange={(e) => setSearchKeyword(e.target.value)}
                             onSearch={(value) => setSearchKeyword(value || '')}
                             style={{ width: 360 }}
                             prefix={<SearchOutlined />}
@@ -702,7 +635,7 @@ const ShelfManager: FC = () => {
             >
                 <Table<ShelfInfo>
                     columns={columns}
-                    dataSource={shelves}
+                    dataSource={filteredShelves}
                     rowKey="logical_shelf_id"
                     loading={loading}
                     pagination={{
@@ -841,4 +774,3 @@ const ShelfManager: FC = () => {
 };
 
 export default ShelfManager;
-export type { ShelfItem, ShelfFormValues } from '../types';

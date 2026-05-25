@@ -84,6 +84,7 @@ import {
     createMapping,
     extractErrorMessage,
 } from '../services/api';
+import { useAsyncData } from '../hooks/useAsyncData';
 import type {
     PhysicalShelf,
     PhysicalMappingInfo,
@@ -108,50 +109,35 @@ type ModalMode = 'create' | 'edit';
  * 物理书架数据管理 Hook
  */
 const usePhysicalShelves = () => {
-    const [loading, setLoading] = useState(true);
     const [shelves, setShelves] = useState<PhysicalShelf[]>([]);
     const [total, setTotal] = useState(0);
     const [searchKeyword, setSearchKeyword] = useState('');
     const [filterActive, setFilterActive] = useState<boolean | undefined>();
     const [error, setError] = useState<string | null>(null);
-    const isMounted = useRef(true);
 
-    useEffect(() => {
-        isMounted.current = true;
-        return () => {
-            isMounted.current = false;
-        };
-    }, []);
-
-    const loadData = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-
-        try {
+    const { loading, refresh: loadData } = useAsyncData(
+        async () => {
+            setError(null);
             const params: Record<string, unknown> = {};
             if (searchKeyword.trim()) params.search = searchKeyword.trim();
             if (filterActive !== undefined) params.is_active = filterActive;
+            return await listPhysicalShelves(params);
+        },
+        [searchKeyword, filterActive]
+    );
 
-            const data = await listPhysicalShelves(params);
-            if (isMounted.current) {
-                setShelves(data.shelves || []);
-                setTotal(data.total || 0);
-            }
-        } catch (err: unknown) {
-            if (isMounted.current) {
-                const errorMsg = extractErrorMessage(err) || '加载失败';
-                setError(errorMsg);
-            }
-        } finally {
-            if (isMounted.current) {
-                setLoading(false);
-            }
-        }
-    }, [searchKeyword, filterActive]);
-
+    // 同步 useAsyncData 结果到本地 state（用于乐观更新）
     useEffect(() => {
-        loadData();
-    }, [loadData]);
+        const doSync = async () => {
+            const params: Record<string, unknown> = {};
+            if (searchKeyword.trim()) params.search = searchKeyword.trim();
+            if (filterActive !== undefined) params.is_active = filterActive;
+            const data = await listPhysicalShelves(params);
+            setShelves(data.shelves || []);
+            setTotal(data.total || 0);
+        };
+        doSync();
+    }, [searchKeyword, filterActive]);
 
     return {
         shelves,

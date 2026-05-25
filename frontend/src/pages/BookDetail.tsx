@@ -82,12 +82,15 @@ import {
     syncBookByISBN,
     extractErrorMessage,
 } from '../services/api';
+import { useAsyncData } from '../hooks/useAsyncData';
 import { getCoverUrl, getPlaceholderCover } from '../utils/image';
 import { formatRating, formatDate, formatCurrency, formatAuthors } from '../utils/format';
 import ShelfSelector from '../components/ShelfSelector';
 import type { BookDetail as BookDetailData } from '../types';
 
 const { Title, Paragraph, Text } = Typography;
+
+const ELLIPSIS_6_EXPANDABLE = { rows: 6, expandable: true, symbol: '展开全文' } as const;
 
 // ==================== 常量 ====================
 
@@ -108,40 +111,6 @@ const SOURCE_CONFIG: Record<string, { color: string; label: string }> = {
     manual: { color: 'orange', label: '手动录入' },
     isbn: { color: 'blue', label: 'ISBN 导入' },
     nfc: { color: 'purple', label: 'NFC 录入' },
-};
-
-// ==================== 自定义 Hook ====================
-
-/**
- * 图书详情加载 Hook
- */
-const useBookDetailLoader = (bookId?: string) => {
-    const [loading, setLoading] = useState(true);
-    const [book, setBook] = useState<BookDetailData | null>(null);
-    const [error, setError] = useState<string | null>(null);
-
-    const load = useCallback(async () => {
-        if (!bookId) return;
-
-        setLoading(true);
-        setError(null);
-
-        try {
-            const result = await getBookDetail(parseInt(bookId));
-            setBook(result);
-        } catch (err: unknown) {
-            const errorMsg = extractErrorMessage(err) || '加载图书详情失败';
-            setError(errorMsg);
-        } finally {
-            setLoading(false);
-        }
-    }, [bookId]);
-
-    useEffect(() => {
-        load();
-    }, [load]);
-
-    return { book, loading, error, load, setBook };
 };
 
 /**
@@ -186,7 +155,10 @@ const BookDetail: FC = () => {
     const { token } = theme.useToken();
 
     // 数据加载
-    const { book, loading, error, load } = useBookDetailLoader(bookId);
+    const { data: book, loading, error, refresh: load } = useAsyncData(
+        () => bookId ? getBookDetail(parseInt(bookId)) : Promise.resolve(null),
+        [bookId]
+    );
 
     // 图片状态
     const {
@@ -236,6 +208,11 @@ const BookDetail: FC = () => {
     );
 
     const hasShelf = !!book?.shelf_id;
+
+    const existingShelfIds = useMemo(
+        () => (hasShelf ? [book!.shelf_id!] : []),
+        [hasShelf, book?.shelf_id]
+    );
 
     // ==================== 操作处理 ====================
 
@@ -327,6 +304,8 @@ const BookDetail: FC = () => {
         load(); // 重新加载以更新书架信息
     }, [load]);
 
+    const handleCloseShelfSelector = useCallback(() => setShowShelfSelector(false), []);
+
     // ==================== 更多菜单 ====================
 
     const moreMenuItems: MenuProps['items'] = useMemo(
@@ -396,8 +375,8 @@ const BookDetail: FC = () => {
         if (book.created_at) {
             items.push({
                 color: 'blue' as const,
-                dot: <ClockCircleOutlined />,
-                children: (
+                icon: <ClockCircleOutlined />,
+                content: (
                     <div>
                         <Text strong>创建记录</Text>
                         <br />
@@ -412,8 +391,8 @@ const BookDetail: FC = () => {
         if (book.added_at) {
             items.push({
                 color: 'green' as const,
-                dot: <BookOutlined />,
-                children: (
+                icon: <BookOutlined />,
+                content: (
                     <div>
                         <Text strong>添加到书架</Text>
                         {book.shelf_name && (
@@ -434,8 +413,8 @@ const BookDetail: FC = () => {
         if (book.last_sync_at) {
             items.push({
                 color: 'orange' as const,
-                dot: <SyncOutlined />,
-                children: (
+                icon: <SyncOutlined />,
+                content: (
                     <div>
                         <Text strong>同步豆瓣数据</Text>
                         <br />
@@ -450,8 +429,8 @@ const BookDetail: FC = () => {
         if (book.updated_at && book.updated_at !== book.created_at) {
             items.push({
                 color: 'purple' as const,
-                dot: <FormOutlined />,
-                children: (
+                icon: <FormOutlined />,
+                content: (
                     <div>
                         <Text strong>最后更新</Text>
                         <br />
@@ -476,7 +455,7 @@ const BookDetail: FC = () => {
                 key: 'author',
                 label: '作者',
                 span: { xs: 1, sm: book.translator ? 1 : 2 },
-                children: (
+                content: (
                     <Space size={4}>
                         <UserOutlined />
                         <Text strong>{formatAuthors(book.author, 3)}</Text>
@@ -490,7 +469,7 @@ const BookDetail: FC = () => {
                 key: 'translator',
                 label: '译者',
                 span: 1,
-                children: (
+                content: (
                     <Space size={4}>
                         <TranslationOutlined />
                         <Text>{book.translator}</Text>
@@ -504,7 +483,7 @@ const BookDetail: FC = () => {
                 key: 'isbn',
                 label: 'ISBN',
                 span: 1,
-                children: (
+                content: (
                     <Space size={4}>
                         <BarcodeOutlined />
                         <Text code copyable>
@@ -519,7 +498,7 @@ const BookDetail: FC = () => {
                           key: 'publisher',
                           label: '出版社',
                           span: 1,
-                          children: (
+                          content: (
                               <Space size={4}>
                                   <EnvironmentOutlined />
                                   <Text>{book.publisher}</Text>
@@ -534,7 +513,7 @@ const BookDetail: FC = () => {
                           key: 'publish_date',
                           label: '出版日期',
                           span: 1,
-                          children: (
+                          content: (
                               <Space size={4}>
                                   <CalendarOutlined />
                                   <Text>{book.publish_date}</Text>
@@ -549,7 +528,7 @@ const BookDetail: FC = () => {
                           key: 'pages',
                           label: '页数',
                           span: 1,
-                          children: (
+                          content: (
                               <Space size={4}>
                                   <FileTextOutlined />
                                   <Text>{book.pages} 页</Text>
@@ -564,7 +543,7 @@ const BookDetail: FC = () => {
                           key: 'price',
                           label: '定价',
                           span: 1,
-                          children: (
+                          content: (
                               <Space size={4}>
                                   <DollarOutlined />
                                   <Text>{formatCurrency(book.price)}</Text>
@@ -579,7 +558,7 @@ const BookDetail: FC = () => {
                           key: 'binding',
                           label: '装帧',
                           span: 1,
-                          children: (
+                          content: (
                               <Tag color={BINDING_COLORS[book.binding] || 'default'}>
                                   {book.binding}
                               </Tag>
@@ -603,7 +582,7 @@ const BookDetail: FC = () => {
                           key: 'original_title',
                           label: '原作名',
                           span: 2,
-                          children: (
+                          content: (
                               <Space size={4}>
                                   <TranslationOutlined />
                                   <Text italic>{book.original_title}</Text>
@@ -618,7 +597,7 @@ const BookDetail: FC = () => {
                           key: 'shelf',
                           label: '所在书架',
                           span: 2,
-                          children: (
+                          content: (
                               <Tag
                                   color="blue"
                                   icon={<BookOutlined />}
@@ -1130,11 +1109,7 @@ const BookDetail: FC = () => {
                                         textAlign: 'justify',
                                         marginBottom: 0,
                                     }}
-                                    ellipsis={{
-                                        rows: 6,
-                                        expandable: true,
-                                        symbol: '展开全文',
-                                    }}
+                                    ellipsis={ELLIPSIS_6_EXPANDABLE}
                                 >
                                     {book.summary}
                                 </Paragraph>
@@ -1233,9 +1208,9 @@ const BookDetail: FC = () => {
                 visible={showShelfSelector}
                 bookId={book.book_id}
                 bookTitle={book.title}
-                onClose={() => setShowShelfSelector(false)}
+                onClose={handleCloseShelfSelector}
                 onSuccess={handleShelfAddSuccess}
-                existingShelfIds={hasShelf ? [book.shelf_id!] : []}
+                existingShelfIds={existingShelfIds}
             />
         </div>
     );

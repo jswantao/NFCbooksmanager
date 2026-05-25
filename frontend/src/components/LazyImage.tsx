@@ -18,7 +18,6 @@ import React, {
     useCallback,
     type FC,
     type CSSProperties,
-    type SyntheticEvent,
 } from 'react';
 import { Skeleton } from 'antd';
 
@@ -76,23 +75,23 @@ const LazyImage: FC<LazyImageProps> = ({
     progressive = true,
 }) => {
     // 状态管理
-    const [isInView, setIsInView] = useState(false);
+    const supportsNativeLazy = typeof window !== 'undefined' && 'loading' in HTMLImageElement.prototype;
+    const [isInView, setIsInView] = useState(supportsNativeLazy);
     const [isLoaded, setIsLoaded] = useState(false);
     const [isError, setIsError] = useState(false);
-    const [retryCount, setRetryCount] = useState(0);
-    const [loadAttempted, setLoadAttempted] = useState(false);
+    const [retryKey, setRetryKey] = useState(0);
 
     // Refs
     const containerRef = useRef<HTMLDivElement>(null);
     const observerRef = useRef<IntersectionObserver | null>(null);
-    const retryTimerRef = useRef<ReturnType<typeof setTimeout>>();
+    const retryTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const retryCountRef = useRef(0);
 
     // ==================== Intersection Observer ====================
 
     useEffect(() => {
-        // 检查原生 lazy loading 支持
-        if ('loading' in HTMLImageElement.prototype) {
-            setIsInView(true);
+        // 原生 lazy loading 已通过 useState 初始化处理
+        if (supportsNativeLazy) {
             return;
         }
 
@@ -120,40 +119,30 @@ const LazyImage: FC<LazyImageProps> = ({
         return () => {
             observerRef.current?.disconnect();
         };
-    }, [rootMargin]);
+    }, [rootMargin, supportsNativeLazy]);
 
     // ==================== 事件处理 ====================
 
     const handleLoad = useCallback(() => {
         setIsLoaded(true);
         setIsError(false);
-        setLoadAttempted(true);
         onLoad?.();
     }, [onLoad]);
 
     const handleError = useCallback(() => {
-        setLoadAttempted(true);
-
         // 如果还有重试次数，延迟重试
-        if (retryCount < maxRetries) {
+        if (retryCountRef.current < maxRetries) {
             retryTimerRef.current = setTimeout(() => {
-                setRetryCount((prev) => prev + 1);
+                retryCountRef.current += 1;
+                setRetryKey((prev) => prev + 1);
+                setIsLoaded(false);
                 setIsError(false);
-            }, Math.pow(2, retryCount) * 1000); // 指数退避
+            }, Math.pow(2, retryCountRef.current) * 1000); // 指数退避
         } else {
             setIsError(true);
             onError?.();
         }
-    }, [retryCount, maxRetries, onError]);
-
-    // ==================== 重试逻辑 ====================
-
-    // 当 retryCount 变化时，重新加载图片
-    useEffect(() => {
-        if (retryCount > 0 && retryCount <= maxRetries) {
-            setIsLoaded(false);
-        }
-    }, [retryCount, maxRetries]);
+    }, [maxRetries, onError]);
 
     // ==================== 清理 ====================
 
@@ -227,7 +216,7 @@ const LazyImage: FC<LazyImageProps> = ({
             {/* 主图片 */}
             {isInView && (
                 <img
-                    key={`${displaySrc}-${retryCount}`}
+                    key={`${displaySrc}-${retryKey}`}
                     src={displaySrc}
                     alt={alt}
                     loading="lazy"
@@ -253,7 +242,7 @@ const LazyImage: FC<LazyImageProps> = ({
             )}
 
             {/* 加载失败覆盖层 */}
-            {isError && retryCount >= maxRetries && (
+            {isError && retryKey >= maxRetries && (
                 <div
                     style={{
                         position: 'absolute',

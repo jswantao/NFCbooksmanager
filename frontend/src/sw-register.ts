@@ -251,7 +251,7 @@ class ServiceWorkerManager {
         if (!navigator.serviceWorker.controller) return null;
 
         try {
-            return await this.postMessageWithResponse<CacheStats>(
+            return await this.postMessageWithResponse<CacheStats | null>(
                 { type: 'GET_CACHE_STATS' },
                 5000,
                 null

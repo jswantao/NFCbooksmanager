@@ -11,7 +11,7 @@
  * - 虚拟列表友好接口
  */
 
-import React, { useCallback, useMemo, memo, useState, type FC, type CSSProperties } from 'react';
+import React, { useCallback, useMemo, memo, type FC, type CSSProperties } from 'react';
 import { Card, Tag, Typography, Tooltip, Rate, Skeleton, Space, theme } from 'antd';
 import {
     UserOutlined,
@@ -39,6 +39,8 @@ const SOURCE_TAG_MAP: Record<string, { color: string; label: string }> = {
 
 /** 默认来源标签 */
 const DEFAULT_SOURCE_TAG = { color: 'default', label: '未知' };
+
+const ELLIPSIS_2_ROWS = { rows: 2 } as const;
 
 // ==================== 类型定义 ====================
 
@@ -145,10 +147,8 @@ const BookCard: FC<BookCardProps> = memo(
         loading = false,
         className,
         style,
-        dataIndex,
         selected = false,
     }) => {
-        const [imgLoaded, setImgLoaded] = useState(false);
         const { token } = theme.useToken();
 
         // ==================== 数据计算 ====================
@@ -367,7 +367,7 @@ const BookCard: FC<BookCardProps> = memo(
                             {/* 摘要 */}
                             {book.summary && (
                                 <Paragraph
-                                    ellipsis={{ rows: 2 }}
+                                    ellipsis={ELLIPSIS_2_ROWS}
                                     style={{
                                         color: token.colorTextTertiary,
                                         fontSize: 13,
@@ -515,7 +515,7 @@ const BookCard: FC<BookCardProps> = memo(
                             )}
                             {book.summary && (
                                 <Paragraph
-                                    ellipsis={{ rows: 2 }}
+                                    ellipsis={ELLIPSIS_2_ROWS}
                                     style={{
                                         color: token.colorTextTertiary,
                                         fontSize: 12,

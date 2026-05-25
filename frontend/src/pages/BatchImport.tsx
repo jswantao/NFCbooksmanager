@@ -82,6 +82,8 @@ import {
     listShelves,
     extractErrorMessage,
 } from '../services/api';
+import { usePolling } from '../hooks/usePolling';
+import { useImportPoll } from '../hooks/useImportPoll';
 import { formatFileSize } from '../utils/format';
 import type {
     ImportPreview,
@@ -179,79 +181,6 @@ const StatCard: FC<{
         </Card>
     </Col>
 );
-
-// ==================== 自定义 Hook ====================
-
-/**
- * 导入轮询 Hook
- */
-const useImportPoll = () => {
-    const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    const pollCountRef = useRef(0);
-    const isMounted = useRef(true);
-
-    useEffect(() => {
-        isMounted.current = true;
-        return () => {
-            isMounted.current = false;
-            stopPoll();
-        };
-    }, []);
-
-    /** 停止轮询 */
-    const stopPoll = useCallback(() => {
-        if (pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-        }
-        pollCountRef.current = 0;
-    }, []);
-
-    /** 开始轮询 */
-    const startPoll = useCallback(
-        (
-            taskId: string,
-            onUpdate: (task: ImportTask) => void,
-            onComplete: (task: ImportTask) => void,
-            onTimeout: () => void
-        ) => {
-            stopPoll();
-
-            pollRef.current = setInterval(async () => {
-                if (!isMounted.current) return;
-
-                pollCountRef.current++;
-
-                // 超时检查
-                if (pollCountRef.current > MAX_POLL_RETRIES) {
-                    stopPoll();
-                    onTimeout();
-                    return;
-                }
-
-                try {
-                    const task = await getImportStatus(taskId);
-
-                    if (!isMounted.current) return;
-
-                    onUpdate(task);
-
-                    if (
-                        ['completed', 'failed', 'cancelled'].includes(task.status)
-                    ) {
-                        stopPoll();
-                        onComplete(task);
-                    }
-                } catch {
-                    // 单次轮询失败不中断，继续重试
-                }
-            }, POLL_INTERVAL_MS);
-        },
-        [stopPoll]
-    );
-
-    return { startPoll, stopPoll };
-};
 
 // ==================== 主组件 ====================
 

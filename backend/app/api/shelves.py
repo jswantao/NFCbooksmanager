@@ -26,14 +26,15 @@
 - 书架名称需唯一（激活状态下）
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, asc, case
+from sqlalchemy import func, desc, asc
 
 from app.core.database import get_db
+from app.utils.activity_logger import log_activity
 from app.models.models import (
     LogicalShelf,
     LogicalShelfBook,
@@ -42,17 +43,19 @@ from app.models.models import (
     PhysicalLogicalMapping,
     BookStatus,
 )
-from app.schemas.schemas import (
+from app.schemas import (
     ShelfBooksResponse,
     BookInShelf,
     BookAddToShelfRequest,
     BookAddToShelfResponse,
+    BookUpdateManualRequest,
     MappingResolveResponse,
     ShelfInfoResponse,
     ShelfCreateRequest,
     ShelfUpdateRequest,
     ApiResponse,
 )
+from app.utils.sort_mappings import SHELF_LIST_SORT, SHELF_BOOK_SORT
 
 router = APIRouter()
 
@@ -105,12 +108,7 @@ async def list_shelves(
         )
     
     # 排序
-    sort_mapping = {
-        "created_at": LogicalShelf.created_at,
-        "updated_at": LogicalShelf.updated_at,
-        "shelf_name": LogicalShelf.shelf_name,
-    }
-    sort_column = sort_mapping.get(sort_by, LogicalShelf.created_at)
+    sort_column = SHELF_LIST_SORT.get(sort_by, LogicalShelf.created_at)
     query = query.order_by(
         asc(sort_column) if order == "asc" else desc(sort_column)
     )
@@ -199,11 +197,11 @@ async def list_shelves(
 
 # ==================== 创建书架 ====================
 
-@router.post("/", response_model=ApiResponse, summary="创建逻辑书架")
+@router.post("/", response_model=ApiResponse[None], summary="创建逻辑书架")
 async def create_shelf(
     request: ShelfCreateRequest,
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     创建新的逻辑书架
     
@@ -317,14 +315,14 @@ async def get_shelf_detail(
 
 @router.put(
     "/{logical_shelf_id}",
-    response_model=ApiResponse,
+    response_model=ApiResponse[None],
     summary="更新书架信息",
 )
 async def update_shelf(
     logical_shelf_id: int,
     request: ShelfUpdateRequest,
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     更新书架名称或描述
     
@@ -379,7 +377,7 @@ async def update_shelf(
             if request.description else None
         )
     
-    shelf.updated_at = datetime.utcnow()
+    shelf.updated_at = datetime.now(timezone.utc)
     db.commit()
     
     return ApiResponse(
@@ -392,13 +390,13 @@ async def update_shelf(
 
 @router.delete(
     "/{logical_shelf_id}",
-    response_model=ApiResponse,
+    response_model=ApiResponse[None],
     summary="删除书架（软删除）",
 )
 async def delete_shelf(
     logical_shelf_id: int,
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     软删除逻辑书架
     
@@ -449,7 +447,7 @@ async def delete_shelf(
     
     shelf_name = shelf.shelf_name
     shelf.is_active = False
-    shelf.updated_at = datetime.utcnow()
+    shelf.updated_at = datetime.now(timezone.utc)
     db.commit()
     
     return ApiResponse(
@@ -535,17 +533,7 @@ async def get_shelf_books(
         )
     
     # 排序
-    sort_mapping = {
-        "sort_order": LogicalShelfBook.sort_order,
-        "title": BookMetadata.title,
-        "author": BookMetadata.author,
-        "added_at": LogicalShelfBook.added_at,
-        "rating": case(
-            (BookMetadata.rating == None, 0),
-            else_=func.cast(BookMetadata.rating, func.Float),
-        ),
-    }
-    sort_column = sort_mapping.get(sort_by, LogicalShelfBook.sort_order)
+    sort_column = SHELF_BOOK_SORT.get(sort_by, LogicalShelfBook.sort_order)
     query = query.order_by(
         desc(sort_column) if order == "desc" else asc(sort_column)
     )
@@ -711,7 +699,7 @@ async def add_book_to_shelf(
         deleted.status = BookStatus.IN_SHELF.value
         deleted.sort_order = request.sort_order
         deleted.note = request.note
-        deleted.updated_at = datetime.utcnow()
+        deleted.updated_at = datetime.now(timezone.utc)
         db.commit()
         return BookAddToShelfResponse(
             success=True,
@@ -742,14 +730,14 @@ async def add_book_to_shelf(
 
 @router.delete(
     "/{logical_shelf_id}/books/{book_id}",
-    response_model=ApiResponse,
+    response_model=ApiResponse[None],
     summary="从书架移除图书",
 )
 async def remove_book_from_shelf(
     logical_shelf_id: int,
     book_id: int,
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     从书架中移除图书（软删除）
     
@@ -785,7 +773,7 @@ async def remove_book_from_shelf(
     )
     
     shelf_book.status = BookStatus.REMOVED.value
-    shelf_book.updated_at = datetime.utcnow()
+    shelf_book.updated_at = datetime.now(timezone.utc)
     db.commit()
     
     return ApiResponse(
@@ -798,7 +786,7 @@ async def remove_book_from_shelf(
 
 @router.put(
     "/{logical_shelf_id}/books/{book_id}/move",
-    response_model=ApiResponse,
+    response_model=ApiResponse[None],
     summary="移动图书到其他书架",
 )
 async def move_book_between_shelves(
@@ -806,7 +794,7 @@ async def move_book_between_shelves(
     book_id: int,
     target_shelf_id: int = Query(..., description="目标书架 ID"),
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     将图书从一个书架移动到另一个书架
     
@@ -868,7 +856,7 @@ async def move_book_between_shelves(
     
     # 修改关联
     source_record.logical_shelf_id = target_shelf_id
-    source_record.updated_at = datetime.utcnow()
+    source_record.updated_at = datetime.now(timezone.utc)
     db.commit()
     
     return ApiResponse(
@@ -884,7 +872,7 @@ async def move_book_between_shelves(
 
 @router.put(
     "/{logical_shelf_id}/books/{book_id}/sort",
-    response_model=ApiResponse,
+    response_model=ApiResponse[None],
     summary="更新图书排序",
 )
 async def update_book_sort_order(
@@ -892,7 +880,7 @@ async def update_book_sort_order(
     book_id: int,
     sort_order: int = Query(..., ge=0, description="排序位置（数值越小越靠前）"),
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     更新图书在书架中的排序位置
     
@@ -923,7 +911,121 @@ async def update_book_sort_order(
         raise HTTPException(status_code=404, detail="图书不在书架中")
     
     shelf_book.sort_order = sort_order
-    shelf_book.updated_at = datetime.utcnow()
+    shelf_book.updated_at = datetime.now(timezone.utc)
     db.commit()
-    
+
     return ApiResponse(success=True, message="排序已更新")
+
+
+# ==================== 书架内图书索引操作（新统一路由） ====================
+
+@router.get("/{logical_shelf_id}/books/index/{index}", summary="按书架内序号获取图书")
+async def get_shelf_book_by_index(
+    logical_shelf_id: int,
+    index: int,
+    db: Session = Depends(get_db),
+):
+    """通过书架ID和书架内序号(1-based)获取图书"""
+    shelf_book = (
+        db.query(LogicalShelfBook)
+        .filter(
+            LogicalShelfBook.logical_shelf_id == logical_shelf_id,
+            LogicalShelfBook.status == BookStatus.IN_SHELF.value,
+        )
+        .order_by(LogicalShelfBook.sort_order)
+        .offset(index - 1)
+        .limit(1)
+        .first()
+    )
+    if not shelf_book:
+        raise HTTPException(status_code=404, detail=f"书架 {logical_shelf_id} 中第 {index} 本图书不存在")
+
+    book = shelf_book.book
+    return {
+        "book_id": book.book_id,
+        "global_book_id": f"B-{str(book.book_id).zfill(8)}",
+        "shelf_book_index": index,
+        "shelf_id": f"S-{str(logical_shelf_id).zfill(8)}",
+        "title": book.title,
+        "author": book.author,
+        "isbn": book.isbn,
+        "cover_url": book.cover_url,
+        "publisher": book.publisher,
+        "publish_date": book.publish_date,
+        "pages": book.pages,
+        "price": book.price,
+        "binding": book.binding,
+        "rating": book.rating,
+        "summary": book.summary,
+        "original_title": book.original_title,
+        "series": book.series,
+        "douban_url": book.douban_url,
+        "translator": book.translator,
+        "source": book.source,
+    }
+
+
+@router.put("/{logical_shelf_id}/books/index/{index}", summary="按书架内序号更新图书")
+async def update_shelf_book_by_index(
+    logical_shelf_id: int,
+    index: int,
+    req: BookUpdateManualRequest,
+    db: Session = Depends(get_db),
+):
+    """通过书架ID和序号更新图书信息"""
+    shelf_book = (
+        db.query(LogicalShelfBook)
+        .filter(
+            LogicalShelfBook.logical_shelf_id == logical_shelf_id,
+            LogicalShelfBook.status == BookStatus.IN_SHELF.value,
+        )
+        .order_by(LogicalShelfBook.sort_order)
+        .offset(index - 1)
+        .limit(1)
+        .first()
+    )
+    if not shelf_book:
+        raise HTTPException(status_code=404, detail=f"书架 {logical_shelf_id} 中第 {index} 本图书不存在")
+
+    book = shelf_book.book
+    update_data = req.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        if hasattr(book, field) and value is not None:
+            setattr(book, field, value)
+
+    db.commit()
+    db.refresh(book)
+    log_activity(db, action='update_book', entity_type='book',
+                 entity_id=book.book_id, detail={'title': book.title, 'by_shelf_index': index})
+
+    return ApiResponse(success=True, message="图书信息已更新")
+
+
+@router.delete("/{logical_shelf_id}/books/index/{index}", summary="按书架内序号移除图书")
+async def remove_shelf_book_by_index(
+    logical_shelf_id: int,
+    index: int,
+    db: Session = Depends(get_db),
+):
+    """通过书架ID和序号从书架移除图书（不删除图书本身）"""
+    shelf_book = (
+        db.query(LogicalShelfBook)
+        .filter(
+            LogicalShelfBook.logical_shelf_id == logical_shelf_id,
+            LogicalShelfBook.status == BookStatus.IN_SHELF.value,
+        )
+        .order_by(LogicalShelfBook.sort_order)
+        .offset(index - 1)
+        .limit(1)
+        .first()
+    )
+    if not shelf_book:
+        raise HTTPException(status_code=404, detail=f"书架 {logical_shelf_id} 中第 {index} 本图书不存在")
+
+    book_title = shelf_book.book.title
+    db.delete(shelf_book)
+    db.commit()
+    log_activity(db, action='remove_book_from_shelf', entity_type='shelf_book',
+                 detail={'shelf_id': logical_shelf_id, 'index': index, 'title': book_title})
+
+    return ApiResponse(success=True, message=f"《{book_title}》已从书架移除")

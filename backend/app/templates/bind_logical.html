@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="theme-color" content="#8B4513">
+<title>绑定逻辑书架</title>
+<style>
+:root{--p:#8B4513;--bg:#fdf8f4;--c:#fff;--t:#2c1810;--ts:#8c7b72;--b:#e8d5c8;--s:#22c55e;--r:14px;--rs:10px}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:var(--bg);color:var(--t);min-height:100vh}
+.hd{background:linear-gradient(135deg,#8B4513,#a0522d);color:#fff;padding:20px 16px;text-align:center;position:sticky;top:0;z-index:100}
+.hd .lo{font-size:36px;display:block;margin-bottom:6px}
+.hd h1{font-size:18px;font-weight:700}
+.mn{padding:14px;max-width:500px;margin:0 auto}
+.info{background:#eff6ff;border:1px solid #bfdbfe;border-radius:var(--rs);padding:16px;margin-bottom:16px}
+.info .label{font-size:12px;color:var(--ts);margin-bottom:4px}
+.info .value{font-size:15px;font-weight:600;color:#1d4ed8}
+.info .hint{font-size:12px;color:var(--ts);margin-top:8px;padding:8px;background:#fff;border-radius:6px}
+.bt{display:block;width:100%;padding:14px;border-radius:var(--rs);border:none;font-size:15px;font-weight:600;cursor:pointer;text-align:center;margin-bottom:8px}
+.bt-p{background:var(--p);color:#fff}
+.bt-s{background:var(--s);color:#fff}
+.bt-o{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe}
+.si{display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--b);border-radius:var(--rs);margin-bottom:8px;background:#fafaf9;cursor:pointer;transition:all .15s}
+.si:active{background:#f0fdf4;border-color:#bbf7d0}
+.si .sn{font-weight:600;font-size:14px}
+.si .sc{font-size:12px;color:var(--ts)}
+.si .count{font-size:12px;color:var(--p);font-weight:600}
+.srch{margin-bottom:12px}
+.srch input{width:100%;padding:12px;border:1px solid var(--b);border-radius:var(--rs);font-size:14px;outline:none}
+.srch input:focus{border-color:var(--p)}
+.emp{text-align:center;padding:40px 20px;color:var(--ts)}
+.toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;z-index:9999;animation:tIn .3s ease}
+@keyframes tIn{from{opacity:0;transform:translateX(-50%) translateY(-16px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+.loading{text-align:center;padding:40px}
+.spinner{display:inline-block;width:32px;height:32px;border:3px solid #e8d5c8;border-top:3px solid #8B4513;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="hd"><span class="lo">&#128279;</span><h1>绑定逻辑书架</h1></div>
+<div class="mn">
+<div class="info">
+<div class="label">物理书架</div>
+<div class="value">{{ physical_shelf.location_name }}</div>
+<div style="font-size:12px;color:var(--ts);margin-top:4px">{{ physical_shelf.location_code }}</div>
+<div class="hint">请选择一个逻辑书架与此物理书架关联。扫描此 NFC 标签将自动跳转到对应的逻辑书架。</div>
+</div>
+
+<div class="srch">
+<input type="text" id="searchInput" placeholder="搜索逻辑书架..." oninput="filterShelves()">
+</div>
+
+<div id="shelfList"></div>
+
+<div style="margin-top:16px">
+<button class="bt bt-o" onclick="goToCreate()">创建新逻辑书架</button>
+</div>
+</div>
+
+<script>
+var PHYSICAL_ID = {{ physical_id }};
+var TAG_UID = {{ tag_uid | tojson | safe }};
+var A = window.location.origin;
+var ALL_SHELVES = {{ shelves_json | safe }};
+
+function tx(m){var t=document.createElement('div');t.className='toast';t.textContent=m;document.body.appendChild(t);setTimeout(function(){t.remove()},2500)}
+
+function filterShelves(){
+    var kw=(document.getElementById('searchInput').value||'').toLowerCase();
+    var filtered=ALL_SHELVES.filter(function(s){
+        return !kw||s.shelf_name.toLowerCase().includes(kw)||(s.description||'').toLowerCase().includes(kw)
+    });
+    renderShelves(filtered)
+}
+
+function renderShelves(shelves){
+    var el=document.getElementById('shelfList');
+    if(shelves.length===0){el.innerHTML='<div class="emp">未找到匹配的逻辑书架</div>';return}
+    el.innerHTML=shelves.map(function(s){
+        return '<div class="si" onclick="bindLogical('+s.logical_shelf_id+',\''+escapeHtml(s.shelf_name)+'\')"><div><div class="sn">'+escapeHtml(s.shelf_name)+'</div>'+(s.description?'<div class="sc">'+escapeHtml(s.description)+'</div>':'')+'</div><div class="count">'+s.book_count+' 本</div></div>'
+    }).join('')
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+function bindLogical(logicalId, name){
+    if(!confirm('确定将物理书架绑定到「'+name+'」？'))return;
+    showLoading();
+    var url=A+'/api/nfc/bind-logical-shelf/create?physical_shelf_id='+PHYSICAL_ID+'&logical_shelf_id='+logicalId+'&tag_uid='+encodeURIComponent(TAG_UID);
+    fetch(url,{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(d.success&&d.redirect_url){window.location.href=d.redirect_url.replace(':8000',':5173')}
+        else{hideLoading();renderShelves(ALL_SHELVES);tx('&#10060; '+d.message)}
+    }).catch(function(){hideLoading();renderShelves(ALL_SHELVES);tx('&#10060; 绑定失败')})
+}
+
+function goToCreate(){window.location.href=A.replace(':8000',':5173')+'/admin/shelves'}
+function showLoading(){document.getElementById('shelfList').innerHTML='<div class="loading"><div class="spinner"></div></div>'}
+function hideLoading(){}
+renderShelves(ALL_SHELVES);
+</script>
+</body></html>

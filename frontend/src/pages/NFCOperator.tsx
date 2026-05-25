@@ -18,12 +18,10 @@ import React, {
     useCallback,
     useMemo,
     useEffect,
-    useRef,
     type FC,
 } from 'react';
 import {
     Card,
-    Input,
     Button,
     Space,
     message,
@@ -56,19 +54,16 @@ import {
     WifiOutlined,
     TagOutlined,
     LinkOutlined,
-    ExclamationCircleOutlined,
     ArrowRightOutlined,
     CheckCircleOutlined,
     CloseCircleOutlined,
     ReloadOutlined,
     QrcodeOutlined,
-    ThunderboltOutlined,
-    ApiOutlined,
-    DesktopOutlined,
     BookOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { listShelves, extractErrorMessage } from '../services/api';
+import { useAsyncData } from '../hooks/useAsyncData';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -367,7 +362,7 @@ const NFCOperator: FC = () => {
     const { token } = theme.useToken();
 
     // 书架列表
-    const { shelfOptions, shelvesLoading, refreshShelves } = useShelfOptions();
+    const { data: shelfOptions, loading: shelvesLoading, refresh: refreshShelves } = useAsyncData(() => listShelves(), []);
 
     // 选中的书架
     const [selectedShelfId, setSelectedShelfId] = useState<number | undefined>();
@@ -382,22 +377,24 @@ const NFCOperator: FC = () => {
 
     // ==================== 初始化默认选中 ====================
 
+    const shelves = shelfOptions ?? [];
+
     useEffect(() => {
-        if (shelfOptions.length > 0 && !selectedShelfId) {
-            setSelectedShelfId(shelfOptions[0].id);
-            setSelectedShelfName(shelfOptions[0].name);
+        if (shelves.length > 0 && !selectedShelfId) {
+            setSelectedShelfId(shelves[0].logical_shelf_id);
+            setSelectedShelfName(shelves[0].shelf_name);
         }
-    }, [shelfOptions, selectedShelfId]);
+    }, [shelves, selectedShelfId]);
 
     // ==================== 事件处理 ====================
 
     const handleShelfChange = useCallback(
         (id: number) => {
             setSelectedShelfId(id);
-            const shelf = shelfOptions.find((s) => s.id === id);
-            if (shelf) setSelectedShelfName(shelf.name);
+            const shelf = shelves.find((s) => s.logical_shelf_id === id);
+            if (shelf) setSelectedShelfName(shelf.shelf_name);
         },
-        [shelfOptions]
+        [shelves]
     );
 
     const handleCopyMobileURL = useCallback(async () => {
@@ -885,14 +882,14 @@ const NFCOperator: FC = () => {
                                     ?.toLowerCase()
                                     .includes(input.toLowerCase())
                             }
-                            options={shelfOptions.map((shelf) => ({
-                                value: shelf.id,
+                            options={shelves.map((shelf) => ({
+                                value: shelf.logical_shelf_id,
                                 label: (
                                     <Space size={6}>
                                         <EnvironmentOutlined
                                             style={{ color: token.colorPrimary }}
                                         />
-                                        {shelf.name}
+                                        {shelf.shelf_name}
                                     </Space>
                                 ),
                             }))}

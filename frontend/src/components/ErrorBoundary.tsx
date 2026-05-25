@@ -12,16 +12,15 @@
  */
 
 import React, { Component, type ErrorInfo, type ReactNode } from 'react';
-import { Result, Button, Typography, Collapse, Space, Tag, Tooltip, Divider } from 'antd';
+import { Result, Button, Typography, Collapse, Space, Tag, Tooltip } from 'antd';
 import {
     ReloadOutlined,
     BugOutlined,
     CopyOutlined,
     HomeOutlined,
-    ExpandOutlined,
 } from '@ant-design/icons';
 
-const { Paragraph, Text, Title } = Typography;
+const { Text } = Typography;
 
 // ==================== 类型定义 ====================
 

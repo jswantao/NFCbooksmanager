@@ -41,9 +41,10 @@ import {
     Segmented,
     List,
     Avatar,
+    message,
     theme,
     Dropdown,
-    Divider,
+    
     type MenuProps,
 } from 'antd';
 import {
@@ -74,8 +75,9 @@ import {
     CalendarOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { getDashboardStats, extractErrorMessage } from '../services/api';
+import { getDashboardStats } from '../services/api';
 import { formatNumber, formatPercent } from '../utils/format';
+import { useAsyncData } from '../hooks/useAsyncData';
 import ReadingTrendChart from '../components/charts/ReadingTrendChart';
 import SourcePieChart from '../components/charts/SourcePieChart';
 import RatingBarChart from '../components/charts/RatingBarChart';
@@ -148,46 +150,6 @@ const ACTIVITY_CONFIG: Record<string, { icon: React.ReactNode; color: string; la
     delete: { icon: <ExclamationCircleOutlined />, color: '#ef4444', label: '删除' },
     mapping: { icon: <LinkOutlined />, color: '#a855f7', label: '映射' },
     system: { icon: <FundOutlined />, color: '#6366f1', label: '系统' },
-};
-
-// ==================== 自定义 Hook ====================
-
-/**
- * 仪表盘数据加载 Hook
- */
-const useDashboardData = () => {
-    const [loading, setLoading] = useState(true);
-    const [stats, setStats] = useState<DashboardStats | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    const [refreshing, setRefreshing] = useState(false);
-
-    const loadData = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-
-        try {
-            const data = await getDashboardStats();
-            setStats(data);
-        } catch (err: unknown) {
-            const errorMsg = extractErrorMessage(err) || '加载数据失败';
-            setError(errorMsg);
-            console.error('[Dashboard] 加载失败:', err);
-        } finally {
-            setLoading(false);
-            setRefreshing(false);
-        }
-    }, []);
-
-    useEffect(() => {
-        loadData();
-    }, [loadData]);
-
-    const refresh = useCallback(() => {
-        setRefreshing(true);
-        loadData();
-    }, [loadData]);
-
-    return { stats, loading, error, refreshing, refresh };
 };
 
 // ==================== 子组件 ====================
@@ -419,31 +381,40 @@ const Dashboard: FC = () => {
     const { token } = theme.useToken();
 
     // 数据
-    const { stats, loading, error, refreshing, refresh } = useDashboardData();
+    const { data: stats, loading, error, refresh } = useAsyncData(getDashboardStats);
+    const [refreshing, setRefreshing] = useState(false);
+
+    const handleRefresh = useCallback(() => {
+        setRefreshing(true);
+        refresh();
+        setTimeout(() => setRefreshing(false), 500);
+    }, [refresh]);
 
     // 时间范围
     const [timeRange, setTimeRange] = useState<string>('month');
 
     // ==================== 衍生数据 ====================
+    const SOURCE_LABELS: Record<string, { name: string; color: string; icon?: string }> = {
+        douban: { name: '豆瓣同步', color: '#22c55e', icon: '🟢' },
+        manual: { name: '手动录入', color: '#f97316', icon: '🟠' },
+        isbn: { name: 'ISBN 扫描', color: '#3b82f6', icon: '🔵' },
+        nfc: { name: 'NFC 识别', color: '#a855f7', icon: '🟣' },
+    };
+
 
     /** 来源分布（饼图格式） */
     const sourcePieData = useMemo(() => {
         if (!stats?.books_by_source) return [];
 
-        const sourceLabels: Record<string, { name: string; color: string; icon?: string }> = {
-            douban: { name: '豆瓣同步', color: '#22c55e', icon: '🟢' },
-            manual: { name: '手动录入', color: '#f97316', icon: '🟠' },
-            isbn: { name: 'ISBN 扫描', color: '#3b82f6', icon: '🔵' },
-            nfc: { name: 'NFC 识别', color: '#a855f7', icon: '🟣' },
-        };
+        const booksBySource = stats.books_by_source;
 
         return Object.entries(stats.books_by_source)
             .filter(([, count]) => count > 0)
             .map(([source, count]) => ({
-                name: sourceLabels[source]?.name || source,
+                name: SOURCE_LABELS[source]?.name || source,
                 value: count,
-                color: sourceLabels[source]?.color || '#8c7b72',
-                icon: sourceLabels[source]?.icon,
+                color: SOURCE_LABELS[source]?.color || '#8c7b72',
+                icon: SOURCE_LABELS[source]?.icon,
             }));
     }, [stats]);
 
@@ -643,7 +614,7 @@ const Dashboard: FC = () => {
                         <Tooltip title="刷新数据">
                             <Button
                                 icon={<ReloadOutlined spin={refreshing} />}
-                                onClick={refresh}
+                                onClick={handleRefresh}
                                 loading={refreshing}
                                 style={{ borderRadius: 8 }}
                             >
@@ -873,7 +844,7 @@ const Dashboard: FC = () => {
                         </Card>
 
                         {/* 最近活动 */}
-                        {stats.recent_activities?.length > 0 && (
+                        {Array.isArray(stats.recent_activities) && stats.recent_activities.length > 0 && (
                             <Card
                                 title={
                                     <Space size={6}>
@@ -940,7 +911,7 @@ const Dashboard: FC = () => {
                                 <List
                                     dataSource={stats.recent_books.slice(0, 5)}
                                     renderItem={(book) => (
-                                        <List.Item
+                                        <div
                                             style={{
                                                 padding: '10px 0',
                                                 cursor: 'pointer',
@@ -950,55 +921,22 @@ const Dashboard: FC = () => {
                                                 navigate(`/shelf/1/book/${book.book_id}`)
                                             }
                                         >
-                                            <List.Item.Meta
-                                                avatar={
-                                                    <Avatar
-                                                        shape="square"
-                                                        size={44}
-                                                        icon={<BookOutlined />}
-                                                        style={{
-                                                            background: token.colorPrimaryBg,
-                                                            color: token.colorPrimary,
-                                                            borderRadius: 8,
-                                                        }}
-                                                    />
-                                                }
-                                                title={
-                                                    <Text
-                                                        style={{ fontSize: 14 }}
-                                                        ellipsis
-                                                    >
-                                                        {book.title}
-                                                    </Text>
-                                                }
-                                                description={
+                                            <Space align="start" size={12}>
+                                                <Avatar shape="square" size={44}
+                                                    icon={<BookOutlined />}
+                                                    style={{ background: token.colorPrimaryBg, color: token.colorPrimary, borderRadius: 8 }} />
+                                                <div>
+                                                    <Text style={{ fontSize: 14 }} ellipsis>{book.title}</Text>
+                                                    <br />
                                                     <Space size={6}>
-                                                        <Text
-                                                            type="secondary"
-                                                            style={{ fontSize: 11 }}
-                                                        >
-                                                            {book.isbn}
-                                                        </Text>
-                                                        <Tag
-                                                            color={
-                                                                book.source === 'douban'
-                                                                    ? 'green'
-                                                                    : 'orange'
-                                                            }
-                                                            style={{
-                                                                fontSize: 10,
-                                                                margin: 0,
-                                                                padding: '0 6px',
-                                                            }}
-                                                        >
-                                                            {book.source === 'douban'
-                                                                ? '豆瓣'
-                                                                : '手动'}
-                                                        </Tag>
+                                                        <Text type="secondary" style={{ fontSize: 11 }}>{book.isbn}</Text>
+                                                        <Tag color={book.source === 'douban' ? 'green' : 'orange'}
+                                                            style={{ fontSize: 10, margin: 0, padding: '0 6px' }}>
+                                                            {book.source === 'douban' ? '豆瓣' : '手动'}</Tag>
                                                     </Space>
-                                                }
-                                            />
-                                        </List.Item>
+                                                </div>
+                                            </Space>
+                                        </div>
                                     )}
                                 />
                             ) : (

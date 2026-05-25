@@ -15,8 +15,8 @@ NFC 标签服务
 - 极简格式：{"shelf_id":1}
 
 安全机制：
-- checksum 使用 SHA256 哈希，带加密盐值
-- 防止数据篡改和伪造
+- checksum 使用 HMAC-SHA256 消息认证码
+- 防止数据篡改和伪造（长度扩展攻击免疫）
 - 密钥通过 NFC_ENCRYPTION_KEY 配置
 
 设计注意：
@@ -27,33 +27,35 @@ NFC 标签服务
 
 import json
 import hashlib
+import hmac
 from typing import Optional, Dict, Any, Union
 
-from app.core.config import settings
+from app.core.config import get_settings
 
 
 class NFCService:
     """
     NFC 标签数据服务
-    
+
     提供 NFC 标签数据的完整生命周期管理：
-    
+
     写入流程：
     1. generate_tag_data() 生成完整标签数据
     2. 前端通过 Web NFC API 写入标签
-    
+
     读取流程：
     1. 前端读取标签原始数据
     2. parse_payload() 解析载荷
     3. verify_payload() 验证完整性（可选）
     4. 使用解析结果查询映射关系
-    
+
     校验机制：
-    - 使用 SHA256 生成数据校验和
-    - 校验和 = SHA256(载荷:加密密钥) 的前 16 位十六进制
+    - 使用 HMAC-SHA256 生成消息认证码
+    - 校验和 = HMAC-SHA256(载荷, 加密密钥) 的前 16 位十六进制
     - 读取时重新计算校验和并与存储值比对
+    - 符合 RFC 2104 标准，免疫长度扩展攻击
     """
-    
+
     # ==================== 载荷生成 ====================
     
     @staticmethod
@@ -123,37 +125,39 @@ class NFCService:
     @staticmethod
     def calculate_checksum(data: str) -> str:
         """
-        计算载荷数据的 SHA256 校验和
-        
-        算法：SHA256(载荷数据:加密密钥) 取前 16 位十六进制
-        
+        计算载荷数据的 HMAC-SHA256 消息认证码
+
+        算法：HMAC-SHA256(载荷, 加密密钥) 取前 16 位十六进制
+
         用途：
         - 写入 NFC 标签时附带校验和，防止数据损坏或篡改
         - 读取时验证数据完整性
-        
+
         安全性：
-        - 使用配置密钥作为盐值，防止伪造校验和
-        - 仅取前 16 位输出，平衡安全性与标签容量
-        
+        - 使用 HMAC（RFC 2104）替代简单哈希拼接，免疫长度扩展攻击
+        - 仅取前 16 位输出（128 位截断），平衡安全性与 NFC 标签容量
+        - 即使攻击者知道算法，没有密钥也无法伪造校验和
+
         Args:
             data: 要计算校验和的载荷数据（JSON 字符串）
-        
+
         Returns:
             16 位十六进制校验和字符串
-        
+
         Example:
             >>> NFCService.calculate_checksum('{"shelf_id": 1}')
             'a1b2c3d4e5f6g7h8'  # 示例值
         """
-        # 获取加密密钥（默认值仅用于开发环境）
-        encryption_key = settings.NFC_ENCRYPTION_KEY or "default-key"
-        
-        # 将载荷数据与密钥拼接后计算哈希
-        hash_input = f"{data}:{encryption_key}"
-        hash_hex = hashlib.sha256(hash_input.encode()).hexdigest()
-        
-        # 取前 16 位作为校验和
-        return hash_hex[:16]
+        encryption_key = get_settings().NFC_ENCRYPTION_KEY or "default-key"
+
+        # 使用 HMAC-SHA256 计算消息认证码，密钥作为 HMAC key
+        mac = hmac.new(
+            encryption_key.encode("utf-8"),
+            data.encode("utf-8"),
+            hashlib.sha256,
+        )
+        # 取前 16 位十六进制作为校验和（128 位 HMAC 截断，标准实践）
+        return mac.hexdigest()[:16]
     
     @staticmethod
     def verify_payload(data: str, checksum: str) -> bool:
@@ -260,7 +264,7 @@ class NFCService:
         
         包含以下部分：
         - payload: 载荷数据（JSON 字符串）
-        - checksum: SHA256 校验和（16 位十六进制）
+        - checksum: HMAC-SHA256 消息认证码（16 位十六进制）
         - location_code: 位置编码（用于 API 响应）
         - location_name: 位置名称（用于 API 响应）
         

@@ -5,7 +5,7 @@
  * 修复：将所有 Hooks 内联到组件中，确保调用顺序稳定
  */
 
-import React, {
+import {
     useEffect,
     useState,
     useCallback,
@@ -37,7 +37,6 @@ import {
     Skeleton,
     Alert,
     theme,
-    Divider,
     type MenuProps,
 } from 'antd';
 import {
@@ -67,11 +66,15 @@ import {
     moveBookToShelf,
     extractErrorMessage,
 } from '../services/api';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useKeyboardShortcut } from '../hooks/useKeyboardShortcut';
 import BookCard from '../components/BookCard';
 import ShelfSelector from '../components/ShelfSelector';
 import type { Book, ShelfBooks, ShelfInfo } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
+
+const ELLIPSIS_2_ROWS = { rows: 2 } as const;
 
 // ==================== 常量 ====================
 
@@ -86,14 +89,14 @@ const SORT_OPTIONS = [
 // ==================== 主组件（所有 Hooks 内联） ====================
 
 const ShelfView: FC = () => {
-    const { id } = useParams<{ id: string }>();
+    const { shelfId } = useParams<{ shelfId: string }>();
     const navigate = useNavigate();
     const { token } = theme.useToken();
 
     // ==================== 状态（必须全部在顶部声明） ====================
 
     const [currentShelfId, setCurrentShelfId] = useState(() => {
-        const parsed = parseInt(id || '1');
+        const parsed = parseInt(shelfId || '1');
         return isNaN(parsed) ? 1 : parsed;
     });
     const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -118,9 +121,12 @@ const ShelfView: FC = () => {
     >([]);
     const [showShelfSelector, setShowShelfSelector] = useState(false);
 
+    // 稳定化 ShelfSelector 的 props（避免每次渲染生成新引用）
+    const existingShelfIds = useMemo(() => [currentShelfId], [currentShelfId]);
+    const handleCloseShelfSelector = useCallback(() => setShowShelfSelector(false), []);
+
     // 防抖搜索
-    const [debouncedKeyword, setDebouncedKeyword] = useState('');
-    const debounceTimerRef = useRef<ReturnType<typeof setTimeout>>();
+    const debouncedKeyword = useDebouncedValue(searchKeyword, 300);
 
     // 组件挂载状态
     const isMountedRef = useRef(true);
@@ -129,24 +135,21 @@ const ShelfView: FC = () => {
 
     // 路由同步
     useEffect(() => {
-        if (id) {
-            const parsed = parseInt(id);
+        if (shelfId) {
+            const parsed = parseInt(shelfId);
             if (!isNaN(parsed)) {
                 setCurrentShelfId(parsed);
                 setSearchKeyword('');
-                setDebouncedKeyword('');
+                setSearchKeyword('');
             }
         }
-    }, [id]);
+    }, [shelfId]);
 
     // 组件挂载/卸载
     useEffect(() => {
         isMountedRef.current = true;
         return () => {
             isMountedRef.current = false;
-            if (debounceTimerRef.current) {
-                clearTimeout(debounceTimerRef.current);
-            }
         };
     }, []);
 
@@ -202,53 +205,16 @@ const ShelfView: FC = () => {
         };
     }, [currentShelfId, sortBy, sortOrder]);
 
-    // 搜索防抖
-    useEffect(() => {
-        if (debounceTimerRef.current) {
-            clearTimeout(debounceTimerRef.current);
-        }
+    // 键盘快捷键：← → 切换书架
+    useKeyboardShortcut('ArrowLeft', () => {
+        const idx = allShelves.findIndex(s => s.logical_shelf_id === currentShelfId);
+        if (idx > 0) navigate(`/shelf/${allShelves[idx - 1].logical_shelf_id}`);
+    }, { enabled: allShelves.length > 0 && !!currentShelfId });
 
-        debounceTimerRef.current = setTimeout(() => {
-            setDebouncedKeyword(searchKeyword);
-        }, 300);
-
-        return () => {
-            if (debounceTimerRef.current) {
-                clearTimeout(debounceTimerRef.current);
-            }
-        };
-    }, [searchKeyword]);
-
-    // 键盘快捷键
-    useEffect(() => {
-        const handleKeyDown = (e: globalThis.KeyboardEvent) => {
-            // 忽略输入框中的按键
-            if (
-                e.target instanceof HTMLInputElement ||
-                e.target instanceof HTMLTextAreaElement ||
-                e.target instanceof HTMLSelectElement
-            ) {
-                return;
-            }
-
-            const currentIndex = allShelves.findIndex(
-                (s) => s.logical_shelf_id === currentShelfId
-            );
-            if (currentIndex === -1) return;
-
-            if (e.key === 'ArrowLeft' && currentIndex > 0) {
-                e.preventDefault();
-                navigate(`/shelf/${allShelves[currentIndex - 1].logical_shelf_id}`);
-            }
-            if (e.key === 'ArrowRight' && currentIndex < allShelves.length - 1) {
-                e.preventDefault();
-                navigate(`/shelf/${allShelves[currentIndex + 1].logical_shelf_id}`);
-            }
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [allShelves, currentShelfId, navigate]);
+    useKeyboardShortcut('ArrowRight', () => {
+        const idx = allShelves.findIndex(s => s.logical_shelf_id === currentShelfId);
+        if (idx < allShelves.length - 1) navigate(`/shelf/${allShelves[idx + 1].logical_shelf_id}`);
+    }, { enabled: allShelves.length > 0 && !!currentShelfId });
 
     // ==================== 手动刷新 ====================
 
@@ -263,6 +229,12 @@ const ShelfView: FC = () => {
             });
         }
     }, [currentShelfId, sortBy, sortOrder]);
+
+    const handleShelfAddSuccess = useCallback(() => {
+        message.success({ content: '已添加到书架', key: 'add-shelf-ok' });
+        refreshBooks();
+        setShowShelfSelector(false);
+    }, [refreshBooks]);
 
     // ==================== 衍生数据 ====================
 
@@ -554,7 +526,7 @@ const ShelfView: FC = () => {
                             <Paragraph
                                 type="secondary"
                                 style={{ marginTop: 6, marginLeft: 36, marginBottom: 0 }}
-                                ellipsis={{ rows: 2 }}
+                                ellipsis={ELLIPSIS_2_ROWS}
                             >
                                 {shelfData.description}
                             </Paragraph>
@@ -873,13 +845,9 @@ const ShelfView: FC = () => {
                 visible={showShelfSelector}
                 bookId={selectedBook?.book_id || 0}
                 bookTitle={selectedBook?.title || ''}
-                onClose={() => setShowShelfSelector(false)}
-                onSuccess={() => {
-                    message.success({ content: '已添加到书架', key: 'add-shelf-ok' });
-                    refreshBooks();
-                    setShowShelfSelector(false);
-                }}
-                existingShelfIds={[currentShelfId]}
+                onClose={handleCloseShelfSelector}
+                onSuccess={handleShelfAddSuccess}
+                existingShelfIds={existingShelfIds}
             />
         </div>
     );

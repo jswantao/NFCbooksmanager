@@ -19,11 +19,11 @@ from typing import Optional
 
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, ForeignKey,
-    Boolean, Index, UniqueConstraint
+    Boolean, Index, UniqueConstraint, Float
 )
 from sqlalchemy.orm import relationship, validates
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, select, case, and_
 
 from app.core.database import Base
 
@@ -192,13 +192,22 @@ class PhysicalShelf(Base, TimestampMixin):
 
     @hybrid_property
     def active_mapping_count(self) -> int:
-        """
-        当前激活的映射数量
-        
-        用于检查物理书架是否已正确配置映射关系。
-        返回 0 表示该物理书架尚未关联任何逻辑书架。
-        """
+        """当前激活的映射数量"""
         return sum(1 for m in self.mappings if m.is_active)
+
+    @active_mapping_count.expression
+    def active_mapping_count(cls):
+        """SQL 表达式：SELECT COUNT(*) FROM physical_logical_mappings WHERE physical_shelf_id = id AND is_active = True"""
+        from app.models.models import PhysicalLogicalMapping
+        return (
+            select(func.count(PhysicalLogicalMapping.mapping_id))
+            .where(and_(
+                PhysicalLogicalMapping.physical_shelf_id == cls.physical_shelf_id,
+                PhysicalLogicalMapping.is_active == True,
+            ))
+            .correlate(cls)
+            .scalar_subquery()
+        )
 
     def __repr__(self) -> str:
         return f"<PhysicalShelf #{self.physical_shelf_id} '{self.location_code}'>"
@@ -266,26 +275,47 @@ class LogicalShelf(Base, TimestampMixin):
 
     @hybrid_property
     def book_count(self) -> int:
-        """
-        当前在架图书数量
-        
-        仅统计状态为 'in_shelf' 的图书，
-        已移除或已转移的图书不计算在内。
-        """
+        """当前在架图书数量"""
         return sum(1 for b in self.books if b.status == BookStatus.IN_SHELF.value)
+
+    @book_count.expression
+    def book_count(cls):
+        """SQL 表达式：SELECT COUNT(*) FROM logical_shelf_books WHERE shelf_id = id AND status = 'in_shelf'"""
+        from app.models.models import LogicalShelfBook
+        return (
+            select(func.count(LogicalShelfBook.id))
+            .where(and_(
+                LogicalShelfBook.logical_shelf_id == cls.logical_shelf_id,
+                LogicalShelfBook.status == BookStatus.IN_SHELF.value,
+            ))
+            .correlate(cls)
+            .scalar_subquery()
+        )
 
     @hybrid_property
     def physical_location(self) -> Optional[str]:
-        """
-        关联的物理位置名称
-        
-        遍历所有激活映射，返回第一个对应的物理书架位置名称。
-        若无激活映射则返回 None。
-        """
+        """关联的物理位置名称（取第一个激活映射）"""
         for m in self.mappings:
             if m.is_active and m.physical_shelf:
                 return m.physical_shelf.location_name
         return None
+
+    @physical_location.expression
+    def physical_location(cls):
+        """SQL 表达式：子查询 PhysicalLogicalMapping JOIN PhysicalShelf，取第一个激活映射的 location_name"""
+        from app.models.models import PhysicalLogicalMapping, PhysicalShelf
+        return (
+            select(PhysicalShelf.location_name)
+            .select_from(PhysicalLogicalMapping)
+            .join(PhysicalShelf, PhysicalShelf.physical_shelf_id == PhysicalLogicalMapping.physical_shelf_id)
+            .where(and_(
+                PhysicalLogicalMapping.logical_shelf_id == cls.logical_shelf_id,
+                PhysicalLogicalMapping.is_active == True,
+            ))
+            .correlate(cls)
+            .limit(1)
+            .scalar_subquery()
+        )
 
     def __repr__(self) -> str:
         return f"<LogicalShelf #{self.logical_shelf_id} '{self.shelf_name}'>"
@@ -459,9 +489,9 @@ class BookMetadata(Base, TimestampMixin):
         
     )
     pages = Column(
-        String(20),
+        Integer,
         nullable=True,
-        
+        comment="总页数（迁移自 String(20)；旧数据需执行 UPDATE book_metadata SET pages=NULL WHERE pages GLOB '*[^0-9]*'）"
     )
     price = Column(
         String(50),
@@ -529,16 +559,20 @@ class BookMetadata(Base, TimestampMixin):
 
     @hybrid_property
     def rating_float(self) -> Optional[float]:
-        """
-        将 string 格式的豆瓣评分转换为 float
-        
-        用于数据分析和排序场景。
-        转换失败时返回 None，不抛出异常。
-        """
+        """将 string 格式的豆瓣评分转换为 float"""
         try:
             return float(self.rating) if self.rating else None
         except (ValueError, TypeError):
             return None
+
+    @rating_float.expression
+    def rating_float(cls):
+        """SQL 表达式：CAST(rating AS Float)，空字符串视为 NULL"""
+        return case(
+            (cls.rating == None, None),
+            (cls.rating == "", None),
+            else_=func.cast(cls.rating, Float),
+        )
 
     @validates("isbn")
     def validate_isbn(self, key, isbn: str) -> str:
@@ -555,7 +589,8 @@ class BookMetadata(Base, TimestampMixin):
         """
         if isbn:
             # 清洗：移除连字符和空格
-            isbn = isbn.replace("-", "").replace(" ", "").strip()
+            from app.utils.helpers import clean_isbn
+            isbn = clean_isbn(isbn)
             
             # 校验长度
             if len(isbn) not in (10, 13):
@@ -941,20 +976,32 @@ class ImportTask(Base, TimestampMixin):
         """
         return round(self.completed / self.total * 100, 2) if self.total > 0 else 0.0
 
+    @progress.expression
+    def progress(cls):
+        """SQL 表达式：completed * 100.0 / NULLIF(total, 0)"""
+        return case(
+            (cls.total > 0, func.round(cls.completed * 100.0 / cls.total, 2)),
+            else_=0.0,
+        )
+
     @hybrid_property
     def is_finished(self) -> bool:
-        """
-        判断任务是否已结束
-        
-        结束状态包括：completed, failed, cancelled
-        pending 和 running 表示任务仍在进行中。
-        """
+        """判断任务是否已结束"""
         finished_statuses = {
             ImportStatus.COMPLETED.value,
             ImportStatus.FAILED.value,
             ImportStatus.CANCELLED.value,
         }
         return self.status in finished_statuses
+
+    @is_finished.expression
+    def is_finished(cls):
+        """SQL 表达式：status IN ('completed', 'failed', 'cancelled')"""
+        return cls.status.in_([
+            ImportStatus.COMPLETED.value,
+            ImportStatus.FAILED.value,
+            ImportStatus.CANCELLED.value,
+        ])
 
     # 表级索引
     __table_args__ = (
@@ -967,3 +1014,43 @@ class ImportTask(Base, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<ImportTask '{self.task_id[:8]}...' [{self.status}] {self.completed}/{self.total}>"
+
+
+class NfcWriteTask(Base):
+    """
+    NFC 写入任务持久化模型
+
+    替代模块级 _tasks 内存字典，支持服务重启不丢失数据。
+    任务在 TTL 过期后被惰性清理。
+
+    字段说明：
+    - task_id: 任务唯一标识（UUID 短码）
+    - shelf_id: 目标逻辑书架 ID
+    - shelf_name: 书架名称
+    - payload: 要写入 NFC 标签的 JSON 数据
+    - created_at: 创建时间
+    - expires_at: 过期时间（TTL 后自动视为无效）
+    """
+
+    __tablename__ = "nfc_write_tasks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(32), unique=True, nullable=False, index=True)
+    shelf_id = Column(Integer, nullable=False)
+    shelf_name = Column(String(200), default="")
+    payload = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime, nullable=False, index=True)
+
+    def is_expired(self) -> bool:
+        """检查任务是否已过期"""
+        return datetime.now(timezone.utc) > self.expires_at
+
+    @property
+    def remaining_seconds(self) -> int:
+        """剩余有效时间（秒）"""
+        delta = self.expires_at - datetime.now(timezone.utc)
+        return max(0, int(delta.total_seconds()))
+
+    def __repr__(self) -> str:
+        return f"<NfcWriteTask '{self.task_id}' shelf=#{self.shelf_id}>"

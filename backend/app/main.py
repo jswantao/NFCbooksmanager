@@ -2,7 +2,9 @@
 # 确保 setup_logging 在 lifespan 中正确调用
 
 import time
+import os
 import sys
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,20 +16,24 @@ from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from loguru import logger
 
 from app.api import mapping, shelves, books, admin, images, config_api, import_api, nfc_bridge
-from app.api import physical_shelves
-from app.core.config import settings, validate_config_on_startup
+from app.api import physical_shelves, backup
+from app.core.config import get_settings, validate_config_on_startup
 from app.core.database import (
     init_db, close_all_connections,
     check_database_health, get_database_stats,
     SyncSessionLocal
 )
 
+# 模块级配置单例（通过 DI 函数获取，确保唯一实例）
+_config = get_settings()
+
 
 def setup_logging():
     """配置 loguru 日志系统"""
+    s = get_settings()
     logger.remove()
 
-    log_config = settings.get_log_config()
+    log_config = s.get_log_config()
 
     # 1. 控制台输出
     logger.add(
@@ -43,12 +49,12 @@ def setup_logging():
     )
 
     # 2. 确保日志目录存在
-    log_dir = Path(settings.LOG_FILE).parent
+    log_dir = Path(s.LOG_FILE).parent
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # 3. 文件输出
     logger.add(
-        settings.LOG_FILE,
+        s.LOG_FILE,
         level=log_config["level"],
         format=log_config["format"],
         rotation=log_config["rotation"],
@@ -60,7 +66,7 @@ def setup_logging():
         encoding="utf-8",
     )
 
-    error_log = str(Path(settings.LOG_FILE).with_name('app.error.log'))
+    error_log = str(Path(s.LOG_FILE).with_name('app.error.log'))
     logger.add(
         error_log,
         level="ERROR",
@@ -74,47 +80,139 @@ def setup_logging():
         encoding="utf-8",
     )
 
-    logger.info(f"日志系统已初始化 | 文件: {settings.LOG_FILE} | 错误: {error_log}")
+    logger.info(f"日志系统已初始化 | 文件: {s.LOG_FILE} | 错误: {error_log}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    s = get_settings()
     setup_logging()
     logger.info(f"{'='*60}")
-    logger.info(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
+    logger.info(f"[START] {s.APP_NAME} v{s.APP_VERSION} 启动中...")
     logger.info(f"{'='*60}")
 
     validate_config_on_startup()
 
     try:
         init_db()
-        logger.info("[Startup] ✅ 数据库表初始化完成")
+        logger.info("[Startup] [OK] 数据库表初始化完成")
     except Exception as e:
-        logger.error(f"[Startup] ❌ 数据库初始化失败: {e}")
+        logger.error(f"[Startup] [ERROR] 数据库初始化失败: {e}")
 
+    db = SyncSessionLocal()
     try:
-        db = SyncSessionLocal()
         from app.core.seed import seed_database
         seed_database(db)
-        db.close()
-        logger.info("[Startup] ✅ 种子数据初始化完成")
+        logger.info("[Startup] [OK] 种子数据初始化完成")
     except Exception as e:
-        logger.warning(f"[Startup] ⚠️ 种子数据初始化失败: {e}")
+        logger.warning(f"[Startup] [WARN] 种子数据初始化失败: {e}")
+    finally:
+        db.close()
 
-    logger.info(f"[Startup] ✅ http://{settings.HOST}:{settings.PORT} | /docs | /health")
+    logger.info(f"[Startup] [OK] http://{s.HOST}:{s.PORT} | /docs | /health")
     logger.info(f"{'='*60}")
+
+    # 启动封面缓存定时清理任务
+    cache_cleanup_task = None
+    if s.IMAGE_CACHE_ENABLED:
+        cache_cleanup_task = asyncio.create_task(_image_cache_cleanup_loop())
+        logger.info("[Startup] 封面缓存清理任务已启动")
+
+    # 启动自动备份定时任务
+    _backup_task = None
+    if s.BACKUP_AUTO_ENABLED:
+        _backup_task = asyncio.create_task(_scheduled_backup_loop())
+        logger.info(f"[Startup] 自动备份任务已启动 (间隔: {s.BACKUP_AUTO_INTERVAL_HOURS}h)")
+
     yield
+
+    # 停止清理任务
+    if cache_cleanup_task:
+        cache_cleanup_task.cancel()
+        try:
+            await cache_cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+    # 停止备份任务
+    if _backup_task:
+        _backup_task.cancel()
+        try:
+            await _backup_task
+        except asyncio.CancelledError:
+            pass
+
     logger.info(f"{'='*60}")
-    logger.info(f"🛑 {settings.APP_NAME} 正在关闭...")
+    logger.info(f"[STOP] {s.APP_NAME} 正在关闭...")
     logger.info(f"{'='*60}")
     close_all_connections()
-    logger.info("[Shutdown] ✅ 已安全关闭")
+    # 异步引擎需要在事件循环中关闭
+    from app.core.database import async_engine
+    if async_engine:
+        await async_engine.dispose()
+    logger.info("[Shutdown] [OK] 已安全关闭")
     logger.info(f"{'='*60}")
+
+
+async def _image_cache_cleanup_loop() -> None:
+    """后台定时清理过期封面缓存文件"""
+    cleanup_interval = 3600  # 每小时检查一次
+    while True:
+        try:
+            await asyncio.sleep(cleanup_interval)
+            if not _config.IMAGE_CACHE_ENABLED:
+                continue
+
+            cache_dir = _config.image_cache_dir_path
+            if not cache_dir.exists():
+                continue
+
+            now = time.time()
+            max_age = _config.IMAGE_CACHE_MAX_AGE
+            deleted = 0
+            kept = 0
+
+            for f in cache_dir.iterdir():
+                if not f.is_file():
+                    continue
+                try:
+                    age = now - f.stat().st_mtime
+                    if age > max_age:
+                        f.unlink()
+                        deleted += 1
+                    else:
+                        kept += 1
+                except OSError:
+                    pass
+
+            if deleted > 0:
+                logger.info(f"封面缓存清理: 删除 {deleted} 个过期文件, 保留 {kept} 个")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"封面缓存清理异常: {e}")
+
+
+async def _scheduled_backup_loop() -> None:
+    """后台定时自动备份（可选 WebDAV 同步）"""
+    s = get_settings()
+    interval = s.BACKUP_AUTO_INTERVAL_HOURS * 3600
+    # 首次启动后等待 5 分钟再执行第一次备份
+    await asyncio.sleep(300)
+    while True:
+        try:
+            from app.services.backup_service import run_scheduled_backup
+            await run_scheduled_backup()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"自动备份失败: {e}")
+        await asyncio.sleep(interval)
 
 
 app = FastAPI(
-    title=settings.APP_NAME,
-    version=settings.APP_VERSION,
+    title=_config.APP_NAME,
+    version=_config.APP_VERSION,
     description="书房管理系统 API",
     lifespan=lifespan,
     docs_url=None,
@@ -122,7 +220,7 @@ app = FastAPI(
 )
 
 # CORS
-if settings.DEBUG:
+if _config.DEBUG:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -133,7 +231,7 @@ if settings.DEBUG:
 else:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins_list,
+        allow_origins=_config.cors_origins_list,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
         allow_headers=["*"],
@@ -142,11 +240,29 @@ else:
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 
+# 不需要审计日志的路径前缀
+_SKIP_AUDIT_PREFIXES = ("/health", "/ping", "/api/images/proxy", "/docs", "/redoc", "/openapi.json")
+
+
 @app.middleware("http")
-async def add_process_time(request: Request, call_next):
-    start = time.time()
+async def audit_request_middleware(request: Request, call_next):
+    """请求审计中间件：记录所有 API 请求的方法、路径、状态码和耗时"""
+    start = time.perf_counter()
     response = await call_next(request)
-    response.headers["X-Process-Time"] = f"{time.time() - start:.4f}s"
+    elapsed = time.perf_counter() - start
+
+    response.headers["X-Process-Time"] = f"{elapsed:.4f}s"
+
+    path = request.url.path
+    if not any(path.startswith(p) for p in _SKIP_AUDIT_PREFIXES):
+        status = response.status_code
+        method = request.method
+        level = "INFO" if status < 400 else ("WARNING" if status < 500 else "ERROR")
+        logger.log(
+            level,
+            f"[{method}] {path} → {status} ({elapsed:.3f}s)",
+        )
+
     return response
 
 
@@ -154,7 +270,7 @@ async def add_process_time(request: Request, call_next):
 async def swagger():
     return get_swagger_ui_html(
         openapi_url=app.openapi_url,
-        title=f"{settings.APP_NAME} - API 文档",
+        title=f"{_config.APP_NAME} - API 文档",
     )
 
 
@@ -162,7 +278,7 @@ async def swagger():
 async def redoc():
     return get_redoc_html(
         openapi_url=app.openapi_url,
-        title=f"{settings.APP_NAME} - API 文档",
+        title=f"{_config.APP_NAME} - API 文档",
     )
 
 
@@ -180,13 +296,14 @@ app.include_router(
     prefix="/api/physical-shelves",
     tags=["🏗️ 物理书架"],
 )
+app.include_router(backup.router, prefix="/api/backup", tags=["💾 备份"])
 
 
 @app.get("/")
 async def root():
     return {
-        "name": settings.APP_NAME,
-        "version": settings.APP_VERSION,
+        "name": _config.APP_NAME,
+        "version": _config.APP_VERSION,
         "status": "running",
         "docs": "/docs",
         "health": "/health",
@@ -198,7 +315,7 @@ async def health():
     db = check_database_health()
     return {
         "status": "healthy" if db["status"] == "healthy" else "degraded",
-        "version": settings.APP_VERSION,
+        "version": _config.APP_VERSION,
         "database": db,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
     }

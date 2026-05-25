@@ -16,6 +16,7 @@
 - 异常时自动回滚，保证数据一致性
 """
 
+from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.models import (
@@ -52,10 +53,10 @@ def seed_database(db: Session) -> None:
     # ---- 检查是否已有数据（幂等性保护） ----
     existing_shelf = db.query(LogicalShelf).first()
     if existing_shelf:
-        print("[Seed] 💡 数据库已有数据，跳过种子初始化")
+        logger.info("数据库已有数据，跳过种子初始化")
         return
 
-    print("[Seed] 🌱 开始初始化种子数据...")
+    logger.info("开始初始化种子数据...")
 
     try:
         # ========== 创建物理书架 ==========
@@ -93,7 +94,7 @@ def seed_database(db: Session) -> None:
         ]
         db.add_all(physical_shelves)
         db.flush()  # 刷新以获取自动生成的 physical_shelf_id
-        print(f"[Seed]   ✅ 创建 {len(physical_shelves)} 个物理书架")
+        logger.info(f"创建 {len(physical_shelves)} 个物理书架")
 
         # ========== 创建逻辑书架 ==========
         logical_shelves = [
@@ -125,7 +126,7 @@ def seed_database(db: Session) -> None:
         ]
         db.add_all(logical_shelves)
         db.flush()  # 刷新以获取自动生成的 logical_shelf_id
-        print(f"[Seed]   ✅ 创建 {len(logical_shelves)} 个逻辑书架")
+        logger.info(f"创建 {len(logical_shelves)} 个逻辑书架")
 
         # ========== 创建映射关系 ==========
         # 每个物理书架一对一映射到一个逻辑书架
@@ -149,21 +150,21 @@ def seed_database(db: Session) -> None:
             mappings.append(mapping)
 
         db.add_all(mappings)
-        print(f"[Seed]   ✅ 创建 {len(mappings)} 条映射关系")
+        logger.info(f"创建 {len(mappings)} 条映射关系")
 
         # ========== 提交事务 ==========
         db.commit()
-        print("[Seed] ✅ 种子数据初始化完成")
+        logger.info("种子数据初始化完成")
 
         # ========== 输出统计信息 ==========
         physical_count = db.query(PhysicalShelf).count()
         logical_count = db.query(LogicalShelf).count()
         mapping_count = db.query(PhysicalLogicalMapping).count()
-        print(f"[Seed] 📊 统计: 物理书架 {physical_count} | 逻辑书架 {logical_count} | 映射 {mapping_count}")
+        logger.info(f"统计: 物理书架 {physical_count} | 逻辑书架 {logical_count} | 映射 {mapping_count}")
 
     except Exception as e:
         # 任何异常都回滚事务，保证数据一致性
         db.rollback()
-        print(f"[Seed] ❌ 种子数据初始化失败: {e}")
-        print("[Seed]    已回滚所有更改，数据库保持干净状态")
+        logger.error(f"种子数据初始化失败: {e}")
+        logger.warning("已回滚所有更改，数据库保持干净状态")
         raise

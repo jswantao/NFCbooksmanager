@@ -35,6 +35,7 @@ import {
     Badge,
     theme,
 } from 'antd';
+import type { InputRef } from 'antd';
 import {
     BookOutlined,
     PlusOutlined,
@@ -44,10 +45,9 @@ import {
     EnvironmentOutlined,
     ReloadOutlined,
     LoadingOutlined,
-    ExclamationCircleOutlined,
     RightOutlined,
 } from '@ant-design/icons';
-import { listShelves, addBookToShelf, type extractErrorMessage } from '../services/api';
+import { listShelves, addBookToShelf } from '../services/api';
 
 const { Text } = Typography;
 
@@ -104,7 +104,11 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
     // Refs
     const isMounted = useRef(true);
     const abortControllerRef = useRef<AbortController | null>(null);
-    const searchInputRef = useRef<any>(null);
+    const searchInputRef = useRef<InputRef>(null);
+    const existingShelfIdsRef = useRef<number[]>(existingShelfIds);
+
+    // 保持 ref 与 prop 同步（父组件可能传递变化的 existingShelfIds）
+    existingShelfIdsRef.current = existingShelfIds;
 
     // ==================== 生命周期 ====================
 
@@ -132,9 +136,10 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
                 setShelves(data || []);
                 setRetryCount(0);
             }
-        } catch (err: any) {
-            if (isMounted.current && err?.name !== 'CanceledError') {
-                const errorMsg = err?.response?.data?.detail || err?.userMessage || '加载书架列表失败';
+        } catch (err: unknown) {
+            const axiosErr = err as { name?: string; response?: { data?: { detail?: string } }; userMessage?: string };
+            if (isMounted.current && axiosErr?.name !== 'CanceledError') {
+                const errorMsg = axiosErr?.response?.data?.detail || axiosErr?.userMessage || '加载书架列表失败';
                 setError(errorMsg);
             }
         } finally {
@@ -147,7 +152,7 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
     // 弹窗打开时加载
     useEffect(() => {
         if (visible) {
-            setAddedShelfIds(new Set(existingShelfIds));
+            setAddedShelfIds(new Set(existingShelfIdsRef.current));
             setSearchText('');
             setError(null);
             setRetryCount(0);
@@ -158,7 +163,7 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
                 searchInputRef.current?.focus();
             }, 300);
         }
-    }, [visible, loadShelves, existingShelfIds]);
+    }, [visible, loadShelves]);
 
     // ==================== 过滤书架 ====================
 
@@ -208,9 +213,10 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
                         }
                     }, 1000);
                 }
-            } catch (err: any) {
+            } catch (err: unknown) {
                 if (isMounted.current) {
-                    const errorMsg = err?.response?.data?.detail || err?.userMessage || '添加失败，请重试';
+                    const axiosErr = err as { response?: { data?: { detail?: string } }; userMessage?: string };
+                    const errorMsg = axiosErr?.response?.data?.detail || axiosErr?.userMessage || '添加失败，请重试';
                     message.error({
                         content: errorMsg,
                         key: `add-book-error-${bookId}-${shelfId}`,
@@ -240,7 +246,7 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
             const isDisabled = addingBook !== null;
 
             return (
-                <List.Item
+                <div
                     style={{
                         padding: '12px 16px',
                         borderRadius: 10,
@@ -399,7 +405,7 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
                             />
                         )}
                     </div>
-                </List.Item>
+                </div>
             );
         },
         [addedShelfIds, addingBook, bookTitle, handleAddToShelf, token]

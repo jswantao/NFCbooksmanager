@@ -10,7 +10,7 @@
  * - 主题色适配
  */
 
-import React, { useMemo, useCallback, type FC } from 'react';
+import { useMemo, useCallback, type FC } from 'react';
 import {
     BarChart,
     Bar,
@@ -21,7 +21,6 @@ import {
     ResponsiveContainer,
     Cell,
     LabelList,
-    type TooltipProps,
 } from 'recharts';
 import { Typography, Empty, Card, Skeleton, theme } from 'antd';
 import { StarFilled } from '@ant-design/icons';
@@ -60,7 +59,7 @@ interface RatingBarChartProps {
 // ==================== 子组件 ====================
 
 /** 自定义提示框 */
-const CustomTooltip: FC<TooltipProps<number, string>> = ({ active, payload, label }) => {
+const CustomTooltip: FC<{ active?: boolean; payload?: any[]; label?: string }> = ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
 
     const data = payload[0];
@@ -232,7 +231,7 @@ const RatingBarChart: FC<RatingBarChartProps> = ({
 
     return (
         <div
-            style={{ width: '100%', height }}
+            style={{ width: '100%', height, display: 'flex', flexDirection: 'column' }}
             role="img"
             aria-label={
                 title
@@ -244,7 +243,7 @@ const RatingBarChart: FC<RatingBarChartProps> = ({
         >
             {/* 标题 */}
             {title && (
-                <div style={{ marginBottom: 16 }}>
+                <div style={{ marginBottom: 16, flexShrink: 0 }}>
                     <Title
                         level={5}
                         style={{
@@ -270,7 +269,8 @@ const RatingBarChart: FC<RatingBarChartProps> = ({
             )}
 
             {/* 图表 */}
-            <ResponsiveContainer width="100%" height={title ? 'calc(100% - 40px)' : '100%'}>
+            <div style={{ flex: 1, minHeight: 250 }}>
+            <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                     data={enrichedData}
                     layout={layout}
@@ -293,8 +293,8 @@ const RatingBarChart: FC<RatingBarChartProps> = ({
                         tickLine={false}
                         tick={isVertical ? undefined : ({ x, y, payload }) => (
                             <CustomYAxisTick
-                                x={x}
-                                y={y}
+                                x={x as number}
+                                y={y as number}
                                 payload={payload}
                             />
                         )}
@@ -341,9 +341,10 @@ const RatingBarChart: FC<RatingBarChartProps> = ({
                         maxBarSize={maxBarSize}
                         animationDuration={800}
                         animationEasing="ease-out"
-                        onClick={(data) => {
+                        onClick={(entry) => {
+                            const data = entry as unknown as RatingDataItem;
                             const index = enrichedData.findIndex(
-                                (d) => d.count === data.count
+                                (d) => d.range === data.range
                             );
                             if (index >= 0) {
                                 handleBarClick(enrichedData[index], index);
@@ -389,6 +390,7 @@ const RatingBarChart: FC<RatingBarChartProps> = ({
                     </Bar>
                 </BarChart>
             </ResponsiveContainer>
+            </div>
         </div>
     );
 };

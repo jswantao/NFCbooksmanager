@@ -20,7 +20,7 @@ import React, {
     useRef,
     type FC,
 } from 'react';
-import { ConfigProvider, theme as antTheme } from 'antd';
+import { ConfigProvider } from 'antd';
 import type { AppTheme, ThemeKey } from './themes';
 import {
     getThemeByKey,
@@ -159,7 +159,7 @@ export const ThemeProvider: FC<{ children: React.ReactNode }> = ({ children }) =
 
     // 过渡状态
     const isTransitioning = useRef(false);
-    const transitionTimeout = useRef<ReturnType<typeof setTimeout>>();
+    const transitionTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
 
     // 前一个主题键（用于回退）
     const previousThemeKey = useRef<ThemeKey>(themeKey);

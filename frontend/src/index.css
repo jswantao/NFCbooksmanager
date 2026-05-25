@@ -49,13 +49,14 @@
     --app-divider-color: #e8d5c8;
     --app-skeleton-color: #f0e6db;
     
-    /* ---- 阴影系统 ---- */
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
-    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
-    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.06);
-    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.06);
-    --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+    /* ---- 阴影系统 (现代柔和风格) ---- */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.04);
+    --shadow-lg: 0 12px 24px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04);
+    --shadow-xl: 0 20px 32px rgba(0, 0, 0, 0.07), 0 4px 12px rgba(0, 0, 0, 0.04);
+    --shadow-2xl: 0 32px 48px rgba(0, 0, 0, 0.08);
+    --shadow-card-hover: 0 8px 30px rgba(139, 69, 19, 0.10), 0 2px 8px rgba(139, 69, 19, 0.06);
     
     /* ---- 圆角 ---- */
     --radius-xs: 4px;
@@ -207,167 +208,131 @@ img {
 }
 
 /* ==================== 5. Ant Design 组件覆盖 ==================== */
-/* ---- Card ---- */
+
+/* ---- 全局过渡变量 ---- */
+:root {
+    --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ---- 卡片 (现代玻璃质感) ---- */
 .ant-card {
     border-radius: var(--radius-lg);
     border: 1px solid var(--app-card-border, var(--gray-200));
     background: var(--app-card-bg, #fff);
-    box-shadow: var(--shadow-xs);
-    transition: all var(--transition-base);
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow var(--transition-base), border-color var(--transition-base), transform var(--transition-base);
     overflow: hidden;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
 }
-.ant-card-hoverable {
-    cursor: pointer;
-}
+
+.ant-card-hoverable { cursor: pointer; }
+
 .ant-card-hoverable:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-xl);
-    border-color: transparent;
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-card-hover);
+    border-color: var(--brand-primary-light, #d4a574);
     background: var(--app-card-bg-hover, #fdf5ef);
 }
-.ant-card-head {
-    border-bottom: 1px solid var(--app-divider-color, var(--gray-100));
-    padding: var(--space-6) var(--space-8);
-    background: var(--app-card-bg, #fff);
-}
-.ant-card-body {
-    padding: var(--space-8);
-}
 
-/* ---- Button ---- */
-.ant-btn {
-    border-radius: var(--radius-sm);
-    font-weight: 500;
-    transition: all var(--transition-base);
-    box-shadow: var(--shadow-xs);
-}
-.ant-btn:hover {
-    transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
-}
-.ant-btn:active {
-    transform: translateY(0);
-}
-.ant-btn-primary {
-    background: var(--brand-primary);
-    border-color: var(--brand-primary);
-}
-.ant-btn-primary:hover {
-    background: var(--brand-primary-hover) !important;
-    border-color: var(--brand-primary-hover) !important;
-}
+/* ---- 表格 ---- */
+.ant-table { border-radius: var(--radius-lg); overflow: hidden; }
 
-/* ---- Input / Select ---- */
-.ant-input,
-.ant-input-number,
-.ant-picker,
-.ant-select-selector {
-    border-radius: var(--radius-sm);
-    border-color: var(--app-card-border, var(--gray-200));
-    transition: all var(--transition-base);
-    background: var(--app-card-bg, #fff);
-}
-.ant-input:focus,
-.ant-input-focused,
-.ant-input-number-focused,
-.ant-picker-focused,
-.ant-select-focused .ant-select-selector {
-    border-color: var(--brand-primary) !important;
-    box-shadow: 0 0 0 3px var(--brand-primary-bg) !important;
-}
-
-/* ---- Table ---- */
-.ant-table {
-    background: var(--app-card-bg, #fff);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
-}
 .ant-table-thead > tr > th {
-    background: var(--app-bg-secondary, var(--gray-50));
+    background: var(--app-bg-secondary) !important;
+    font-weight: 600; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.6px;
     color: var(--app-text-secondary);
-    font-weight: 600;
-    font-size: var(--font-size-sm);
-    border-bottom: 2px solid var(--app-divider-color, var(--gray-200));
-    padding: var(--space-4) var(--space-6);
-}
-.ant-table-tbody > tr > td {
-    border-bottom: 1px solid var(--app-divider-color, var(--gray-100));
-    padding: var(--space-4) var(--space-6);
-    transition: background var(--transition-fast);
-}
-.ant-table-tbody > tr:hover > td {
-    background: var(--app-bg, var(--gray-50));
-}
-.ant-table-tbody > tr:last-child > td {
-    border-bottom: none;
+    border-bottom: 2px solid var(--app-card-border);
+    padding: 12px 16px !important;
 }
 
-/* ---- Tag ---- */
-.ant-tag {
-    border-radius: var(--radius-full);
-    font-weight: 500;
-    padding: 2px 12px;
-    border: none;
-    font-size: var(--font-size-xs);
-}
+.ant-table-tbody > tr { transition: background var(--transition-fast); }
+.ant-table-tbody > tr:hover > td { background: var(--app-card-bg-hover) !important; }
 
-/* ---- Modal ---- */
-.ant-modal-content {
-    border-radius: var(--radius-xl);
-    overflow: hidden;
-    box-shadow: var(--shadow-2xl);
-}
-.ant-modal-header {
-    border-bottom: 1px solid var(--app-divider-color, var(--gray-100));
-    padding: var(--space-6) var(--space-8);
-}
-.ant-modal-body {
-    padding: var(--space-8);
-}
-.ant-modal-footer {
-    border-top: 1px solid var(--app-divider-color, var(--gray-100));
-    padding: var(--space-4) var(--space-8);
-}
-
-/* ---- Menu ---- */
-.ant-menu-item {
-    border-radius: var(--radius-sm);
-    margin: 0 var(--space-1);
-    transition: all var(--transition-base);
-}
-.ant-menu-item-selected {
-    background: var(--brand-primary-bg) !important;
-    color: var(--brand-primary) !important;
-    font-weight: 500;
-}
-
-/* ---- Spin ---- */
-.ant-spin-dot-item {
-    background: var(--brand-primary);
-}
-
-/* ---- Skeleton ---- */
-.ant-skeleton-element .ant-skeleton-button,
-.ant-skeleton-element .ant-skeleton-avatar,
-.ant-skeleton-element .ant-skeleton-input,
-.ant-skeleton-element .ant-skeleton-image {
-    background: var(--app-skeleton-color, var(--gray-200));
-}
-
-/* ---- FloatButton ---- */
-.ant-float-btn {
-    box-shadow: var(--shadow-lg);
-}
-.ant-float-btn:hover {
-    transform: scale(1.05);
-}
-
-/* ---- Message / Notification ---- */
-.ant-message-notice-content,
-.ant-notification-notice {
+/* ---- 按钮 ---- */
+.ant-btn {
     border-radius: var(--radius-md);
-    box-shadow: var(--shadow-lg);
+    font-weight: 500;
+    transition: all var(--transition-base);
+    box-shadow: none;
 }
+
+.ant-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.ant-btn-primary { box-shadow: 0 2px 8px rgba(139, 69, 19, 0.25); }
+.ant-btn-primary:hover { box-shadow: 0 6px 20px rgba(139, 69, 19, 0.35); }
+
+/* ---- 输入框 ---- */
+.ant-input, .ant-input-number, .ant-picker, .ant-select-selector {
+    border-radius: var(--radius-md) !important;
+    transition: all var(--transition-fast);
+}
+
+.ant-input:focus, .ant-input-number-focused, 
+.ant-picker-focused, .ant-select-focused .ant-select-selector {
+    box-shadow: 0 0 0 3px rgba(139, 69, 19, 0.08) !important;
+    border-color: var(--brand-primary, #8B4513) !important;
+}
+
+/* ---- 标签/统计 ---- */
+.ant-tag { border-radius: var(--radius-sm); font-weight: 500; }
+.ant-statistic-title { font-size: 12px; font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase; color: var(--app-text-tertiary); }
+.ant-statistic-content { font-weight: 700; }
+
+/* ---- 标签页 ---- */
+.ant-tabs-tab { border-radius: var(--radius-md) !important; font-weight: 500; transition: all var(--transition-fast); }
+.ant-tabs-tab-active { background: var(--brand-primary-bg, #fdf5ef) !important; }
+.ant-tabs-ink-bar { height: 3px !important; border-radius: 3px 3px 0 0; }
+
+/* ---- 模态框 ---- */
+.ant-modal-content { border-radius: var(--radius-xl) !important; overflow: hidden; }
+.ant-modal-header { border-bottom: 1px solid var(--app-divider-color); padding: 20px 24px; }
+
+/* ---- 面包屑/菜单 ---- */
+.ant-breadcrumb a { color: var(--app-text-secondary); transition: color var(--transition-fast); }
+.ant-breadcrumb a:hover { color: var(--brand-primary); }
+
+.ant-menu-item { border-radius: var(--radius-md) !important; margin: 2px 8px !important; }
+.ant-menu-item-selected { background: var(--brand-primary-bg, #fdf5ef) !important; font-weight: 600; }
+
+/* ---- 消息/弹出 ---- */
+.ant-message-notice-content { border-radius: var(--radius-lg) !important; box-shadow: var(--shadow-lg) !important; }
+.ant-popconfirm .ant-popover-inner, .ant-popover-inner { border-radius: var(--radius-lg); box-shadow: var(--shadow-xl); }
+
+/* ---- 步骤条 ---- */
+.ant-steps-item-finish .ant-steps-item-icon { background: var(--brand-primary, #8B4513) !important; border-color: var(--brand-primary, #8B4513) !important; }
+.ant-steps-item-process .ant-steps-item-icon { border-color: var(--brand-primary, #8B4513) !important; }
+.ant-steps-item-process .ant-steps-item-icon > .ant-steps-icon { color: var(--brand-primary, #8B4513) !important; }
+
+/* ---- 开关 ---- */
+.ant-switch-checked { background: var(--brand-primary, #8B4513) !important; }
+
+/* ---- 进度条 ---- */
+.ant-progress-bg { background: var(--brand-primary, #8B4513) !important; }
+
+/* ---- 骨架屏 ---- */
+.ant-skeleton.ant-skeleton-active .ant-skeleton-content .ant-skeleton-title,
+.ant-skeleton.ant-skeleton-active .ant-skeleton-content .ant-skeleton-paragraph > li {
+    background: linear-gradient(90deg, var(--app-skeleton-color) 25%, var(--app-bg-secondary) 37%, var(--app-skeleton-color) 63%);
+    background-size: 400% 100%;
+    animation: ant-skeleton-loading 1.8s ease infinite;
+}
+
+/* ---- 页面加载动画 ---- */
+@keyframes page-fade-in {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.page-enter {
+    animation: page-fade-in var(--transition-slow) ease-out forwards;
+}
+
+/* ---- 空状态增强 ---- */
+.ant-empty-image { opacity: 0.6; filter: grayscale(30%); }
+.ant-empty-description { color: var(--app-text-tertiary); font-size: 14px; }
 
 /* ==================== 6. 实用工具类 ==================== */
 /* 文本省略 */
@@ -519,16 +484,33 @@ img {
     .ant-btn:hover {
         transform: none;
     }
-    
+
     /* 增大触摸目标 */
-    .ant-btn {
-        min-height: 44px;
-    }
-    .ant-menu-item {
-        min-height: 44px;
-        display: flex;
-        align-items: center;
-    }
+    .ant-btn { min-height: 44px; min-width: 44px; }
+    .ant-menu-item { min-height: 44px; display: flex; align-items: center; }
+    .ant-select-selector { min-height: 44px !important; display: flex; align-items: center; }
+    .ant-input { min-height: 44px; }
+    .ant-radio-button-wrapper { min-height: 44px; line-height: 44px; padding: 0 16px; }
+
+    /* NFC 操作卡片 — 移动端优化 */
+    .nfc-mobile-card { padding: 20px 16px; }
+    .nfc-mobile-card .ant-statistic-content { font-size: 28px; }
+    .nfc-qr-code { max-width: 240px; margin: 0 auto; }
+    .nfc-action-btn { width: 100%; height: 52px; font-size: 16px; border-radius: 14px; }
+
+    /* 触摸反馈 */
+    .touch-feedback:active { transform: scale(0.97); opacity: 0.85; transition: all 0.1s ease; }
+}
+
+/* NFC 移动页面专用 */
+@media (max-width: 480px) {
+    .nfc-page-container { padding: 12px !important; }
+    .nfc-hero-title { font-size: 22px !important; }
+    .nfc-step-icon { width: 36px; height: 36px; font-size: 16px; }
+    .nfc-copy-btn { width: 100%; margin-top: 8px; }
+
+    /* 全宽按钮 */
+    .mobile-full-width { width: 100% !important; }
 }
 
 /* ==================== 8. 打印样式 ==================== */
@@ -566,73 +548,7 @@ img {
     }
 }
 
-/* ==================== 9. 暗色模式（系统偏好） ==================== */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --app-bg: #1a1a2e;
-        --app-bg-secondary: #16213e;
-        --app-card-bg: #1e2746;
-        --app-card-bg-hover: #243050;
-        --app-card-border: #2a3560;
-        --app-text-primary: #e8e6e3;
-        --app-text-secondary: #b0adab;
-        --app-text-tertiary: #8a8784;
-        --app-divider-color: #2a3560;
-        --app-skeleton-color: #2a3560;
-        
-        --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
-        --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
-        --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
-        --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
-        --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.5);
-        --shadow-2xl: 0 25px 50px rgba(0, 0, 0, 0.6);
-    }
-    
-    /* 暗色模式下的组件适配 */
-    .ant-card {
-        background: var(--app-card-bg);
-        border-color: var(--app-card-border);
-    }
-    .ant-card-head {
-        background: var(--app-card-bg);
-        border-bottom-color: var(--app-divider-color);
-    }
-    .ant-table {
-        background: var(--app-card-bg);
-    }
-    .ant-table-thead > tr > th {
-        background: var(--app-bg-secondary);
-        color: var(--app-text-secondary);
-        border-bottom-color: var(--app-divider-color);
-    }
-    .ant-table-tbody > tr > td {
-        border-bottom-color: var(--app-divider-color);
-    }
-    .ant-table-tbody > tr:hover > td {
-        background: var(--app-card-bg-hover);
-    }
-    
-    /* 暗色模式下的文本颜色 */
-    .ant-typography {
-        color: var(--app-text-primary);
-    }
-    .ant-typography.ant-typography-secondary {
-        color: var(--app-text-secondary);
-    }
-    
-    /* 暗色模式下的输入框 */
-    .ant-input,
-    .ant-input-number,
-    .ant-picker,
-    .ant-select-selector {
-        background: var(--app-card-bg) !important;
-        border-color: var(--app-card-border) !important;
-        color: var(--app-text-primary) !important;
-    }
-    
-    /* 玻璃态效果暗色适配 */
-    .glass-effect {
-        background: rgba(30, 39, 70, 0.7);
-        border-color: rgba(42, 53, 96, 0.3);
-    }
-}
+/* ==================== 9. 暗色模式 ====================
+ * 由 JS 主题系统 (ThemeContext) 统一管理，
+ * 通过设置 CSS 变量和 Ant Design ConfigProvider 实现。
+ * 用户可通过 ThemeSwitcher 组件切换主题。 */

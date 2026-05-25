@@ -16,7 +16,6 @@ import { Typography, Empty, Card, Skeleton, Tooltip as AntTooltip, theme } from 
 import {
     CalendarOutlined,
     HeatMapOutlined,
-    InfoCircleOutlined,
 } from '@ant-design/icons';
 
 const { Text, Title } = Typography;
@@ -111,21 +110,10 @@ const getTextColor = (value: number, maxValue: number): string => {
     return ratio > 0.45 ? '#ffffff' : '#2c1810';
 };
 
-/**
- * 计算亮度（用于无障碍对比度）
- */
-const getLuminance = (r: number, g: number, b: number): number => {
-    const [rs, gs, bs] = [r, g, b].map((c) => {
-        const s = c / 255;
-        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-    });
-    return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
-};
-
 // ==================== 子组件 ====================
 
 /** 图例组件 */
-const Legend: FC<{ maxValue: number; colorSteps: number }> = ({
+const Legend: FC<{ maxValue: number; colorSteps?: number }> = ({
     maxValue,
     colorSteps = 8,
 }) => {

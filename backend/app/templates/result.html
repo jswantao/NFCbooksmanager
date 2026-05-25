@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>NFC 扫描结果</title>
+{% if success and shelf_url %}
+<meta http-equiv="refresh" content="1;url={{ shelf_url }}">
+{% endif %}
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:#fdf8f4;color:#2c1810;padding:20px;max-width:500px;margin:0 auto;min-height:100vh;padding-bottom:env(safe-area-inset-bottom,20px)}
+.c{background:#fff;border-radius:16px;padding:24px 20px;margin-bottom:16px;box-shadow:0 2px 12px rgba(139,69,19,.1)}
+.h{text-align:center;font-size:56px;margin-bottom:12px}
+.t{font-size:24px;font-weight:700;text-align:center;color:{{ color }};margin-bottom:8px}
+.m{text-align:center;color:#6b5e56;font-size:15px;margin-bottom:20px}
+.r{display:flex;padding:14px 0;border-bottom:1px solid #f0e4d8}
+.r:last-child{border-bottom:none}
+.l{font-size:13px;color:#8c7b72;width:80px;flex-shrink:0;font-weight:500}
+.v{font-size:14px;word-break:break-all;font-family:monospace}
+.btn{display:block;width:100%;padding:16px;border-radius:14px;border:none;font-size:17px;font-weight:600;text-decoration:none;text-align:center;margin-top:12px;cursor:pointer;transition:all .1s ease;-webkit-appearance:none}
+.btn:active{transform:scale(.97);opacity:.85}
+.bp{background:#8B4513;color:#fff}
+.bs{background:#22c55e;color:#fff}
+</style>
+</head>
+<body>
+<div class="c">
+<div class="h">{{ icon }}</div>
+<div class="t">{{ status_text }}</div>
+<div class="m">{{ message }}</div>
+{% if tag_id %}
+<div class="r"><span class="l">标签 UID</span><span class="v">{{ tag_id }}</span></div>
+{% endif %}
+{% if success %}
+<div class="r"><span class="l">书架</span><span class="v">#{{ shelf_id }} {{ shelf_name }}</span></div>
+{% endif %}
+</div>
+{% if success and shelf_url %}
+<a href="{{ shelf_url }}" class="btn bs">📖 查看书架（自动跳转中...）</a>
+{% endif %}
+<a href="/api/nfc/mobile" class="btn bp">← 返回 NFC 首页</a>
+</body>
+</html>

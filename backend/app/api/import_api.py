@@ -34,8 +34,10 @@ import re
 import json
 import uuid
 import asyncio
-import logging
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
+
+from loguru import logger
 
 import pandas as pd
 from fastapi import (
@@ -61,14 +63,11 @@ from app.models.models import (
     ImportTask,
     ImportStatus,
 )
-from app.schemas.schemas import ImportStartResponse, ApiResponse
-from app.services.douban_service import DoubanService
+from app.schemas import ImportStartResponse, ApiResponse
+from app.core.dependencies import get_douban_service
+from app.utils.activity_logger import log_activity
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# 全局豆瓣服务实例
-douban_service = DoubanService()
 
 # 支持的文件扩展名
 SUPPORTED_EXTENSIONS = {"csv", "xlsx", "xls", "txt"}
@@ -554,11 +553,11 @@ async def get_import_status(
 
 # ==================== 取消任务 ====================
 
-@router.post("/task/{task_id}/cancel", response_model=ApiResponse, summary="取消导入任务")
+@router.post("/task/{task_id}/cancel", response_model=ApiResponse[None], summary="取消导入任务")
 async def cancel_import(
     task_id: str,
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     取消正在进行的导入任务
     
@@ -594,9 +593,11 @@ async def cancel_import(
         )
     
     task.status = ImportStatus.CANCELLED.value
-    task.finished_at = __import__("datetime").datetime.utcnow()
+    task.finished_at = datetime.now(timezone.utc)
     db.commit()
     
+    log_activity(db, action='cancel_import', entity_type='import_task',
+                 detail={'task_id': task_id})
     logger.info(f"导入任务已取消: {task_id[:8]}...")
     
     return ApiResponse(
@@ -693,7 +694,7 @@ async def _run_import_task(
             
             # 更新任务状态为运行中
             task.status = ImportStatus.RUNNING.value
-            task.started_at = __import__("datetime").datetime.utcnow()
+            task.started_at = datetime.now(timezone.utc)
             await db.commit()
             
             # 逐条处理
@@ -725,7 +726,8 @@ async def _run_import_task(
                     synced = False
                     if auto_sync:
                         try:
-                            douban_data = await douban_service.search_by_isbn(isbn)
+                            douban_svc = get_douban_service()
+                            douban_data = await douban_svc.search_by_isbn(isbn)
                             if douban_data and douban_data.get("title"):
                                 # 更新同步到的字段
                                 for field in (
@@ -792,7 +794,7 @@ async def _run_import_task(
             
             # 任务完成
             task.status = ImportStatus.COMPLETED.value
-            task.finished_at = __import__("datetime").datetime.utcnow()
+            task.finished_at = datetime.now(timezone.utc)
             await db.commit()
             
             logger.info(
@@ -813,7 +815,7 @@ async def _run_import_task(
                 if task:
                     task.status = ImportStatus.FAILED.value
                     task.error = str(e)[:500]
-                    task.finished_at = __import__("datetime").datetime.utcnow()
+                    task.finished_at = datetime.now(timezone.utc)
                     await db.commit()
         except Exception:
             pass

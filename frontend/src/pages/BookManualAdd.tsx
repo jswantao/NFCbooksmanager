@@ -77,8 +77,11 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { createBookManual, listShelves, extractErrorMessage } from '../services/api';
 import { getPlaceholderCover } from '../utils/image';
+import { useFormDraft } from '../hooks/useFormDraft';
 
 const { Title, Text, Paragraph } = Typography;
+
+const ELLIPSIS_4_EXPANDABLE_SHORT = { rows: 4, expandable: true, symbol: '展开' } as const;
 const { TextArea } = Input;
 
 // ==================== 类型定义 ====================
@@ -156,41 +159,7 @@ const URL_RULES: FormRule[] = [
 /**
  * 表单草稿管理 Hook
  */
-const useFormDraft = (form: FormInstance) => {
-    /** 自动保存草稿 */
-    const saveDraft = useCallback(() => {
-        try {
-            const values = form.getFieldsValue();
-            localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(values));
-        } catch {
-            // 静默处理
-        }
-    }, [form]);
-
-    /** 加载草稿 */
-    const loadDraft = useCallback((): Partial<BookFormData> | null => {
-        try {
-            const stored = localStorage.getItem(DRAFT_STORAGE_KEY);
-            if (stored) {
-                return JSON.parse(stored);
-            }
-        } catch {
-            // 静默处理
-        }
-        return null;
-    }, []);
-
-    /** 清除草稿 */
-    const clearDraft = useCallback(() => {
-        try {
-            localStorage.removeItem(DRAFT_STORAGE_KEY);
-        } catch {
-            // 静默处理
-        }
-    }, []);
-
-    return { saveDraft, loadDraft, clearDraft };
-};
+// useFormDraft 已提取至 src/hooks/useFormDraft.ts
 
 /**
  * 录入步骤管理 Hook
@@ -270,7 +239,7 @@ const BookManualAdd: FC = () => {
     } = useAddStep();
 
     // 草稿管理
-    const { saveDraft, loadDraft, clearDraft } = useFormDraft(form);
+    const { saveDraft, loadDraft, clearDraft } = useFormDraft(form, DRAFT_STORAGE_KEY);
 
     // UI 状态
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1159,11 +1128,7 @@ const BookManualAdd: FC = () => {
                                             内容简介
                                         </Text>
                                         <Paragraph
-                                            ellipsis={{
-                                                rows: 4,
-                                                expandable: true,
-                                                symbol: '展开',
-                                            }}
+                                            ellipsis={ELLIPSIS_4_EXPANDABLE_SHORT}
                                             style={{ marginBottom: 0 }}
                                         >
                                             {formSnapshot.summary}

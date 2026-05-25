@@ -11,7 +11,7 @@
  * - 无障碍属性
  */
 
-import React, { useMemo, useCallback, useState, type FC } from 'react';
+import { useMemo, useCallback, useState, type FC } from 'react';
 import {
     PieChart,
     Pie,
@@ -20,11 +20,9 @@ import {
     ResponsiveContainer,
     Legend,
     Sector,
-    type TooltipProps,
-    type PieLabelRenderProps,
 } from 'recharts';
-import { Typography, Empty, Card, Skeleton, Space, theme } from 'antd';
-import { PieChartOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { Typography, Empty, Card, Skeleton, theme } from 'antd';
+import { PieChartOutlined } from '@ant-design/icons';
 
 const { Text, Title } = Typography;
 
@@ -140,7 +138,7 @@ const ActiveShape: FC<{
 );
 
 /** 自定义提示框 */
-const CustomTooltip: FC<TooltipProps<number, string>> = ({
+const CustomTooltip: FC<{ active?: boolean; payload?: any[] }> = ({
     active,
     payload,
 }) => {
@@ -387,7 +385,7 @@ const SourcePieChart: FC<SourcePieChartProps> = ({
     // ==================== 渲染 ====================
 
     return (
-        <div style={{ width: '100%', height }} role="img" aria-label={title || '图书来源分布'}>
+        <div style={{ width: '100%', height, display: 'flex', flexDirection: 'column' }} role="img" aria-label={title || '图书来源分布'}>
             {/* 标题 */}
             {title && (
                 <div
@@ -396,6 +394,7 @@ const SourcePieChart: FC<SourcePieChartProps> = ({
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         marginBottom: 8,
+                        flexShrink: 0,
                     }}
                 >
                     <Title
@@ -418,9 +417,10 @@ const SourcePieChart: FC<SourcePieChartProps> = ({
             )}
 
             {/* 图表 */}
+            <div style={{ flex: 1, minHeight: 250 }}>
             <ResponsiveContainer
                 width="100%"
-                height={title ? 'calc(100% - 48px)' : '100%'}
+                height="100%"
             >
                 <PieChart>
                     {/* 饼图 */}
@@ -431,10 +431,7 @@ const SourcePieChart: FC<SourcePieChartProps> = ({
                         innerRadius={innerRadius}
                         outerRadius={outerRadius}
                         dataKey="value"
-                        activeIndex={
-                            activeIndex >= 0 ? activeIndex : undefined
-                        }
-                        activeShape={ActiveShape}
+                        activeShape={ActiveShape as any}
                         onMouseEnter={handleMouseEnter}
                         onMouseLeave={handleMouseLeave}
                         onClick={(data) => handleClick(data as SourceDataItem)}
@@ -481,6 +478,7 @@ const SourcePieChart: FC<SourcePieChartProps> = ({
                     )}
                 </PieChart>
             </ResponsiveContainer>
+            </div>
         </div>
     );
 };

@@ -22,13 +22,16 @@ Cookie 脱敏规则：
 """
 
 import os
-import logging
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from loguru import logger
+from fastapi import APIRouter, HTTPException, Depends, Body
 
-from app.core.config import settings
-from app.schemas.schemas import (
+from app.core.config import Settings
+from app.utils.activity_logger import log_activity
+from app.core.dependencies import get_settings, get_douban_service
+from app.core.database import get_db
+from app.schemas import (
     CookieSaveRequest,
     CookieInfoResponse,
     CookieTestResponse,
@@ -36,7 +39,6 @@ from app.schemas.schemas import (
 )
 from app.services.douban_service import DoubanService
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -112,7 +114,9 @@ def _mask_cookie(cookie: str) -> str:
 # ==================== Cookie 状态查询 ====================
 
 @router.get("/cookie", response_model=CookieInfoResponse, summary="查看 Cookie 配置状态")
-async def get_cookie_status() -> CookieInfoResponse:
+async def get_cookie_status(
+    settings: Settings = Depends(get_settings),
+) -> CookieInfoResponse:
     """
     获取当前豆瓣 Cookie 的配置状态
     
@@ -140,8 +144,13 @@ async def get_cookie_status() -> CookieInfoResponse:
 
 # ==================== Cookie 更新 ====================
 
-@router.post("/cookie", response_model=ApiResponse, summary="更新豆瓣 Cookie")
-async def update_cookie(req: CookieSaveRequest) -> ApiResponse:
+@router.post("/cookie", response_model=ApiResponse[None], summary="更新豆瓣 Cookie")
+async def update_cookie(
+    req: CookieSaveRequest,
+    settings: Settings = Depends(get_settings),
+    douban_svc: DoubanService = Depends(get_douban_service),
+    db = Depends(get_db),
+) -> ApiResponse[None]:
     """
     保存新的豆瓣 Cookie
     
@@ -178,8 +187,10 @@ async def update_cookie(req: CookieSaveRequest) -> ApiResponse:
     )
     
     # 清空搜索缓存（使用新 Cookie 重新请求）
-    DoubanService().clear_cache()
+    await douban_svc.clear_cache()
     
+    log_activity(db, action='update_cookie', entity_type='config',
+                 detail={'item': 'douban_cookie', 'user_agent_updated': bool(req.user_agent and req.user_agent.strip())})
     logger.info("豆瓣 Cookie 已更新")
     
     return ApiResponse(success=True, message="Cookie 已保存，搜索缓存已清空")
@@ -188,7 +199,10 @@ async def update_cookie(req: CookieSaveRequest) -> ApiResponse:
 # ==================== Cookie 有效性测试 ====================
 
 @router.post("/cookie/test", response_model=CookieTestResponse, summary="测试 Cookie 有效性")
-async def test_cookie() -> CookieTestResponse:
+async def test_cookie(
+    settings: Settings = Depends(get_settings),
+    douban_svc: DoubanService = Depends(get_douban_service),
+) -> CookieTestResponse:
     """
     测试当前 Cookie 是否有效
     
@@ -213,7 +227,7 @@ async def test_cookie() -> CookieTestResponse:
     
     try:
         # 使用预定义 ISBN 测试
-        result = await DoubanService().search_by_isbn("9787544270878")
+        result = await douban_svc.search_by_isbn("9787544270878")
         
         if result and result.get("title"):
             return CookieTestResponse(
@@ -246,8 +260,12 @@ async def test_cookie() -> CookieTestResponse:
 
 # ==================== Cookie 清除 ====================
 
-@router.delete("/cookie", response_model=ApiResponse, summary="清除豆瓣 Cookie")
-async def delete_cookie() -> ApiResponse:
+@router.delete("/cookie", response_model=ApiResponse[None], summary="清除豆瓣 Cookie")
+async def delete_cookie(
+    settings: Settings = Depends(get_settings),
+    douban_svc: DoubanService = Depends(get_douban_service),
+    db = Depends(get_db),
+) -> ApiResponse[None]:
     """
     清除豆瓣 Cookie 配置
     
@@ -260,8 +278,9 @@ async def delete_cookie() -> ApiResponse:
         清除结果
     """
     settings.clear_cookie()
-    DoubanService().clear_cache()
-    
+    await douban_svc.clear_cache()
+    log_activity(db, action='delete_cookie', entity_type='config',
+                 detail={'item': 'douban_cookie'})
     logger.info("豆瓣 Cookie 已清除")
     
     return ApiResponse(

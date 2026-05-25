@@ -11,7 +11,7 @@
  * - 无障碍属性
  */
 
-import React, { useMemo, useCallback, type FC } from 'react';
+import { useMemo, useCallback, type FC } from 'react';
 import {
     Line,
     XAxis,
@@ -22,7 +22,6 @@ import {
     Area,
     ComposedChart,
     ReferenceLine,
-    type TooltipProps,
 } from 'recharts';
 import { Typography, Empty, Card, Skeleton, Tag, Space, theme } from 'antd';
 import { RiseOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
@@ -61,7 +60,7 @@ interface ReadingTrendChartProps {
 // ==================== 子组件 ====================
 
 /** 自定义提示框 */
-const CustomTooltip: FC<TooltipProps<number, string>> = ({
+const CustomTooltip: FC<{ active?: boolean; payload?: any[]; label?: string }> = ({
     active,
     payload,
     label,
@@ -126,7 +125,7 @@ const CustomDot: FC<{
     cy?: number;
     value?: number;
     index?: number;
-}> = ({ cx = 0, cy = 0, value, index }) => (
+}> = ({ cx = 0, cy = 0, value: _value, index: _index }) => (
     <g>
         <circle
             cx={cx}
@@ -261,7 +260,7 @@ const ReadingTrendChart: FC<ReadingTrendChartProps> = ({
     const lineGradientId = 'trend-line-gradient';
 
     return (
-        <div style={{ width: '100%', height }} role="img" aria-label={title || '阅读趋势图'}>
+        <div style={{ width: '100%', height, display: 'flex', flexDirection: 'column' }} role="img" aria-label={title || '阅读趋势图'}>
             {/* 标题与统计 */}
             {title && (
                 <div
@@ -272,6 +271,7 @@ const ReadingTrendChart: FC<ReadingTrendChartProps> = ({
                         marginBottom: 16,
                         flexWrap: 'wrap',
                         gap: 8,
+                        flexShrink: 0,
                     }}
                 >
                     <Title
@@ -321,7 +321,8 @@ const ReadingTrendChart: FC<ReadingTrendChartProps> = ({
             )}
 
             {/* 图表 */}
-            <ResponsiveContainer width="100%" height={title ? 'calc(100% - 44px)' : '100%'}>
+            <div style={{ flex: 1, minHeight: 250 }}>
+            <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
                     data={data}
                     margin={{ top: 10, right: 30, left: 0, bottom: 5 }}
@@ -447,6 +448,7 @@ const ReadingTrendChart: FC<ReadingTrendChartProps> = ({
                     />
                 </ComposedChart>
             </ResponsiveContainer>
+            </div>
         </div>
     );
 };

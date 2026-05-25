@@ -8,9 +8,9 @@
  * - 全局状态管理
  * - 路由预加载
  */
-import React, { lazy, Suspense, useEffect, useMemo, useCallback, type FC, type ComponentType } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, type FC, type ComponentType } from 'react';
 import { Layout, FloatButton, Spin, Result, Button } from 'antd';
-import { HomeOutlined } from '@ant-design/icons';
+import { HomeOutlined, BookOutlined } from '@ant-design/icons';
 import {
     BrowserRouter,
     Routes,
@@ -18,7 +18,6 @@ import {
     useLocation,
     useParams,
     useNavigate,
-    type RouteObject,
 } from 'react-router-dom';
 import AppHeader from './components/AppHeader';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -43,12 +42,17 @@ const pages = {
     ShelfManager: lazy(() => import('./pages/ShelfManager')),
     AllBooksManager: lazy(() => import('./pages/AllBooksManager')),
     PhysicalShelfManager: lazy(() => import('./pages/PhysicalShelfManager')),
+    BackupManager: lazy(() => import('./pages/BackupManager')),
+    BackupRestore: lazy(() => import('./pages/BackupRestore')),
+    BookEditor: lazy(() => import('./pages/BookEditor')),
+    // 保留旧编辑页兼容
+    BookManualEdit: lazy(() => import('./pages/BookManualEdit')),
 } as const;
 
 // ==================== 类型定义 ====================
 interface RouteConfig {
     path: string;
-    component: ComponentType<any>;
+    component: ComponentType<object>;
     preload?: boolean;
     meta?: {
         title?: string;
@@ -61,17 +65,23 @@ const routes: RouteConfig[] = [
     { path: '/', component: pages.HomePage, preload: true, meta: { title: '首页' } },
     { path: '/operate', component: pages.NFCOperator, meta: { title: 'NFC 操作' } },
     { path: '/search', component: pages.BookSearch, meta: { title: '搜索图书' } },
-    { path: '/shelf/:id', component: pages.ShelfView, preload: true, meta: { title: '书架视图' } },
+    { path: '/shelf/:shelfId', component: pages.ShelfView, preload: true, meta: { title: '书架视图' } },
     { path: '/shelf/:shelfId/book/:bookId', component: pages.BookDetail, meta: { title: '图书详情' } },
     { path: '/wall', component: pages.BookCoverWall, meta: { title: '封面墙' } },
     { path: '/import', component: pages.BatchImport, meta: { title: '批量导入' } },
     { path: '/books/add', component: pages.BookManualAdd, meta: { title: '添加图书' } },
+    // 图书编辑双模式路由
+    { path: '/books/:bookId/edit', component: pages.BookEditor, meta: { title: '编辑图书 (全局)' } },
+    { path: '/shelves/:shelfId/books/:index/edit', component: pages.BookEditor, meta: { title: '编辑图书 (书架)' } },
+    // 旧路由兼容
     { path: '/books/edit/:id', component: pages.BookManualEdit, meta: { title: '编辑图书' } },
     { path: '/settings/cookie', component: pages.CookieConfig, meta: { title: 'Cookie 配置' } },
     { path: '/admin', component: pages.Dashboard, meta: { title: '管理后台', wide: true } },
     { path: '/admin/shelves', component: pages.ShelfManager, meta: { title: '书架管理', wide: true } },
     { path: '/admin/books', component: pages.AllBooksManager, meta: { title: '图书管理', wide: true } },
     { path: '/admin/physical-shelves', component: pages.PhysicalShelfManager, meta: { title: '物理书架', wide: true } },
+    { path: '/admin/backup', component: pages.BackupManager, meta: { title: '备份管理', wide: true } },
+    { path: '/admin/backup/restore/:filename', component: pages.BackupRestore, meta: { title: '恢复向导', wide: true } },
 ];
 
 // ==================== 通用组件 ====================
@@ -112,7 +122,7 @@ const NotFoundPage: FC = () => {
     
     return (
         <Result
-            icon={<span style={{ fontSize: 72, opacity: 0.3 }}>📚</span>}
+            icon={<BookOutlined style={{ fontSize: 72, opacity: 0.3 }} />}
             title="页面未找到"
             subTitle="您访问的页面不存在或已被移除"
             extra={
@@ -230,7 +240,7 @@ const AppContent: FC<{ onLoad?: () => void }> = ({ onLoad }) => {
                     maxWidth: isWideLayout ? 1600 : 1400,
                     margin: '0 auto',
                     width: '100%',
-                    padding: '24px 24px 48px',
+                    padding: 'clamp(12px, 2vw, 24px) clamp(12px, 2vw, 24px) clamp(32px, 4vw, 48px)',
                     minHeight: 'calc(100vh - 64px)',
                 }}
             >
@@ -261,9 +271,9 @@ const AppContent: FC<{ onLoad?: () => void }> = ({ onLoad }) => {
                 </div>
             </Content>
             
-            {/* 回到顶部按钮 */}
+            {/* 回到顶部按钮 - 响应式定位 */}
             <FloatButton.BackTop
-                style={{ right: 40, bottom: 40 }}
+                style={{ right: 'clamp(16px, 3vw, 40px)', bottom: 'clamp(16px, 3vw, 40px)' }}
                 visibilityHeight={400}
                 duration={400}
             />

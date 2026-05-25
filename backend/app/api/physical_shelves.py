@@ -15,13 +15,14 @@
 """
 
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from app.core.database import get_db
+from app.utils.activity_logger import log_activity
 from app.models.models import (
     PhysicalShelf,
     LogicalShelf,
@@ -116,37 +117,36 @@ async def list_physical_shelves(
     total = query.count()
     shelves = query.all()
 
+    if not shelves:
+        return PhysicalShelfListResponse(shelves=[], total=0)
+
+    # 批量获取所有激活映射和逻辑书架（避免 N+1 查询）
+    shelf_ids = [s.physical_shelf_id for s in shelves]
+    mappings = (
+        db.query(PhysicalLogicalMapping)
+        .filter(
+            PhysicalLogicalMapping.physical_shelf_id.in_(shelf_ids),
+            PhysicalLogicalMapping.is_active == True,
+        )
+        .all()
+    )
+    mapping_map = {m.physical_shelf_id: m for m in mappings}
+
+    logical_ids = [m.logical_shelf_id for m in mappings]
+    logical_map = {}
+    if logical_ids:
+        logical_shelves = (
+            db.query(LogicalShelf)
+            .filter(LogicalShelf.logical_shelf_id.in_(logical_ids))
+            .all()
+        )
+        logical_map = {l.logical_shelf_id: l for l in logical_shelves}
+
     # 组装响应数据
     result = []
     for shelf in shelves:
-        # 查询激活的映射关系
-        mapping = (
-            db.query(PhysicalLogicalMapping)
-            .filter(
-                PhysicalLogicalMapping.physical_shelf_id == shelf.physical_shelf_id,
-                PhysicalLogicalMapping.is_active == True,
-            )
-            .first()
-        )
-
-        logical_shelf_name = None
-        logical_shelf_id = None
-        mapping_type = None
-        mapping_version = None
-        mapping_active = False
-
-        if mapping:
-            logical = (
-                db.query(LogicalShelf)
-                .filter(LogicalShelf.logical_shelf_id == mapping.logical_shelf_id)
-                .first()
-            )
-            if logical:
-                logical_shelf_name = logical.shelf_name
-                logical_shelf_id = logical.logical_shelf_id
-            mapping_type = mapping.mapping_type
-            mapping_version = mapping.version
-            mapping_active = mapping.is_active
+        mapping = mapping_map.get(shelf.physical_shelf_id)
+        logical = logical_map.get(mapping.logical_shelf_id) if mapping else None
 
         result.append(
             PhysicalShelfResponse(
@@ -158,11 +158,11 @@ async def list_physical_shelves(
                 is_active=shelf.is_active,
                 created_at=shelf.created_at.isoformat() if shelf.created_at else None,
                 updated_at=shelf.updated_at.isoformat() if shelf.updated_at else None,
-                logical_shelf_name=logical_shelf_name,
-                logical_shelf_id=logical_shelf_id,
-                mapping_type=mapping_type,
-                mapping_active=mapping_active,
-                mapping_version=mapping_version,
+                logical_shelf_name=logical.shelf_name if logical else None,
+                logical_shelf_id=logical.logical_shelf_id if logical else None,
+                mapping_type=mapping.mapping_type if mapping else None,
+                mapping_active=mapping.is_active if mapping else False,
+                mapping_version=mapping.version if mapping else None,
             )
         )
 
@@ -268,7 +268,7 @@ async def update_physical_shelf(
     if request.is_active is not None:
         shelf.is_active = request.is_active
 
-    shelf.updated_at = datetime.utcnow()
+    shelf.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(shelf)
 
@@ -347,7 +347,7 @@ async def bind_nfc_tag(
         )
 
     shelf.nfc_tag_uid = request.nfc_tag_uid
-    shelf.updated_at = datetime.utcnow()
+    shelf.updated_at = datetime.now(timezone.utc)
     db.commit()
 
     return {
@@ -373,7 +373,7 @@ async def unbind_nfc_tag(
 
     old_uid = shelf.nfc_tag_uid
     shelf.nfc_tag_uid = None
-    shelf.updated_at = datetime.utcnow()
+    shelf.updated_at = datetime.now(timezone.utc)
     db.commit()
 
     return {
@@ -403,13 +403,23 @@ async def get_shelf_mappings(
         .all()
     )
 
+    if not mappings:
+        return {"physical_shelf": shelf.location_name, "mappings": [], "total": 0}
+
+    # 批量获取逻辑书架名称（避免 N+1 查询）
+    logical_ids = [m.logical_shelf_id for m in mappings]
+    logical_map = {}
+    if logical_ids:
+        logical_shelves = (
+            db.query(LogicalShelf)
+            .filter(LogicalShelf.logical_shelf_id.in_(logical_ids))
+            .all()
+        )
+        logical_map = {l.logical_shelf_id: l for l in logical_shelves}
+
     result = []
     for mapping in mappings:
-        logical = (
-            db.query(LogicalShelf)
-            .filter(LogicalShelf.logical_shelf_id == mapping.logical_shelf_id)
-            .first()
-        )
+        logical = logical_map.get(mapping.logical_shelf_id)
         result.append({
             "mapping_id": mapping.mapping_id,
             "logical_shelf_id": mapping.logical_shelf_id,

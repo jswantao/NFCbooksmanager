@@ -23,6 +23,7 @@ import time
 from typing import Generator, Dict, Any
 from contextlib import contextmanager
 
+from loguru import logger
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
@@ -166,7 +167,7 @@ if _is_sqlite():
             try:
                 cursor.execute(sql)
             except Exception as e:
-                print(f"[Database] ⚠️  PRAGMA 执行失败 ({description}): {e}")
+                logger.warning(f"PRAGMA 执行失败 ({description}): {e}")
         cursor.close()
 
 
@@ -256,7 +257,7 @@ def init_db() -> None:
 
     # 统计创建的表数量
     table_count = len(Base.metadata.tables)
-    print(f"[Database] ✅ 表创建完成 ({table_count} 张表)")
+    logger.info(f"表创建完成 ({table_count} 张表)")
 
 
 def check_database_health() -> Dict[str, Any]:
@@ -279,17 +280,17 @@ def check_database_health() -> Dict[str, Any]:
     - 监控告警
     - 运维巡检
     """
-    start_time = time.time()
+    start_time = time.perf_counter()
     try:
         with get_db_context() as db:
             db.execute(text("SELECT 1"))
-        response_time = round((time.time() - start_time) * 1000, 2)
+        response_time = round((time.perf_counter() - start_time) * 1000, 2)
         return {
             "status": "healthy",
             "response_time_ms": response_time,
         }
     except Exception as e:
-        response_time = round((time.time() - start_time) * 1000, 2)
+        response_time = round((time.perf_counter() - start_time) * 1000, 2)
         return {
             "status": "unhealthy",
             "error": str(e),
@@ -348,7 +349,7 @@ def get_database_stats() -> Dict[str, Any]:
                 )
                 stats["tables"] = result.scalar()
     except Exception as e:
-        print(f"[Database] ⚠️  统计信息获取失败: {e}")
+        logger.warning(f"统计信息获取失败: {e}")
 
     return stats
 
@@ -368,4 +369,73 @@ def close_all_connections() -> None:
     - 优雅关闭流程
     """
     sync_engine.dispose()
-    print("[Database] ✅ 所有连接已关闭")
+    # 异步引擎由 main.py lifespan 通过 await async_engine.dispose() 关闭
+    logger.info("同步连接已关闭")
+
+
+# ==================== 异步安全工具 ====================
+
+async def run_sync_db(func, *args, **kwargs):
+    """
+    在异步路由中安全执行同步数据库操作
+
+    将同步的 SQLAlchemy Session 操作放入线程池执行，
+    避免阻塞 FastAPI 的事件循环。
+
+    Args:
+        func: 同步函数，接收 SyncSession 并返回结果
+        *args, **kwargs: 传递给 func 的参数
+
+    Returns:
+        func 的返回值
+    """
+    import asyncio
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
+class _SyncDbWrapper:
+    """同步数据库操作的线程池包装器 — 供 async_db_session 使用"""
+
+    def __init__(self):
+        self.db = SyncSessionLocal()
+
+    def close(self):
+        self.db.close()
+
+    def rollback(self):
+        self.db.rollback()
+
+    def commit(self):
+        self.db.commit()
+
+
+async def run_sync_db_block(func) -> any:
+    """
+    在线程池中执行完整的同步数据库操作块
+
+    自动管理 session 生命周期（创建、提交、回滚、关闭）。
+    适合封装包含多个查询+提交的完整业务逻辑。
+
+    用法：
+        def _do_write(data):
+            db = SyncSessionLocal()
+            try:
+                db.add(record)
+                db.commit()
+                return record.id
+            except:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+
+        new_id = await run_sync_db_block(_do_write)
+
+    Args:
+        func: 无参数的同步函数，内部管理自己的 session
+
+    Returns:
+        func 的返回值
+    """
+    import asyncio
+    return await asyncio.to_thread(func)

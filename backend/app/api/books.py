@@ -24,14 +24,14 @@
 - 删除图书会级联删除书架关联和同步日志
 """
 
-import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
+
+from loguru import logger
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, asc, case, or_
-from sqlalchemy.types import Float
+from sqlalchemy import func, desc, asc, or_
 
 from app.core.database import get_db
 from app.models.models import (
@@ -43,7 +43,7 @@ from app.models.models import (
     SyncLog,
     SyncStatus,
 )
-from app.schemas.schemas import (
+from app.schemas import (
     BookSyncRequest,
     BookSyncResponse,
     BookInShelf,
@@ -52,13 +52,13 @@ from app.schemas.schemas import (
     BookUpdateManualRequest,
     ApiResponse,
 )
+from app.core.dependencies import get_douban_service
 from app.services.douban_service import DoubanService
+from app.utils.activity_logger import log_activity
+from app.utils.helpers import clean_isbn
+from app.utils.sort_mappings import BOOK_LIST_SORT, SHELF_BOOK_SORT
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# 全局豆瓣服务实例（单例模式，复用缓存和统计）
-douban_service = DoubanService()
 
 # 图书元数据字段列表（用于批量属性赋值）
 BOOK_METADATA_FIELDS = [
@@ -74,6 +74,7 @@ BOOK_METADATA_FIELDS = [
 async def sync_book(
     req: BookSyncRequest,
     db: Session = Depends(get_db),
+    douban_svc: DoubanService = Depends(get_douban_service),
 ) -> BookSyncResponse:
     """
     根据 ISBN 从豆瓣获取图书元数据并同步到本地数据库
@@ -98,7 +99,7 @@ async def sync_book(
         同步结果和图书数据
     """
     # 清洗 ISBN
-    isbn = req.isbn.strip().replace("-", "").replace(" ", "")
+    isbn = clean_isbn(req.isbn)
     
     # 检查本地是否已存在
     existing_book = (
@@ -108,7 +109,7 @@ async def sync_book(
     )
     
     # 调用豆瓣服务搜索
-    douban_data = await douban_service.search_by_isbn(isbn)
+    douban_data = await douban_svc.search_by_isbn(isbn)
     
     if douban_data:
         # 获取或创建图书记录
@@ -128,7 +129,7 @@ async def sync_book(
         
         # 更新同步状态
         book.source = BookSource.DOUBAN.value
-        book.last_sync_at = datetime.utcnow()
+        book.last_sync_at = datetime.now(timezone.utc)
         book.sync_status = SyncStatus.SUCCESS.value
         
         db.commit()
@@ -248,17 +249,7 @@ async def get_all_books(
         )
     
     # ---- 步骤 4：排序 ----
-    sort_mapping = {
-        "created_at": BookMetadata.created_at,
-        "title": BookMetadata.title,
-        "author": BookMetadata.author,
-        "rating": case(
-            (BookMetadata.rating == None, 0),
-            (BookMetadata.rating == "", 0),
-            else_=func.cast(BookMetadata.rating, Float),
-        ),
-    }
-    sort_column = sort_mapping.get(sort_by, BookMetadata.created_at)
+    sort_column = BOOK_LIST_SORT.get(sort_by, BookMetadata.created_at)
     
     query = query.order_by(
         desc(sort_column) if order == "desc" else asc(sort_column)
@@ -363,18 +354,8 @@ async def get_book_wall(
     # 计算总数
     total = query.count()
     
-    # 排序字段映射（使用 CASE WHEN 处理评分为空的特殊情况）
-    sort_mapping = {
-        "added_at": LogicalShelfBook.added_at,
-        "title": BookMetadata.title,
-        "author": BookMetadata.author,
-        "rating": case(
-            (BookMetadata.rating == None, 0),
-            (BookMetadata.rating == "", 0),
-            else_=func.cast(BookMetadata.rating, Float),
-        ),
-    }
-    sort_column = sort_mapping.get(sort_by, LogicalShelfBook.added_at)
+    # 排序字段映射（从共享模块导入）
+    sort_column = SHELF_BOOK_SORT.get(sort_by, LogicalShelfBook.added_at)
     
     # 应用排序
     query = query.order_by(
@@ -417,11 +398,11 @@ async def get_book_wall(
 
 # ==================== 手动录入 ====================
 
-@router.post("/manual", response_model=ApiResponse, summary="手动录入图书")
+@router.post("/manual", response_model=ApiResponse[None], summary="手动录入图书")
 async def create_book_manual(
     req: BookCreateManualRequest = Body(...),
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     手动录入图书元数据
     
@@ -446,7 +427,7 @@ async def create_book_manual(
         HTTPException 400: ISBN 已存在
     """
     # 清洗 ISBN
-    isbn = req.isbn.strip().replace("-", "").replace(" ", "")
+    isbn = clean_isbn(req.isbn)
     
     # 检查 ISBN 唯一性
     if (
@@ -513,12 +494,12 @@ async def create_book_manual(
 
 # ==================== 手动更新 ====================
 
-@router.put("/{book_id}/manual", response_model=ApiResponse, summary="手动更新图书信息")
+@router.put("/{book_id}/manual", response_model=ApiResponse[None], summary="手动更新图书信息")
 async def update_book_manual(
     book_id: int,
     req: BookUpdateManualRequest = Body(...),
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     手动更新图书元数据
     
@@ -558,7 +539,7 @@ async def update_book_manual(
     # 标记为手动修改
     if updated_fields:
         book.source = BookSource.MANUAL.value
-        book.updated_at = datetime.utcnow()
+        book.updated_at = datetime.now(timezone.utc)
         db.commit()
     
     return ApiResponse(
@@ -718,11 +699,11 @@ async def get_book_detail(
 
 # ==================== 删除图书 ====================
 
-@router.delete("/{book_id}", response_model=ApiResponse, summary="删除图书")
+@router.delete("/{book_id}", response_model=ApiResponse[None], summary="删除图书")
 async def delete_book(
     book_id: int,
     db: Session = Depends(get_db),
-) -> ApiResponse:
+) -> ApiResponse[None]:
     """
     删除图书及其所有关联数据
     
@@ -816,3 +797,92 @@ def _build_sync_response(
         ),
         message=message,
     )
+
+
+# ==================== 统一操作入口 ====================
+
+@router.post("/action", summary="统一图书操作入口")
+async def book_action(
+    action: str = Query(..., description="操作类型: get / update / delete / smart_delete"),
+    global_book_id: Optional[str] = Query(None, description="全局图书ID (B-xxx)"),
+    shelf_id: Optional[str] = Query(None, description="书架ID (S-xxx)"),
+    shelf_book_index: Optional[int] = Query(None, description="书架内序号"),
+    data: Optional[Dict[str, Any]] = Body(None, description="更新数据"),
+    db: Session = Depends(get_db),
+):
+    """
+    统一图书操作入口，支持两种 BookReference 定位方式。
+
+    全局 ID 优先：如果提供了 global_book_id，使用全局定位
+    否则使用 shelf_id + shelf_book_index 定位
+
+    操作类型:
+    - get: 获取图书详情
+    - update: 更新图书信息（需要 data 参数）
+    - delete: 删除图书（清理所有映射）
+    - smart_delete: 智能删除（书架引用只移除映射，全局引用彻底删除）
+    """
+    # ---- 解析 BookReference ----
+    book = None
+    if global_book_id:
+        numeric_id = int(''.join(c for c in global_book_id if c.isdigit()))
+        book = db.query(BookMetadata).filter(BookMetadata.book_id == numeric_id).first()
+    elif shelf_id and shelf_book_index:
+        shelf_numeric = int(''.join(c for c in shelf_id if c.isdigit()))
+        shelf_book = (
+            db.query(LogicalShelfBook)
+            .filter(
+                LogicalShelfBook.logical_shelf_id == shelf_numeric,
+                LogicalShelfBook.status == BookStatus.IN_SHELF.value,
+            )
+            .order_by(LogicalShelfBook.sort_order)
+            .offset(shelf_book_index - 1)
+            .limit(1)
+            .first()
+        )
+        if shelf_book:
+            book = shelf_book.book
+
+    if not book:
+        ref_desc = f"global={global_book_id}" if global_book_id else f"shelf={shelf_id}/idx={shelf_book_index}"
+        raise HTTPException(status_code=404, detail=f"图书不存在: {ref_desc}")
+
+    # ---- 执行操作 ----
+    if action == "get":
+        return {
+            "book_id": book.book_id,
+            "global_book_id": f"B-{str(book.book_id).zfill(8)}",
+            "title": book.title, "author": book.author, "isbn": book.isbn,
+            "cover_url": book.cover_url, "publisher": book.publisher,
+            "pages": book.pages, "rating": book.rating, "source": book.source,
+        }
+
+    if action == "update":
+        if not data:
+            raise HTTPException(status_code=400, detail="更新操作需要 data 参数")
+        for field, value in data.items():
+            if hasattr(book, field) and value is not None:
+                setattr(book, field, value)
+        db.commit()
+        db.refresh(book)
+        return ApiResponse(success=True, message="已更新", data={"book_id": book.book_id})
+
+    if action == "delete":
+        book_id = book.book_id
+        book_title = book.title
+        db.delete(book)
+        db.commit()
+        log_activity(db, action='delete_book', entity_type='book',
+                     entity_id=book_id, detail={'title': book_title})
+        return ApiResponse(success=True, message=f"《{book_title}》已删除")
+
+    if action == "smart_delete":
+        if global_book_id:
+            return await book_action("delete", global_book_id, None, None, None, db)
+        else:
+            if shelf_book:
+                db.delete(shelf_book)
+                db.commit()
+                return ApiResponse(success=True, message="已从书架移除", data={"deleted": False, "removed": True})
+
+    raise HTTPException(status_code=400, detail=f"不支持的操作: {action}")

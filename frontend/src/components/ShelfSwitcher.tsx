@@ -34,7 +34,6 @@ import {
     Tooltip,
     Input,
     Skeleton,
-    Collapse,
     theme,
     type SelectProps,
 } from 'antd';
@@ -117,13 +116,14 @@ const ShelfSwitcher: FC<ShelfSwitcherProps> = ({
     // 状态
     const [shelves, setShelves] = useState<ShelfItem[]>([]);
     const [loading, setLoading] = useState(false);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const [error, setError] = useState<string | null>(null);
     const [searchText, setSearchText] = useState('');
     const [showPanel, setShowPanel] = useState(false);
     const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode);
 
     const isMounted = useRef(true);
-    const searchInputRef = useRef<any>(null);
+    const searchInputRef = useRef<HTMLInputElement>(null);
 
     // ==================== 生命周期 ====================
 
@@ -143,9 +143,10 @@ const ShelfSwitcher: FC<ShelfSwitcherProps> = ({
             if (isMounted.current) {
                 setShelves(data || []);
             }
-        } catch (err: any) {
+        } catch (err: unknown) {
             if (isMounted.current) {
-                setError(err?.response?.data?.detail || '加载失败');
+                const axiosErr = err as { response?: { data?: { detail?: string } } };
+                setError(axiosErr?.response?.data?.detail || '加载失败');
             }
         } finally {
             if (isMounted.current) {

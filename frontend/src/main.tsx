@@ -11,6 +11,7 @@
 import React, { Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider, App as AntApp, Spin, theme as antTheme } from 'antd';
+import { BookOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
@@ -63,8 +64,8 @@ const AppLoading: React.FC = () => {
             role="status"
             aria-label="应用加载中"
         >
-            <div style={{ fontSize: 72, animation: 'pulse 2s ease-in-out infinite' }}>
-                📚
+            <div style={{ fontSize: 72, animation: 'pulse 2s ease-in-out infinite', opacity: 0.3 }}>
+                <BookOutlined />
             </div>
             <Spin size="large">
                 <div style={{ padding: 24 }} />
@@ -120,7 +121,7 @@ class GlobalErrorBoundary extends React.Component<
                     padding: 24,
                 }}>
                     <div style={{ textAlign: 'center', maxWidth: 480 }}>
-                        <div style={{ fontSize: 64, marginBottom: 16 }}>⚠️</div>
+                        <ExclamationCircleOutlined style={{ fontSize: 64, marginBottom: 16, color: '#f59e0b' }} />
                         <h2 style={{ color: '#2c1810', marginBottom: 8 }}>应用加载异常</h2>
                         <p style={{ color: '#6b5e56', marginBottom: 24 }}>
                             {this.state.error?.message || '发生了未知错误'}

@@ -511,3 +511,104 @@ export interface AppNotification {
     duration?: number;
     timestamp: number;
 }
+
+// ==================== 备份与恢复 ====================
+
+export interface BackupMetadata {
+    filename: string;
+    version: string;
+    created_at: string;
+    table_counts: Record<string, number>;
+    file_size_bytes: number;
+    file_size_display: string;
+    encrypted: boolean;
+    app_version: string;
+}
+
+export interface ConflictItem {
+    table: string;
+    pk_column: string;
+    pk_value: string | number;
+    reason: 'exists_different' | 'exists_identical' | 'orphan_in_backup';
+    current_data?: Record<string, unknown>;
+    backup_data?: Record<string, unknown>;
+    diff_fields?: string[];
+}
+
+export interface ConflictCheckResult {
+    total_conflicts: number;
+    by_table: Record<string, number>;
+    conflicts: ConflictItem[];
+    expected_new_rows: number;
+}
+
+export interface ConflictResolution {
+    table: string;
+    pk_column: string;
+    pk_value: string | number;
+    action: 'overwrite' | 'skip' | 'keep_both';
+}
+
+export interface RestorePreview {
+    filename: string;
+    version: string;
+    app_version: string;
+    created_at: string;
+    table_counts: Record<string, number>;
+    total_rows: number;
+}
+
+export interface RestoreExecuteParams {
+    filename: string;
+    resolutions: ConflictResolution[];
+    dry_run: boolean;
+}
+
+export interface RestoreDetail {
+    table: string;
+    action: string;
+    pk_value: string;
+    success: boolean;
+    message?: string;
+}
+
+export interface RestoreResult {
+    dry_run: boolean;
+    summary: {
+        overwritten: number;
+        skipped: number;
+        inserted: number;
+        errors: number;
+    };
+    details: RestoreDetail[];
+}
+
+export interface WebDAVConfig {
+    enabled: boolean;
+    url: string;
+    username: string;
+    configured: boolean;
+    remote_path: string;
+    timeout: number;
+}
+
+export interface WebDAVConfigSaveParams {
+    enabled: boolean;
+    url: string;
+    username: string;
+    password: string;
+    remote_path: string;
+    timeout: number;
+}
+
+export interface AutoBackupStatus {
+    enabled: boolean;
+    interval_hours: number;
+    max_local_copies: number;
+    last_backup_at: string | null;
+    last_backup_success: boolean;
+    next_backup_at: string | null;
+    webdav_sync_enabled: boolean;
+    webdav_last_sync_at: string | null;
+    local_backup_count: number;
+}

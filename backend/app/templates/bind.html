@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#8B4513">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>NFC 标签绑定</title>
+<style>
+:root{--p:#8B4513;--bg:#fdf8f4;--c:#fff;--t:#2c1810;--ts:#8c7b72;--b:#e8d5c8;--s:#22c55e;--r:14px;--rs:10px}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:var(--bg);color:var(--t);min-height:100vh;padding-bottom:env(safe-area-inset-bottom,20px)}
+.hd{background:linear-gradient(135deg,#8B4513,#a0522d);color:#fff;padding:20px 16px;text-align:center;position:sticky;top:0;z-index:100;box-shadow:0 2px 12px rgba(139,69,19,.2)}
+.hd .lo{font-size:36px;display:block;margin-bottom:6px}
+.hd h1{font-size:18px;font-weight:700}
+.mn{padding:14px;max-width:500px;margin:0 auto;padding-bottom:calc(env(safe-area-inset-bottom, 20px) + 14px)}
+.info{background:#eff6ff;border:1px solid #bfdbfe;border-radius:var(--rs);padding:16px;margin-bottom:16px}
+.info .label{font-size:12px;color:var(--ts);margin-bottom:4px}
+.info .value{font-size:15px;font-weight:600;color:#1d4ed8;word-break:break-all}
+.info .hint{font-size:12px;color:var(--ts);margin-top:8px;padding:8px;background:#fff;border-radius:6px;line-height:1.6}
+.bt{display:block;width:100%;padding:15px;border-radius:var(--rs);border:none;font-size:16px;font-weight:600;cursor:pointer;text-align:center;margin-bottom:10px;-webkit-appearance:none;transition:all .1s ease}
+.bt:active{transform:scale(.97);opacity:.85}
+.bt-p{background:var(--p);color:#fff}
+.bt-s{background:var(--s);color:#fff}
+.bt-g{background:#f59e0b;color:#fff}
+.bt-o{background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe}
+.si{display:flex;align-items:center;justify-content:space-between;padding:14px 12px;border:1px solid var(--b);border-radius:var(--rs);margin-bottom:8px;background:#fafaf9;cursor:pointer;transition:all .15s;min-height:48px}
+.si:active{background:#f0fdf4;border-color:#bbf7d0;transform:scale(.98)}
+.si .sn{font-weight:600;font-size:15px}
+.si .sc{font-size:12px;color:var(--ts)}
+.si .st{font-size:11px}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:500}
+.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:12px 24px;border-radius:10px;font-size:14px;z-index:9999;opacity:0;transition:opacity .3s ease;pointer-events:none}
+.toast.show{opacity:1}
+.badge-free{background:#f0fdf4;color:#166534}
+.badge-bound{background:#fef2f2;color:#991b1b}
+.srch{margin-bottom:12px}
+.srch input{width:100%;padding:12px;border:1px solid var(--b);border-radius:var(--rs);font-size:14px;outline:none;-webkit-appearance:none}
+.srch input:focus{border-color:var(--p);box-shadow:0 0 0 3px rgba(139,69,19,.1)}
+.emp{text-align:center;padding:40px 20px;color:var(--ts)}
+.emp .icn{font-size:36px;display:block;margin-bottom:8px;opacity:.5}
+.toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;z-index:9999;animation:tIn .3s ease}
+@keyframes tIn{from{opacity:0;transform:translateX(-50%) translateY(-16px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+.loading{text-align:center;padding:40px}
+.spinner{display:inline-block;width:32px;height:32px;border:3px solid #e8d5c8;border-top:3px solid #8B4513;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.flow{background:#fffbeb;border:1px solid #fde68a;border-radius:var(--rs);padding:12px;margin-bottom:16px}
+.flow .title{font-size:13px;font-weight:600;color:#92400e;margin-bottom:8px}
+.flow ol{margin:0;padding-left:18px;font-size:12px;color:#78716c;line-height:1.8}
+</style>
+</head>
+<body>
+<div class="hd"><span class="lo">&#127991;</span><h1>绑定物理书架</h1></div>
+<div class="mn">
+<div class="info">
+<div class="label">扫描到的 NFC 标签 UID</div>
+<div class="value" id="uidDisplay">{{ tag_uid }}</div>
+</div>
+
+<div class="flow">
+<div class="title">操作流程</div>
+<ol>
+<li>在下方的书架列表中选择一个物理书架</li>
+<li>点击即可将标签 UID 绑定到该书架</li>
+<li>绑定后扫描此标签将自动跳转到对应的逻辑书架</li>
+<li>点击「自动绑定」将绑定到第一个可用的物理书架</li>
+</ol>
+</div>
+
+<div class="srch">
+<input type="text" id="searchInput" placeholder="搜索物理书架（位置编码/名称）..." oninput="searchShelves()">
+</div>
+
+<div id="shelfList">
+<div class="loading"><div class="spinner"></div><p style="margin-top:12px;color:var(--ts)">加载可绑定的书架...</p></div>
+</div>
+
+<div style="margin-top:16px">
+<button class="bt bt-p" onclick="autoBind()">自动绑定（推荐）</button>
+<button class="bt bt-o" onclick="goToCreateShelf()">创建新物理书架</button>
+<button class="bt bt-g" onclick="retryScan()">重新扫描</button>
+</div>
+</div>
+
+<script>
+var TAG_UID = {{ tag_uid | tojson | safe }};
+var A = window.location.origin;
+var allShelves = [];
+
+function tx(m) {
+    var t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = m;
+    document.body.appendChild(t);
+    setTimeout(function() { t.remove(); }, 2500);
+}
+
+function loadShelves(search) {
+    var url = A + '/api/nfc/bind/search-shelves?limit=50';
+    if (search) url += '&search=' + encodeURIComponent(search);
+
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            allShelves = d.shelves || [];
+            renderShelves(allShelves);
+        })
+        .catch(function() {
+            document.getElementById('shelfList').innerHTML =
+                '<div class="emp"><span class="icn">&#10060;</span>加载失败<br><span style="font-size:12px;color:var(--ts)">请检查网络连接</span></div>';
+        });
+}
+
+function searchShelves() {
+    var keyword = document.getElementById('searchInput').value;
+    loadShelves(keyword);
+}
+
+function renderShelves(shelves) {
+    var el = document.getElementById('shelfList');
+
+    if (shelves.length === 0) {
+        el.innerHTML = '<div class="emp"><span class="icn">&#128452;</span>暂无可绑定的书架<br><span style="font-size:12px;color:var(--ts)">请先创建物理书架</span></div>';
+        return;
+    }
+
+    el.innerHTML = shelves.map(function(s) {
+        var badge = s.is_bound
+            ? '<span class="badge badge-bound">已绑定: ' + (s.nfc_tag_uid || '').substring(0, 14) + '...</span>'
+            : '<span class="badge badge-free">可绑定</span>';
+
+        return '<div class="si" onclick="bindShelf(' + s.physical_shelf_id + ', ' + s.is_bound + ')">' +
+            '<div style="flex:1;min-width:0">' +
+                '<div class="sn">' + escapeHtml(s.location_name) + '</div>' +
+                '<div class="sc">' + escapeHtml(s.location_code) +
+                    (s.description ? ' &middot; ' + escapeHtml(s.description.substring(0, 30)) : '') +
+                '</div>' +
+            '</div>' +
+            '<div class="st" style="flex-shrink:0;margin-left:8px">' + badge + '</div>' +
+        '</div>';
+    }).join('');
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function bindShelf(shelfId, isBound) {
+    if (isBound) {
+        if (!confirm('该书架已绑定 NFC 标签，是否覆盖绑定？')) return;
+    }
+
+    showLoading('正在绑定...');
+
+    fetch(A + '/api/nfc/bind/auto?tag_uid=' + encodeURIComponent(TAG_UID) + '&physical_shelf_id=' + shelfId, {
+        method: 'POST'
+    })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d.success) {
+                document.getElementById('shelfList').innerHTML =
+                    '<div class="emp">' +
+                        '<span class="icn">&#9989;</span>' +
+                        '<strong>' + d.message + '</strong>' +
+                        '<br><span style="font-size:13px;color:var(--ts)">书架: ' + escapeHtml(d.bound_shelf.location_name) + '</span>' +
+                        (d.bound_shelf.logical_shelf
+                            ? '<br><span style="font-size:13px;color:#166534">已关联逻辑书架: ' + escapeHtml(d.bound_shelf.logical_shelf.shelf_name) + '</span>'
+                            : '<br><span style="font-size:13px;color:#f59e0b">尚未关联逻辑书架</span>'
+                        ) +
+                        '<br><br><button class="bt bt-s" onclick="goToShelf(' +
+                            (d.bound_shelf.logical_shelf ? d.bound_shelf.logical_shelf.logical_shelf_id : d.bound_shelf.physical_shelf_id) +
+                            ', ' + (d.bound_shelf.logical_shelf ? 'true' : 'false') +
+                        ')">查看书架</button>' +
+                        '<button class="bt bt-o" onclick="location.reload()">继续绑定</button>' +
+                    '</div>';
+                tx('绑定成功！');
+            } else {
+                hideLoading();
+                loadShelves();
+                if (d.already_bound) {
+                    tx(d.message);
+                } else {
+                    tx(d.message);
+                }
+            }
+        })
+        .catch(function() {
+            hideLoading();
+            loadShelves();
+            tx('绑定失败，请重试');
+        });
+}
+
+function autoBind() {
+    showLoading('正在自动绑定...');
+
+    fetch(A + '/api/nfc/bind/auto?tag_uid=' + encodeURIComponent(TAG_UID))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d.success) {
+                document.getElementById('shelfList').innerHTML =
+                    '<div class="emp">' +
+                        '<span class="icn">&#9989;</span>' +
+                        '<strong>' + d.message + '</strong>' +
+                        '<br><span style="font-size:13px;color:var(--ts)">书架: ' + escapeHtml(d.bound_shelf.location_name) + '</span>' +
+                        (d.bound_shelf.logical_shelf
+                            ? '<br><span style="font-size:13px;color:#166534">已关联逻辑书架: ' + escapeHtml(d.bound_shelf.logical_shelf.shelf_name) + '</span>'
+                            : '<br><span style="font-size:13px;color:#f59e0b">尚未关联逻辑书架，请前往管理页面创建映射</span>'
+                        ) +
+                        '<br><br><button class="bt bt-s" onclick="goToShelf(' +
+                            (d.bound_shelf.logical_shelf ? d.bound_shelf.logical_shelf.logical_shelf_id : d.bound_shelf.physical_shelf_id) +
+                            ', ' + (d.bound_shelf.logical_shelf ? 'true' : 'false') +
+                        ')">查看书架</button>' +
+                        '<button class="bt bt-o" onclick="goToManager()">管理页面</button>' +
+                    '</div>';
+                tx('自动绑定成功！');
+            } else if (d.already_bound) {
+                document.getElementById('shelfList').innerHTML =
+                    '<div class="emp">' +
+                        '<span class="icn">&#9888;</span>' +
+                        '<strong>' + d.message + '</strong>' +
+                        '<br><span style="font-size:12px;color:var(--ts)">如需更换请手动选择书架</span>' +
+                        '<br><br><button class="bt bt-o" onclick="loadShelves();showShelfList()">手动选择</button>' +
+                    '</div>';
+            } else {
+                hideLoading();
+                loadShelves();
+                tx(d.message);
+            }
+        })
+        .catch(function() {
+            hideLoading();
+            loadShelves();
+            tx('自动绑定失败，请手动选择书架');
+        });
+}
+
+function goToShelf(id, isLogical) {
+    var frontendUrl = getFrontendUrl();
+    if (isLogical) {
+        window.location.href = frontendUrl + '/shelf/' + id;
+    } else {
+        window.location.href = frontendUrl + '/admin/physical-shelves';
+    }
+}
+
+function goToManager() {
+    window.location.href = getFrontendUrl() + '/admin/physical-shelves';
+}
+
+function goToCreateShelf() {
+    window.location.href = getFrontendUrl() + '/admin/physical-shelves';
+}
+
+function retryScan() {
+    window.location.href = A + '/api/nfc/mobile';
+}
+
+function getFrontendUrl() {
+    var frontendUrl = A.replace(':8000', ':5173');
+    if (frontendUrl === A) {
+        var parts = A.split(':');
+        if (parts.length >= 3) {
+            parts.pop();
+            frontendUrl = parts.join(':') + ':5173';
+        } else {
+            frontendUrl = A + ':5173';
+        }
+    }
+    return frontendUrl;
+}
+
+function showLoading(text) {
+    text = text || '加载中...';
+    document.getElementById('shelfList').innerHTML =
+        '<div class="loading"><div class="spinner"></div><p style="margin-top:12px;color:var(--ts)">' + text + '</p></div>';
+}
+
+function hideLoading() {}
+function showShelfList() {}
+
+loadShelves();
+</script>
+</body></html>

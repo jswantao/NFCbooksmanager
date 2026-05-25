@@ -67,12 +67,18 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { getBookWall, listShelves } from '../services/api';
+import { useAsyncData } from '../hooks/useAsyncData';
 import { getCoverUrl, getPlaceholderCover } from '../utils/image';
 import { truncateText, formatAuthors } from '../utils/format';
 import LazyImage from '../components/LazyImage';
 import type { BookWallParams, Book } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
+
+// ==================== 常量 ====================
+
+const ELLIPSIS_2_ROWS = { rows: 2 } as const;
+const ELLIPSIS_5_EXPANDABLE = { rows: 5, expandable: true, symbol: '展开' } as const;
 
 // ==================== 类型定义 ====================
 
@@ -474,7 +480,7 @@ const CoverCard: FC<{
                             marginBottom: 6,
                             lineHeight: 1.3,
                         }}
-                        ellipsis={{ rows: 2 }}
+                        ellipsis={ELLIPSIS_2_ROWS}
                     >
                         {book.title}
                     </Paragraph>
@@ -1059,7 +1065,7 @@ const BookCoverWall: FC = () => {
                                 内容简介
                             </Text>
                             <Paragraph
-                                ellipsis={{ rows: 5, expandable: true, symbol: '展开' }}
+                                ellipsis={ELLIPSIS_5_EXPANDABLE}
                                 style={{
                                     fontSize: 13,
                                     color: token.colorTextSecondary,

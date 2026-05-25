@@ -68,9 +68,11 @@ import {
     ExportOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { getAllBooks, deleteBook, listShelves } from '../services/api';
+import { listShelves } from '../services/api';
 import VirtualTable from '../components/VirtualTable';
 import { debounce } from '../utils/helpers';
+import { useAllBooksData } from '../hooks/useAllBooksData';
+import { useAllBooksOperations } from '../hooks/useAllBooksOperations';
 
 const { Title, Text } = Typography;
 
@@ -123,123 +125,6 @@ const SOURCE_CONFIG: Record<string, { color: string; label: string }> = {
     nfc: { color: 'purple', label: 'NFC' },
 };
 
-// ==================== 自定义 Hook ====================
-
-/**
- * 图书管理逻辑 Hook
- */
-const useBookManager = () => {
-    const [books, setBooks] = useState<BookItem[]>([]);
-    const [total, setTotal] = useState(0);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const [currentPage, setCurrentPage] = useState(1);
-    const [searchKeyword, setSearchKeyword] = useState('');
-    const [sortBy, setSortBy] = useState('added_at_desc');
-    const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
-    const [filterSource, setFilterSource] = useState<FilterSource>('all');
-    const [filterShelfId, setFilterShelfId] = useState<number | undefined>();
-    const isMounted = useRef(true);
-
-    useEffect(() => {
-        isMounted.current = true;
-        return () => {
-            isMounted.current = false;
-        };
-    }, []);
-
-    /** 解析排序参数 */
-    const parseSortParams = useCallback(
-        (value: string): { field: string; order: string } => {
-            const idx = value.lastIndexOf('_');
-            if (idx === -1) return { field: value, order: 'asc' };
-            return {
-                field: value.substring(0, idx),
-                order: value.substring(idx + 1),
-            };
-        },
-        []
-    );
-
-    /** 加载图书列表 */
-    const loadBooks = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-
-        try {
-            const { field, order } = parseSortParams(sortBy);
-            const params: Record<string, unknown> = {
-                sort_by: field,
-                order,
-                limit: PAGE_SIZE,
-                offset: (currentPage - 1) * PAGE_SIZE,
-            };
-
-            if (searchKeyword.trim()) params.search = searchKeyword.trim();
-            if (filterShelfId) params.shelf_id = filterShelfId;
-            if (filterSource !== 'all') params.source = filterSource;
-
-            const data = await getAllBooks(params);
-
-            if (isMounted.current) {
-                let booksData = data.books || [];
-                
-                // 客户端过滤上架状态
-                if (filterStatus === 'in_shelf') {
-                    booksData = booksData.filter((b: BookItem) => b.shelf_name);
-                } else if (filterStatus === 'not_in_shelf') {
-                    booksData = booksData.filter((b: BookItem) => !b.shelf_name);
-                }
-
-                setBooks(booksData);
-                setTotal(data.total);
-            }
-        } catch (err: any) {
-            if (isMounted.current) {
-                setError(err?.response?.data?.detail || '加载图书列表失败');
-            }
-        } finally {
-            if (isMounted.current) {
-                setLoading(false);
-            }
-        }
-    }, [
-        currentPage,
-        sortBy,
-        filterStatus,
-        filterSource,
-        filterShelfId,
-        searchKeyword,
-        parseSortParams,
-    ]);
-
-    /** 重置分页并重新加载 */
-    const refresh = useCallback(() => {
-        setCurrentPage(1);
-    }, []);
-
-    return {
-        books,
-        total,
-        loading,
-        error,
-        currentPage,
-        setCurrentPage,
-        searchKeyword,
-        setSearchKeyword,
-        sortBy,
-        setSortBy,
-        filterStatus,
-        setFilterStatus,
-        filterSource,
-        setFilterSource,
-        filterShelfId,
-        setFilterShelfId,
-        loadBooks,
-        refresh,
-    };
-};
-
 // ==================== 主组件 ====================
 
 const AllBooksManager: FC = () => {
@@ -249,29 +134,37 @@ const AllBooksManager: FC = () => {
 
     // 图书管理
     const {
-        books,
-        total,
-        loading,
-        error,
-        currentPage,
-        setCurrentPage,
-        searchKeyword,
-        setSearchKeyword,
-        sortBy,
-        setSortBy,
-        filterStatus,
-        setFilterStatus,
-        filterSource,
-        setFilterSource,
-        filterShelfId,
-        setFilterShelfId,
-        loadBooks,
-        refresh,
-    } = useBookManager();
+        books, setBooks, total, loading, error,
+        currentPage, setCurrentPage, searchKeyword, setSearchKeyword,
+        sortBy, setSortBy, filterStatus, setFilterStatus,
+        filterSource, setFilterSource, filterShelfId, setFilterShelfId,
+        loadBooks, refresh,
+    } = useAllBooksData();
+
+    const {
+        selectedRowKeys, setSelectedRowKeys, deletingId,
+        handleDelete, getBatchDeleteConfig, handleExport,
+    } = useAllBooksOperations(books, setBooks, loadBooks);
+
+    const handleBatchDelete = useCallback(() => {
+        const config = getBatchDeleteConfig();
+        if (!config) { message.warning('请先选择要删除的图书'); return; }
+        Modal.confirm({
+            title: '批量删除图书',
+            icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
+            content: (
+                <div>
+                    <Text>确定要删除选中的 <Text strong type="danger">{config.count}</Text> 本图书吗？</Text>
+                    <br />
+                    <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>此操作不可恢复，请谨慎操作</Text>
+                </div>
+            ),
+            okText: '确定删除', okType: 'danger', cancelText: '取消', centered: true,
+            onOk: config.onExecute,
+        });
+    }, [getBatchDeleteConfig]);
 
     // UI 状态
-    const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
-    const [deletingId, setDeletingId] = useState<number | null>(null);
     const [shelfList, setShelfList] = useState<ShelfOption[]>([]);
     const isMounted = useRef(true);
 
@@ -301,108 +194,6 @@ const AllBooksManager: FC = () => {
             // 静默处理
         }
     }, []);
-
-    // ==================== 操作处理 ====================
-
-    /** 删除单本图书 */
-    const handleDelete = useCallback(
-        async (record: BookItem) => {
-            setDeletingId(record.book_id);
-            try {
-                await deleteBook(record.book_id);
-                message.success(`《${record.title}》已删除`);
-                // 乐观更新
-                setBooks((prev) => prev.filter((b) => b.book_id !== record.book_id));
-            } catch (err: any) {
-                message.error(err?.response?.data?.detail || '删除失败');
-            } finally {
-                setDeletingId(null);
-            }
-        },
-        []
-    );
-
-    /** 批量删除 */
-    const handleBatchDelete = useCallback(() => {
-        if (selectedRowKeys.length === 0) {
-            message.warning('请先选择要删除的图书');
-            return;
-        }
-
-        Modal.confirm({
-            title: '批量删除图书',
-            icon: <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />,
-            content: (
-                <div>
-                    <Text>
-                        确定要删除选中的{' '}
-                        <Text strong type="danger">
-                            {selectedRowKeys.length}
-                        </Text>{' '}
-                        本图书吗？
-                    </Text>
-                    <br />
-                    <Text type="secondary">此操作不可恢复</Text>
-                </div>
-            ),
-            okText: '确定删除',
-            okType: 'danger',
-            cancelText: '取消',
-            onOk: async () => {
-                let successCount = 0;
-                let failCount = 0;
-
-                const hide = message.loading(`正在删除 ${selectedRowKeys.length} 本...`, 0);
-
-                for (const id of selectedRowKeys) {
-                    try {
-                        await deleteBook(Number(id));
-                        successCount++;
-                    } catch {
-                        failCount++;
-                    }
-                }
-
-                hide();
-
-                if (failCount === 0) {
-                    message.success(`成功删除 ${successCount} 本图书`);
-                } else {
-                    message.warning(
-                        `删除完成：成功 ${successCount} 本，失败 ${failCount} 本`
-                    );
-                }
-
-                setSelectedRowKeys([]);
-                loadBooks();
-            },
-        });
-    }, [selectedRowKeys, loadBooks]);
-
-    /** 导出选中图书 */
-    const handleExport = useCallback(() => {
-        const exportData = selectedRowKeys.length > 0
-            ? books.filter((b) => selectedRowKeys.includes(b.book_id))
-            : books;
-
-        const csv = [
-            ['书名', 'ISBN', '作者', '出版社', '来源', '评分', '所在书架'].join(','),
-            ...exportData.map((b) =>
-                [b.title, b.isbn, b.author || '', b.publisher || '', b.source, b.rating || '', b.shelf_name || '']
-                    .map((v) => `"${v}"`)
-                    .join(',')
-            ),
-        ].join('\n');
-
-        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `books_export_${Date.now()}.csv`;
-        a.click();
-        URL.revokeObjectURL(url);
-        message.success('导出成功');
-    }, [books, selectedRowKeys]);
 
     // ==================== 防抖搜索 ====================
 

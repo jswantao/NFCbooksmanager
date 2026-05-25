@@ -28,7 +28,6 @@ import type {
     ShelfCreateParams,
     ShelfUpdateParams,
     NFCWriteTask,
-    NFCReadResult,
     ImportPreview,
     ImportTask,
     ImportStartParams,
@@ -38,6 +37,14 @@ import type {
     BooksResponse,
     PhysicalShelf,
     PhysicalMappingInfo,
+    BackupMetadata,
+    ConflictCheckResult,
+    RestorePreview,
+    RestoreExecuteParams,
+    RestoreResult,
+    WebDAVConfig,
+    WebDAVConfigSaveParams,
+    AutoBackupStatus,
 } from '../types';
 
 // ==================== 类型定义 ====================
@@ -341,13 +348,6 @@ export const writeNFCTag = (data: {
 }): Promise<NFCWriteTask> =>
     apiClient.post('/nfc/write', data).then(unwrap);
 
-export const readNFCTag = (tagUid: string, rawPayload: string): Promise<NFCReadResult> =>
-    apiClient
-        .get('/nfc/read-tag', {
-            params: { tag_uid: tagUid, raw_payload: rawPayload },
-        })
-        .then(unwrap);
-
 export const getNFCTasks = (): Promise<{ tasks: NFCWriteTask[]; total: number }> =>
     apiClient.get('/nfc/tasks').then(unwrap);
 
@@ -494,20 +494,64 @@ export const createMapping = (
         .then(unwrap);
 
 export const deleteMapping = (mappingId: number): Promise<ApiResponse> =>
-    apiClient.delete(`/mapping/${mappingId}`).then(unwrap);
+    apiClient.put(`/mapping/${mappingId}/toggle`).then(unwrap);
 
 export const listMappings = (): Promise<PhysicalMappingInfo[]> =>
-    apiClient.get('/mapping/').then(unwrap);
+    apiClient.get('/mapping/list').then(unwrap);
 
 // ==================== 图片 API ====================
 
 export const getImageProxyUrl = (originalUrl: string): string =>
     `/api/images/proxy?url=${encodeURIComponent(originalUrl)}`;
 
+// ==================== 备份与恢复 ====================
+
+export const createBackup = (): Promise<ApiResponse<BackupMetadata>> =>
+    apiClient.post('/backup/export').then(unwrap);
+
+export const listBackups = (): Promise<BackupMetadata[]> =>
+    apiClient.get('/backup/list').then(unwrap).then(r => r.data);
+
+export const listWebDAVBackups = (): Promise<BackupMetadata[]> =>
+    apiClient.get('/backup/list-webdav').then(unwrap).then(r => r.data);
+
+export const deleteBackups = (filenames: string[]): Promise<ApiResponse<{ deleted: number }>> =>
+    apiClient.delete('/backup/delete', { data: { filenames } }).then(unwrap);
+
+export const previewBackup = (filename: string): Promise<RestorePreview> =>
+    apiClient.get(`/backup/preview/${encodeURIComponent(filename)}`).then(unwrap);
+
+export const checkConflicts = (filename: string): Promise<ApiResponse<ConflictCheckResult>> =>
+    apiClient.post(`/backup/check-conflicts/${encodeURIComponent(filename)}`).then(unwrap);
+
+export const executeRestore = (params: RestoreExecuteParams): Promise<ApiResponse<RestoreResult>> =>
+    apiClient.post('/backup/restore', params).then(unwrap);
+
+export const getWebDAVConfig = (): Promise<WebDAVConfig> =>
+    apiClient.get('/backup/webdav/config').then(unwrap);
+
+export const saveWebDAVConfig = (params: WebDAVConfigSaveParams): Promise<ApiResponse<null>> =>
+    apiClient.post('/backup/webdav/config', params).then(unwrap);
+
+export const testWebDAVConnection = (): Promise<ApiResponse<{ success: boolean; message: string }>> =>
+    apiClient.post('/backup/webdav/test').then(unwrap);
+
+export const syncToWebDAV = (filename: string): Promise<ApiResponse<null>> =>
+    apiClient.post(`/backup/webdav/sync/${encodeURIComponent(filename)}`).then(unwrap);
+
+export const pullFromWebDAV = (filename: string): Promise<ApiResponse<null>> =>
+    apiClient.post(`/backup/webdav/pull/${encodeURIComponent(filename)}`).then(unwrap);
+
+export const getAutoBackupStatus = (): Promise<AutoBackupStatus> =>
+    apiClient.get('/backup/auto/status').then(unwrap);
+
+export const triggerAutoBackup = (): Promise<ApiResponse<BackupMetadata>> =>
+    apiClient.post('/backup/auto/run').then(unwrap);
+
 // ==================== 健康检查 ====================
 
 export const healthCheck = (): Promise<{ status: string }> =>
-    apiClient.get('/health').then(unwrap);
+    axios.get('/health').then(unwrap);
 
 // ==================== 默认导出 ====================
 
@@ -535,7 +579,6 @@ export default {
 
     // NFC
     writeNFCTag,
-    readNFCTag,
     getNFCTasks,
     deleteNFCTask,
     getNFCMobileUrl,
@@ -570,6 +613,22 @@ export default {
     createMapping,
     deleteMapping,
     listMappings,
+
+    // 备份
+    createBackup,
+    listBackups,
+    listWebDAVBackups,
+    deleteBackups,
+    previewBackup,
+    checkConflicts,
+    executeRestore,
+    getWebDAVConfig,
+    saveWebDAVConfig,
+    testWebDAVConnection,
+    syncToWebDAV,
+    pullFromWebDAV,
+    getAutoBackupStatus,
+    triggerAutoBackup,
 
     // 工具
     getImageProxyUrl,

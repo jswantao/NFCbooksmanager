@@ -16,13 +16,11 @@ import {
     Layout,
     Menu,
     Button,
-    Dropdown,
     Space,
     Typography,
     Grid,
     Drawer,
     Divider,
-    Badge,
     Tooltip,
 } from 'antd';
 import type { MenuProps } from 'antd';
@@ -39,14 +37,15 @@ import {
     KeyOutlined,
     ImportOutlined,
     EnvironmentOutlined,
+    CloudServerOutlined,
 } from '@ant-design/icons';
-import { useNavigate, useLocation, useMatch } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import ThemeSwitcher from './ThemeSwitcher';
 import { useTheme } from '../theme/ThemeContext';
 
 const { Header } = Layout;
 const { useBreakpoint } = Grid;
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 // ==================== 类型定义 ====================
 
@@ -123,6 +122,11 @@ const NAV_ITEMS: NavMenuItem[] = [
                 label: '物理书架',
             },
             {
+                key: '/admin/backup',
+                icon: <CloudServerOutlined />,
+                label: '备份与恢复',
+            },
+            {
                 key: '/admin/books',
                 icon: <BookOutlined />,
                 label: '全部图书',
@@ -141,8 +145,8 @@ const NAV_ITEMS: NavMenuItem[] = [
 /**
  * 将 NavMenuItem 转换为 Ant Design MenuProps['items']
  */
-const toMenuItems = (items: NavMenuItem[]): MenuProps['items'] => {
-    return items.map((item): MenuProps['items'][number] => ({
+const toMenuItems = (items: NavMenuItem[]): NonNullable<MenuProps['items']> => {
+    return items.map((item) => ({
         key: item.key,
         icon: item.icon,
         label: (
@@ -198,6 +202,7 @@ const getSelectedKey = (pathname: string, items: NavMenuItem[]): string => {
     if (pathname.startsWith('/shelf')) return '/shelf/1';
     if (pathname.startsWith('/admin/shelves')) return '/admin/shelves';
     if (pathname.startsWith('/admin/physical-shelves')) return '/admin/physical-shelves';
+    if (pathname.startsWith('/admin/backup')) return '/admin/backup';
     if (pathname.startsWith('/admin/books')) return '/admin/books';
     if (pathname.startsWith('/admin')) return '/admin';
 
@@ -336,7 +341,7 @@ const AppHeader: FC<AppHeaderProps> = ({ currentTitle }) => {
                 e.currentTarget.style.opacity = '1';
             }}
         >
-            <span style={{ fontSize: 28, lineHeight: 1 }}>📚</span>
+            <BookOutlined style={{ fontSize: 24, color: brandColor }} />
             {!isMobile && (
                 <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
                     <Text
@@ -454,7 +459,7 @@ const AppHeader: FC<AppHeaderProps> = ({ currentTitle }) => {
             <Drawer
                 title={
                     <Space>
-                        <span style={{ fontSize: 24 }}>📚</span>
+                        <BookOutlined style={{ fontSize: 22, color: brandColor }} />
                         <Text strong style={{ fontSize: 16 }}>
                             书房管理系统
                         </Text>

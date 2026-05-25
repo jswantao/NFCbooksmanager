@@ -17,11 +17,12 @@ from io import BytesIO
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.responses import StreamingResponse, FileResponse
 from loguru import logger  # ⬅ 改用 loguru
 
-from app.core.config import settings
+from app.core.config import Settings
+from app.core.dependencies import get_settings
 
 router = APIRouter()
 
@@ -35,7 +36,7 @@ BROWSER_CACHE_MAX_AGE = 86400
 
 # ==================== 缓存工具函数 ====================
 
-def _get_cache_file_path(url: str) -> Path:
+def _get_cache_file_path(url: str, settings: Settings) -> Path:
     """根据图片 URL 计算本地缓存文件路径"""
     cache_dir = Path(settings.IMAGE_CACHE_DIR)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -65,6 +66,7 @@ def _is_cache_fresh(file_path: Path, max_age_seconds: int) -> bool:
 @router.get("/proxy", summary="代理获取豆瓣图片（带本地缓存）")
 async def proxy_image(
     url: str = Query(..., description="要代理的图片 URL"),
+    settings: Settings = Depends(get_settings),
 ):
     """代理获取豆瓣图书封面图片，支持本地缓存"""
     # 1. 域名白名单校验
@@ -76,7 +78,7 @@ async def proxy_image(
 
     # 2. 检查本地缓存
     if settings.IMAGE_CACHE_ENABLED:
-        cache_path = _get_cache_file_path(url)
+        cache_path = _get_cache_file_path(url, settings)
 
         if _is_cache_fresh(cache_path, settings.IMAGE_CACHE_MAX_AGE):
             media_type, _ = mimetypes.guess_type(str(cache_path))
@@ -114,7 +116,7 @@ async def proxy_image(
                 # 4. 保存缓存
                 if settings.IMAGE_CACHE_ENABLED:
                     try:
-                        cache_path = _get_cache_file_path(url)
+                        cache_path = _get_cache_file_path(url, settings)
 
                         if not cache_path.suffix:
                             clean_type = (
@@ -167,7 +169,9 @@ async def proxy_image(
 # ==================== 缓存管理 ====================
 
 @router.get("/cache/stats", summary="查看图片缓存统计")
-async def get_cache_stats():
+async def get_cache_stats(
+    settings: Settings = Depends(get_settings),
+):
     """获取图片缓存统计信息"""
     if not settings.IMAGE_CACHE_ENABLED:
         return {"enabled": False, "message": "缓存未启用"}
@@ -206,7 +210,9 @@ async def get_cache_stats():
 
 
 @router.delete("/cache/clear", summary="清空图片缓存")
-async def clear_image_cache():
+async def clear_image_cache(
+    settings: Settings = Depends(get_settings),
+):
     """清空所有本地缓存的图片文件"""
     if not settings.IMAGE_CACHE_ENABLED:
         return {"success": False, "message": "缓存未启用", "deleted_count": 0}

@@ -67,12 +67,13 @@ import {
     ExclamationCircleOutlined,
     InfoCircleOutlined,
 } from '@ant-design/icons';
-import { useNavigate, useParams, useBlocker } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
     getBookDetail,
     updateBookManual,
     extractErrorMessage,
 } from '../services/api';
+import { useAsyncData } from '../hooks/useAsyncData';
 import { getCoverUrl, getPlaceholderCover } from '../utils/image';
 import { formatAuthors } from '../utils/format';
 import type { BookDetail } from '../types';
@@ -162,43 +163,7 @@ const formToParams = (values: EditFormData): Record<string, string> => {
     return params;
 };
 
-// ==================== 自定义 Hook ====================
-
-/**
- * 图书数据加载 Hook
- */
-const useBookLoader = (bookId: number | null) => {
-    const [loading, setLoading] = useState(true);
-    const [bookData, setBookData] = useState<BookDetail | null>(null);
-    const [error, setError] = useState<string | null>(null);
-
-    const load = useCallback(async () => {
-        if (!bookId || isNaN(bookId)) {
-            setError('无法获取图书 ID');
-            setLoading(false);
-            return;
-        }
-
-        setLoading(true);
-        setError(null);
-
-        try {
-            const data = await getBookDetail(bookId);
-            setBookData(data);
-        } catch (err: unknown) {
-            const errorMsg = extractErrorMessage(err) || '加载图书信息失败';
-            setError(errorMsg);
-        } finally {
-            setLoading(false);
-        }
-    }, [bookId]);
-
-    useEffect(() => {
-        load();
-    }, [load]);
-
-    return { bookData, loading, error, load, setBookData };
-};
+// 数据加载改用 useAsyncData（见组件内调用）
 
 /**
  * 未保存更改管理 Hook
@@ -209,27 +174,6 @@ const useUnsavedChanges = (
 ) => {
     const [showUnsavedAlert, setShowUnsavedAlert] = useState(false);
 
-    // 路由守卫：离开时确认
-    const blocker = useBlocker(
-        ({ currentLocation, nextLocation }) =>
-            isDirty && currentLocation.pathname !== nextLocation.pathname
-    );
-
-    useEffect(() => {
-        if (blocker.state === 'blocked') {
-            Modal.confirm({
-                title: '未保存的更改',
-                icon: <ExclamationCircleOutlined style={{ color: '#faad14' }} />,
-                content: '您有未保存的修改，确定要离开吗？',
-                okText: '放弃更改',
-                cancelText: '继续编辑',
-                okType: 'danger',
-                onOk: () => blocker.proceed(),
-                onCancel: () => blocker.reset(),
-            });
-        }
-    }, [blocker]);
-
     // 浏览器关闭/刷新拦截
     useEffect(() => {
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -238,7 +182,6 @@ const useUnsavedChanges = (
                 e.returnValue = '';
             }
         };
-
         window.addEventListener('beforeunload', handleBeforeUnload);
         return () => window.removeEventListener('beforeunload', handleBeforeUnload);
     }, [isDirty]);
@@ -310,7 +253,10 @@ const BookManualEdit: FC = () => {
     // ==================== 状态 ====================
 
     const bookId = useMemo(() => extractBookId(params), [params]);
-    const { bookData, loading, error, load } = useBookLoader(bookId);
+    const { data: bookData, loading, error, refresh: load } = useAsyncData(
+        () => bookId && !isNaN(bookId) ? getBookDetail(bookId) : Promise.resolve(null),
+        [bookId]
+    );
     const [saving, setSaving] = useState(false);
     const [hasChanges, setHasChanges] = useState(false);
     const [originalSnapshot, setOriginalSnapshot] = useState<OriginalSnapshot | null>(null);
@@ -494,6 +440,12 @@ const BookManualEdit: FC = () => {
         import('antd').then(({ Modal: AntModal }) => setModal(() => AntModal));
     }, []);
 
+    // ==================== 表单监听（Hooks 必须在早期返回之前） ====================
+
+    const currentCoverUrl = Form.useWatch('cover_url', form);
+    const currentTitle = Form.useWatch('title', form);
+    const currentAuthor = Form.useWatch('author', form);
+
     // ==================== 渲染加载状态 ====================
 
     if (loading) {
@@ -568,10 +520,6 @@ const BookManualEdit: FC = () => {
     }
 
     // ==================== 渲染正常状态 ====================
-
-    const currentCoverUrl = Form.useWatch('cover_url', form);
-    const currentTitle = Form.useWatch('title', form);
-    const currentAuthor = Form.useWatch('author', form);
 
     return (
         <div style={{ maxWidth: 960, margin: '0 auto', padding: 24 }}>

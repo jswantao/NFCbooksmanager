@@ -1,0 +1,2 @@
+2026-05-18 22:18:33.963 | ERROR    | app.main:lifespan:93 | [Startup] ❌ 数据库初始化失败: 'gbk' codec can't encode character '\u2705' in position 11: illegal multibyte sequence
+2026-05-24 13:42:16.779 | ERROR    | app.services.backup_service:sync_to_webdav:703 | WebDAV 同步异常 [backup_20260524_134214.backup]: All connection attempts failed

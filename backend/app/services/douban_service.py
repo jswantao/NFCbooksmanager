@@ -26,17 +26,17 @@
 import re
 import json
 import asyncio
-import logging
 import time
 from typing import Optional, Dict, Any, Tuple, List, Callable
 from datetime import datetime, timedelta
 
 import httpx
 from bs4 import BeautifulSoup
+from loguru import logger
 
-from app.core.config import settings
-
-logger = logging.getLogger(__name__)
+from app.core.config import get_settings
+from app.utils.helpers import clean_isbn
+from app.services.douban_parser import parse_book, parse_search
 
 
 # ==================== 自定义异常 ====================
@@ -79,70 +79,64 @@ class DoubanNotFound(DoubanError):
 
 class SimpleCache:
     """
-    简易内存缓存实现
-    
+    TTL 内存缓存（基于 cachetools.TTLCache）
+
     用于缓存豆瓣搜索结果，减少对豆瓣服务器的重复请求。
-    每个缓存条目在 TTL 过期后自动失效。
-    
+    每个缓存条目在 TTL 过期后自动失效，条目数达到 maxsize 时淘汰最旧条目。
+
     特点：
-    - 线程安全：仅在单线程异步环境下使用
-    - 自动过期：基于时间戳的惰性过期策略
-    - 无大小限制：适合小规模部署，生产环境可替换为 Redis
-    
+    - 自动过期：基于 TTLCache 的时间感知淘汰
+    - 容量上限：maxsize 限制 maxsize 条目，防止内存无界增长
+    - 淘汰策略：TTL 过期 + FIFO（超出 maxsize 时丢弃最旧条目）
+    - 兼容 async：操作均为 O(1) 字典操作，不阻塞事件循环
+
     Args:
         ttl: 缓存有效期（秒），默认 1800 秒（30 分钟）
+        maxsize: 最大缓存条目数，默认 1000
     """
-    
-    def __init__(self, ttl: int = 1800):
-        self._data: Dict[str, Dict[str, Any]] = {}
-        self._ttl = ttl
-    
+
+    def __init__(self, ttl: int = 1800, maxsize: int = 1000):
+        from cachetools import TTLCache
+        self._cache: TTLCache = TTLCache(maxsize=maxsize, ttl=ttl)
+
     def get(self, key: str) -> Optional[Dict]:
         """
         获取缓存数据
-        
-        如果缓存存在且未过期，返回缓存数据并记录缓存命中。
-        如果缓存已过期，自动删除过期条目并返回 None。
-        
+
+        如果缓存存在且未过期，返回缓存数据。
+        如果缓存已过期或不存在，返回 None。
+
         Args:
             key: 缓存键（如 "isbn:9787544291163"）
-        
+
         Returns:
             缓存的数据字典，不存在或已过期返回 None
         """
-        if key in self._data:
-            entry = self._data[key]
-            if datetime.now() < entry["expires"]:
-                return entry["data"]
-            # 惰性删除过期条目
-            del self._data[key]
-        return None
-    
+        try:
+            return self._cache[key]
+        except KeyError:
+            return None
+
     def set(self, key: str, data: Dict) -> None:
         """
         设置缓存数据
-        
+
+        当缓存条目数达到 maxsize 时，TTLCache 自动淘汰最旧条目。
+
         Args:
             key: 缓存键
             data: 要缓存的数据字典
         """
-        self._data[key] = {
-            "data": data,
-            "expires": datetime.now() + timedelta(seconds=self._ttl)
-        }
-    
+        self._cache[key] = data
+
     def clear(self) -> None:
         """清空所有缓存"""
-        self._data.clear()
-    
+        self._cache.clear()
+
     @property
     def size(self) -> int:
-        """
-        当前缓存条目数量
-        
-        注意：包含可能已过期但尚未被访问的条目
-        """
-        return len(self._data)
+        """当前缓存条目数量"""
+        return len(self._cache)
 
 
 # ==================== 豆瓣服务主类 ====================
@@ -168,7 +162,8 @@ class DoubanService:
         self.base = "https://book.douban.com"
         self.cache = SimpleCache()
         self._last_req = 0.0  # 上次请求时间戳
-        self._delay = settings.DOUBAN_REQUEST_DELAY  # 请求间隔
+        self._delay = get_settings().DOUBAN_REQUEST_DELAY  # 请求间隔
+        self._cache_lock = asyncio.Lock()  # 保护缓存并发读写
         self._stats = {
             "requests": 0,     # 总请求数（不含缓存命中）
             "success": 0,      # 成功请求数
@@ -193,12 +188,12 @@ class DoubanService:
             HTTP 请求头字典
         """
         headers = {
-            "User-Agent": settings.DOUBAN_USER_AGENT,
+            "User-Agent": get_settings().DOUBAN_USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
-        if settings.DOUBAN_COOKIE:
-            headers["Cookie"] = settings.DOUBAN_COOKIE
+        if get_settings().DOUBAN_COOKIE:
+            headers["Cookie"] = get_settings().DOUBAN_COOKIE
         return headers
     
     # ==================== 统计信息 ====================
@@ -214,7 +209,7 @@ class DoubanService:
         return {
             **self._stats,
             "cache_size": self.cache.size,
-            "cookie_configured": bool(settings.DOUBAN_COOKIE),
+            "cookie_configured": bool(get_settings().DOUBAN_COOKIE),
         }
     
     # ==================== 请求控制 ====================
@@ -228,10 +223,10 @@ class DoubanService:
         
         延迟计算：max(0, 配置延迟 - 距上次请求已过时间)
         """
-        elapsed = time.time() - self._last_req
+        elapsed = time.monotonic() - self._last_req
         if elapsed < self._delay:
             await asyncio.sleep(self._delay - elapsed)
-        self._last_req = time.time()
+        self._last_req = time.monotonic()
     
     async def _get(
         self,
@@ -343,20 +338,21 @@ class DoubanService:
             }
         """
         # 清洗 ISBN：移除连字符和空格
-        isbn = isbn.strip().replace("-", "").replace(" ", "")
+        isbn = clean_isbn(isbn)
         
         # 校验 ISBN 格式
         if len(isbn) not in (10, 13):
             logger.warning(f"无效的 ISBN 格式: {isbn} (长度={len(isbn)})")
             return None
         
-        # 1. 检查缓存
+        # 1. 检查缓存（加锁保护）
         cache_key = f"isbn:{isbn}"
-        if cached := self.cache.get(cache_key):
-            self._stats["cache_hits"] += 1
-            logger.debug(f"缓存命中: {isbn} → {cached.get('title', '未知')}")
-            return cached
-        
+        async with self._cache_lock:
+            if cached := self.cache.get(cache_key):
+                self._stats["cache_hits"] += 1
+                logger.debug(f"缓存命中: {isbn} → {cached.get('title', '未知')}")
+                return cached
+
         # 定义搜索策略（名称, 方法）
         strategies: List[Tuple[str, Callable]] = [
             ("直链访问", self._try_direct),
@@ -364,16 +360,17 @@ class DoubanService:
             ("搜索页面", self._try_search),
             ("OpenLibrary", self._try_openlib),
         ]
-        
+
         # 2-5. 依次尝试各策略
         for strategy_name, strategy_fn in strategies:
             try:
                 result = await strategy_fn(isbn)
                 if result and result.get("title"):
-                    # 策略成功，缓存并返回
-                    self.cache.set(cache_key, result)
+                    # 策略成功，缓存并返回（加锁保护）
+                    async with self._cache_lock:
+                        self.cache.set(cache_key, result)
                     logger.info(
-                        f"✅ [{strategy_name}] 获取成功: {isbn} → "
+                        f"[OK] [{strategy_name}] 获取成功: {isbn} -> "
                         f"{result.get('title', '未知')[:30]}"
                     )
                     return result
@@ -394,7 +391,7 @@ class DoubanService:
             except Exception as e:
                 logger.warning(f"[{strategy_name}] 异常: {e}")
         
-        logger.info(f"❌ 所有策略均失败: {isbn}")
+        logger.info(f"[ERROR] 所有策略均失败: {isbn}")
         return None
     
     # ==================== 策略 1：直链访问 ====================
@@ -619,360 +616,16 @@ class DoubanService:
     
     # ==================== 详情页解析 ====================
     
-    def _parse_book(self, html: str, isbn: str, url: str = "") -> Dict[str, Any]:
-        """
-        解析豆瓣图书详情页 HTML
-        
-        从 HTML 中提取以下信息：
-        - 基本信息：书名、封面、简介、评分
-        - 详细信息：作者、出版社、出版日期、页数、定价等（来自 #info 区块）
-        
-        Args:
-            html: 豆瓣图书详情页 HTML 源码
-            isbn: 图书 ISBN
-            url: 豆瓣详情页 URL
-        
-        Returns:
-            解析后的图书元数据字典
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # 初始化结果字典
-        data = {
-            "isbn": isbn,
-            "title": self._extract_title(soup),
-            "author": "",
-            "translator": "",
-            "publisher": "",
-            "publish_date": "",
-            "cover_url": self._extract_cover(soup),
-            "summary": self._extract_summary(soup),
-            "rating": self._extract_rating(soup),
-            "pages": "",
-            "price": "",
-            "binding": "",
-            "original_title": "",
-            "series": "",
-            "douban_url": url,
-            "source": "douban",
-        }
-        
-        # 从 #info 区块解析详细信息
-        if info_block := soup.find("div", id="info"):
-            info_text = info_block.get_text("\n")
-            self._parse_info_block(info_text, data)
-        
-        return data
-    
-    def _parse_info_block(self, text: str, data: Dict[str, Any]) -> None:
-        """
-        解析豆瓣详情页 #info 区块
-        
-        #info 区块结构示例：
-            作者: 刘慈欣
-            出版社: 重庆出版社
-            出版年: 2008-1
-            页数: 302
-            定价: 23.00
-            装帧: 平装
-            丛书: 中国科幻基石丛书
-            ISBN: 9787544291163
-        
-        使用正则表达式逐字段匹配提取信息。
-        
-        Args:
-            text: #info 区块的纯文本内容
-            data: 要填充的图书数据字典（原地修改）
-        """
-        # 字段提取规则：字段名 → 匹配正则表达式
-        field_rules = [
-            ("author", [r'作者\s*[:：]\s*([^\n]+)']),
-            ("translator", [r'译者\s*[:：]\s*([^\n]+)']),
-            ("publisher", [r'出版社?\s*[:：]\s*([^\n]+)']),
-            ("publish_date", [r'出版年\s*[:：]\s*([^\n]+)']),
-            ("pages", [r'页数\s*[:：]\s*(\d+)']),
-            ("price", [r'定价\s*[:：]\s*([^\n]+)']),
-            ("binding", [r'装帧\s*[:：]\s*([^\n]+)']),
-            ("original_title", [r'原作名\s*[:：]\s*([^\n]+)']),
-            ("series", [r'丛书\s*[:：]\s*([^\n]+)']),
-        ]
-        
-        for field_name, patterns in field_rules:
-            for pattern in patterns:
-                match = re.search(pattern, text)
-                if match:
-                    # 提取值并清理括号内的附加信息
-                    value = re.sub(
-                        r'\s*[\[\(].*?[\]\)]\s*',
-                        '',
-                        match.group(1).strip()
-                    )
-                    
-                    # 作者特殊处理：多个作者用顿号连接
-                    if field_name == "author":
-                        value = "、".join(
-                            author.strip()
-                            for author in value.split("/")
-                            if author.strip()
-                        )
-                    
-                    data[field_name] = value
-                    break
-        
-        # 从 info 区块提取 ISBN（可能比输入的更准确）
-        isbn_match = re.search(r'ISBN\s*[:：]\s*(\d+)', text)
-        if isbn_match and len(isbn_match.group(1)) in (10, 13):
-            data["isbn"] = isbn_match.group(1)
-    
-    def _extract_title(self, soup: BeautifulSoup) -> str:
-        """
-        从 HTML 中提取书名
-        
-        提取优先级：
-        1. <span property="v:itemreviewed">（结构化数据）
-        2. #wrapper > h1 > span
-        3. #wrapper > h1 的文本
-        4. <title> 标签（去除 " (豆瓣)" 后缀）
-        
-        Args:
-            soup: BeautifulSoup 解析对象
-        
-        Returns:
-            提取到的书名，失败返回空字符串
-        """
-        # 方法 1：结构化数据
-        if element := soup.find("span", property="v:itemreviewed"):
-            return element.text.strip()
-        
-        # 方法 2-3：从 wrapper 区域查找 h1
-        if wrapper := soup.find("div", id="wrapper"):
-            if h1 := wrapper.find("h1"):
-                if span := h1.find("span"):
-                    return span.text.strip()
-                return h1.get_text().strip()
-        
-        # 方法 4：从页面标题提取
-        if title_tag := soup.find("title"):
-            return re.sub(r'\s*\(豆瓣\)\s*$', '', title_tag.text.strip())
-        
-        return ""
-    
-    def _extract_cover(self, soup: BeautifulSoup) -> str:
-        """
-        从 HTML 中提取封面图片 URL
-        
-        提取优先级：
-        1. <a class="nbg"> 中的 <img> 标签
-        2. <meta property="og:image">
-        3. #mainpic 中的 <img> 标签
-        
-        所有提取到的 URL 会转换为高清版本。
-        
-        Args:
-            soup: BeautifulSoup 解析对象
-        
-        Returns:
-            封面图片 URL，失败返回空字符串
-        """
-        # 方法 1：nbg 链接
-        if nbg := soup.find("a", class_="nbg"):
-            if img := nbg.find("img"):
-                if src := img.get("src"):
-                    return self._convert_to_hd_cover(src)
-        
-        # 方法 2：Open Graph 图片
-        if og_image := soup.find("meta", property="og:image"):
-            if content := og_image.get("content", ""):
-                return self._convert_to_hd_cover(content)
-        
-        # 方法 3：主图区域
-        if mainpic := soup.find("div", id="mainpic"):
-            if img := mainpic.find("img"):
-                if src := img.get("src"):
-                    return self._convert_to_hd_cover(src)
-        
-        return ""
-    
-    def _convert_to_hd_cover(self, url: str) -> str:
-        """将豆瓣封面 URL 转换为高清版本"""
-        for old, new in [
-            ("spst", "lpst"),  # 小图 → 大图
-            ("mpic", "lpic"),  # 中图 → 大图
-            ("spic", "lpic"),  # 小图 → 大图
-        ]:
-            url = url.replace(old, new)
-        return url.replace("http://", "https://", 1)
-    
-    def _extract_summary(self, soup: BeautifulSoup) -> str:
-        """
-        从 HTML 中提取图书简介
-        
-        提取优先级：
-        1. <div class="intro"> 中的隐藏完整简介
-           结构：<span class="all hidden"> 完整内容 </span>
-        2. <div id="link-report"> 中的简介
-        3. 简短简介 <span class="short">
-        
-        注意：
-        - 优先提取完整简介（.all.hidden）
-        - 清理 HTML 标签、多余空白
-        - 限制最大长度为 2000 字符
-        
-        Args:
-            soup: BeautifulSoup 解析对象
-        
-        Returns:
-            清洗后的图书简介文本，失败返回空字符串
-        """
-        # 方法 1：intro 区域
-        if intro := soup.find("div", class_="intro"):
-            if hidden := intro.find("span", class_="all hidden"):
-                # 移除隐藏内容中的 div 标签（通常是广告）
-                for div in hidden.find_all("div"):
-                    div.decompose()
-                text = hidden.get_text().strip()
-            else:
-                short = intro.find("span", class_="short")
-                text = short.get_text().strip() if short else intro.get_text().strip()
-            
-            # 清理空白字符
-            text = re.sub(r' +', ' ', text)     # 合并多个空格
-            text = re.sub(r'\n\s*\n', '\n', text)  # 合并多个换行
-            return text.strip()[:2000]
-        
-        # 方法 2：link-report 区域
-        if link_report := soup.find("div", id="link-report"):
-            if hidden := link_report.find("span", class_="all hidden"):
-                for div in hidden.find_all("div"):
-                    div.decompose()
-                text = hidden.get_text().strip()
-            else:
-                short = link_report.find("span", class_="short")
-                text = short.get_text().strip() if short else link_report.get_text().strip()
-            
-            text = re.sub(r' +', ' ', text)
-            text = re.sub(r'\n\s*\n', '\n', text)
-            return text.strip()[:2000]
-        
-        return ""
-    
-    def _extract_rating(self, soup: BeautifulSoup) -> str:
-        """
-        从 HTML 中提取豆瓣评分
-        
-        提取优先级：
-        1. <strong property="v:average">（结构化评分数据）
-        2. <strong class="ll rating_num">（评分数字）
-        
-        Args:
-            soup: BeautifulSoup 解析对象
-        
-        Returns:
-            评分字符串（如 "9.3"），失败返回空字符串
-        """
-        # 方法 1：结构化评分
-        if rating_elem := soup.find("strong", property="v:average"):
-            return rating_elem.text.strip()
-        
-        # 方法 2：评分数字 class
-        if rating_elem := soup.find("strong", class_="ll rating_num"):
-            return rating_elem.text.strip()
-        
-        return ""
-    
-    def _parse_search(self, html: str, keyword: str) -> Optional[Dict[str, Any]]:
-        """
-        解析豆瓣搜索结果页面
-        
-        从搜索结果列表中提取第一个图书条目的信息。
-        
-        页面结构：
-        <li class="subject-item">
-            <h2><a>书名</a></h2>
-            <div class="pub">作者 / 出版社 / 出版日期 / 价格</div>
-            <span class="rating_nums">评分</span>
-            <img>封面</img>
-            <p>简介</p>
-        </li>
-        
-        Args:
-            html: 搜索结果页面 HTML
-            keyword: 搜索关键词（用于填充 ISBN 字段）
-        
-        Returns:
-            图书元数据字典，无结果返回 None
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # 获取第一个搜索结果
-        item = soup.find("li", class_="subject-item")
-        if not item:
-            return None
-        
-        data = {
-            "isbn": keyword,
-            "title": "",
-            "author": "",
-            "translator": "",
-            "publisher": "",
-            "publish_date": "",
-            "cover_url": "",
-            "summary": "",
-            "rating": "",
-            "pages": "",
-            "price": "",
-            "binding": "",
-            "original_title": "",
-            "series": "",
-            "source": "douban_search",
-            "douban_url": "",
-        }
-        
-        # 提取书名和链接
-        if h2 := item.find("h2"):
-            if link := h2.find("a"):
-                data["title"] = re.sub(r'\s+', ' ', link.text.strip())
-                if href := link.get("href"):
-                    data["douban_url"] = href
-        
-        # 提取评分
-        if rating := item.find("span", class_="rating_nums"):
-            data["rating"] = rating.text.strip()
-        
-        # 提取出版信息（格式：作者 / 出版社 / 出版日期 / 价格）
-        if pub := item.find("div", class_="pub"):
-            parts = [p.strip() for p in pub.text.strip().split("/")]
-            if len(parts) >= 1:
-                data["author"] = re.sub(
-                    r'\s*(著|编|编著|主编|译)\s*$',
-                    '',
-                    parts[0]
-                )
-            if len(parts) >= 2:
-                data["publisher"] = parts[1]
-            if len(parts) >= 3:
-                data["publish_date"] = parts[2]
-            if len(parts) >= 4:
-                data["price"] = parts[3]
-        
-        # 提取封面图片
-        if img := item.find("img"):
-            if src := img.get("src"):
-                data["cover_url"] = self._convert_to_hd_cover(src)
-        
-        # 提取简介
-        if desc := item.find("p"):
-            text = desc.get_text().strip()
-            if len(text) > 20:
-                data["summary"] = text[:500]
-        
-        return data
-    
+    # 解析方法已提取至 douban_parser.py，此处保留委托方法以兼容现有调用
+    _parse_book = staticmethod(parse_book)
+    _parse_search = staticmethod(parse_search)
+
     # ==================== 管理方法 ====================
     
-    def clear_cache(self) -> None:
-        """清空搜索缓存"""
-        self.cache.clear()
+    async def clear_cache(self) -> None:
+        """清空搜索缓存（异步安全）"""
+        async with self._cache_lock:
+            self.cache.clear()
         logger.info("豆瓣搜索缓存已清空")
     
     def reset_stats(self) -> None:
@@ -984,3 +637,7 @@ class DoubanService:
             "cache_hits": 0,
         }
         logger.info("豆瓣请求统计已重置")
+
+
+# 全局共享单例，供所有 API 模块使用
+douban_service = DoubanService()
