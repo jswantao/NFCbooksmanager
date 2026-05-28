@@ -51,5 +51,8 @@
     "typescript-eslint": "^8.58.2",
     "vite": "^8.0.10",
     "vitest": "^4.1.7"
+  },
+  "overrides": {
+    "pretty-format": "29.7.0"
   }
 }

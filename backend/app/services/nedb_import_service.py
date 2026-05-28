@@ -484,10 +484,10 @@ def _try_copy_cover(cover_src: str, cover_path: str, isbn: str, raw_isbn: str = 
                 ext = os.path.splitext(src)[1] or ".jpg"
                 hash_name = hashlib.sha256(f"nedb_{isbn}".encode()).hexdigest()[:32]
                 # 复制到 uploads/nedb/ 目录（已挂载为静态文件 /uploads）
-                uploads_dir = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    "uploads", "nedb",
-                )
+                # __file__ = app/services/nedb_import_service.py
+                # 上溯 3 级: services → app → backend
+                backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                uploads_dir = os.path.join(backend_dir, "uploads", "nedb")
                 os.makedirs(uploads_dir, exist_ok=True)
                 dst = os.path.join(uploads_dir, f"{hash_name}{ext}")
                 shutil.copy2(src, dst)

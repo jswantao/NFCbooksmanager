@@ -47,6 +47,7 @@ import type {
     AutoBackupStatus,
     ChatSearchResponse,
     ChatBookDetailResponse,
+    NedbImportPreview,
 } from '../types';
 
 // ==================== 类型定义 ====================
@@ -565,10 +566,10 @@ export const createBackup = (): Promise<ApiResponse<BackupMetadata>> =>
     apiClient.post('/backup/export').then(unwrap);
 
 export const listBackups = (): Promise<BackupMetadata[]> =>
-    apiClient.get('/backup/list').then(unwrap).then(r => r.data);
+    apiClient.get('/backup/list').then(unwrap);
 
 export const listWebDAVBackups = (): Promise<BackupMetadata[]> =>
-    apiClient.get('/backup/list-webdav').then(unwrap).then(r => r.data);
+    apiClient.get('/backup/list-webdav').then(unwrap);
 
 export const deleteBackups = (filenames: string[]): Promise<ApiResponse<{ deleted: number }>> =>
     apiClient.delete('/backup/delete', { data: { filenames } }).then(unwrap);
