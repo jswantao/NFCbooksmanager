@@ -24,9 +24,12 @@
 - 删除图书会级联删除书架关联和同步日志
 """
 
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from datetime import datetime, timezone
 
+import asyncio
+
+from pydantic import BaseModel as _SchemaModel
 from loguru import logger
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
@@ -66,6 +69,73 @@ BOOK_METADATA_FIELDS = [
     "cover_url", "summary", "pages", "price", "binding",
     "original_title", "series", "rating", "douban_url",
 ]
+
+
+# ==================== 图书列表 ====================
+
+@router.get("/", summary="获取全部图书列表")
+def list_books(
+    limit: int = Query(default=100, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    sort_by: str = Query(default="created_at", pattern=r"^(created_at|title|author|rating)$"),
+    sort_order: str = Query(default="desc", pattern=r"^(asc|desc)$"),
+    db: Session = Depends(get_db),
+):
+    """
+    分页获取全部图书列表。
+
+    支持按创建时间、书名、作者、评分排序。
+    默认按创建时间倒序（最新在前），limit=100。
+    """
+    sort_col = getattr(BookMetadata, sort_by, BookMetadata.created_at)
+    if sort_order == "asc":
+        sort_col = sort_col.asc()
+    else:
+        sort_col = sort_col.desc()
+
+    total = db.query(func.count(BookMetadata.book_id)).scalar() or 0
+    books = (
+        db.query(BookMetadata)
+        .order_by(sort_col)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    books_data = [
+        {
+            "book_id": b.book_id,
+            "isbn": b.isbn,
+            "title": b.title,
+            "author": b.author,
+            "translator": b.translator,
+            "publisher": b.publisher,
+            "publish_date": b.publish_date,
+            "cover_url": b.cover_url,
+            "local_cover_path": b.local_cover_path,
+            "summary": b.summary,
+            "source": b.source,
+            "sort_order": 0,
+            "pages": b.pages,
+            "price": b.price,
+            "binding": b.binding,
+            "original_title": b.original_title,
+            "series": b.series,
+            "rating": b.rating,
+            "douban_url": b.douban_url,
+            "created_at": b.created_at.isoformat() if b.created_at else None,
+            "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+        }
+        for b in books
+    ]
+
+    return {
+        "books": books_data,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": (offset + limit) < total,
+    }
 
 
 # ==================== 豆瓣同步 ====================
@@ -158,40 +228,14 @@ async def get_all_books(
         description="排序字段: created_at / title / author / rating"
     ),
     order: str = Query("desc", description="排序方向: asc / desc"),
-    limit: int = Query(50, ge=1, le=200, description="每页数量"),
+    limit: int = Query(100, ge=1, le=5000, description="每页数量（默认 500）"),
     offset: int = Query(0, ge=0, description="偏移量（分页起始位置）"),
     source: Optional[str] = Query(None, description="按来源筛选: douban / manual / isbn / nfc"),
     search: Optional[str] = Query(None, description="搜索书名/作者/ISBN/出版社"),
     shelf_id: Optional[int] = Query(None, description="按所在书架 ID 筛选"),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """
-    获取所有图书列表（包括未上架的）
-    
-    功能：
-    - 获取所有图书，包括那些未分配到任何书架的图书
-    - 支持按来源筛选（豆瓣/手动/ISBN/NFC）
-    - 支持全文搜索（书名/作者/ISBN/出版社）
-    - 支持按书架筛选（包括未上架图书）
-    - 支持排序和分页
-    - 对于在架图书，包含书架名称；未在架图书的 shelf_name 为 null
-    
-    数据来源：
-    - 主查询从 BookMetadata 出发，使用子查询获取每本书当前所在书架
-    - 避免 LEFT JOIN 导致的重复行问题（一书多架场景）
-    
-    Args:
-        sort_by: 排序字段（created_at/title/author/rating）
-        order: 排序方向
-        limit: 每页数量
-        offset: 偏移量
-        source: 按来源筛选（可选）
-        search: 搜索关键词（可选，匹配书名/作者/ISBN/出版社）
-        shelf_id: 按书架筛选（可选，仅返回该书架中的图书）
-    
-    Returns:
-        包含图书列表、总数、分页信息的字典
-    """
+    """获取所有图书列表（包括未上架的），默认每页 500 条，上限 5000 条。"""
     # ---- 步骤 1：构建子查询，获取每本书当前所在书架信息 ----
     # 使用子查询获取每本书第一个 in_shelf 关联的书架信息
     # 如果一本书在多个书架中，只取第一个（避免主查询出现重复行）
@@ -398,11 +442,16 @@ async def get_book_wall(
 
 # ==================== 手动录入 ====================
 
-@router.post("/manual", response_model=ApiResponse[None], summary="手动录入图书")
+class _ManualResult(_SchemaModel):
+    book_id: int
+    shelf_book_id: Optional[int] = None
+
+
+@router.post("/manual", summary="手动录入图书")
 async def create_book_manual(
     req: BookCreateManualRequest = Body(...),
     db: Session = Depends(get_db),
-) -> ApiResponse[None]:
+) -> ApiResponse[_ManualResult]:
     """
     手动录入图书元数据
     
@@ -453,7 +502,7 @@ async def create_book_manual(
     
     book = BookMetadata(
         isbn=isbn,
-        source=BookSource.MANUAL.value,
+        source=req.source,
         **field_values,
     )
     db.add(book)
@@ -481,7 +530,7 @@ async def create_book_manual(
             db.add(shelf_book)
             db.commit()
             shelf_book_id = shelf_book.id
-    
+
     return ApiResponse(
         success=True,
         message=f"《{book.title}》已录入",
@@ -494,12 +543,12 @@ async def create_book_manual(
 
 # ==================== 手动更新 ====================
 
-@router.put("/{book_id}/manual", response_model=ApiResponse[None], summary="手动更新图书信息")
+@router.put("/{book_id}/manual", summary="手动更新图书信息")
 async def update_book_manual(
     book_id: int,
     req: BookUpdateManualRequest = Body(...),
     db: Session = Depends(get_db),
-) -> ApiResponse[None]:
+) -> ApiResponse[dict]:
     """
     手动更新图书元数据
     
@@ -541,7 +590,7 @@ async def update_book_manual(
         book.source = BookSource.MANUAL.value
         book.updated_at = datetime.now(timezone.utc)
         db.commit()
-    
+
     return ApiResponse(
         success=True,
         message=f"《{book.title}》已更新",
@@ -563,58 +612,35 @@ async def search_books(
 ) -> List[Dict[str, Any]]:
     """
     图书全文搜索
-    
-    在以下字段中进行模糊匹配（ILIKE，不区分大小写）：
-    - 书名 (title)
-    - 作者 (author)
-    - ISBN (isbn)
-    - 译者 (translator)
-    - 出版社 (publisher)
-    
-    返回结果包含摘要预览（超过 100 字截断）。
-    
+
+    根据数据库类型自动选择最优搜索策略：
+    - PostgreSQL: tsvector 全文搜索 (ts_rank 排序 + ts_headline 摘要)
+    - SQLite: 多字段 ILIKE 模糊匹配
+
     Args:
         keyword: 搜索关键词
         limit: 返回结果数量上限
-    
+
     Returns:
-        匹配的图书列表（简要信息）
+        匹配的图书列表（简要信息 + 相关性评分）
     """
-    search_pattern = f"%{keyword}%"
-    
-    books = (
-        db.query(BookMetadata)
-        .filter(
-            or_(
-                BookMetadata.title.ilike(search_pattern),
-                BookMetadata.author.ilike(search_pattern),
-                BookMetadata.isbn.ilike(search_pattern),
-                BookMetadata.translator.ilike(search_pattern),
-                BookMetadata.publisher.ilike(search_pattern),
-            )
-        )
-        .limit(limit)
-        .all()
-    )
-    
+    from app.services.search_service import SearchService
+    result = SearchService.search_books_flexible(db, keyword, limit)
     return [
         {
-            "book_id": book.book_id,
-            "isbn": book.isbn,
-            "title": book.title,
-            "author": book.author,
-            "translator": book.translator,
-            "publisher": book.publisher,
-            "cover_url": book.cover_url,
-            "rating": book.rating,
-            "source": book.source,
-            "summary": (
-                f"{book.summary[:100]}..."
-                if book.summary and len(book.summary) > 100
-                else book.summary
-            ),
+            "book_id": r["book_id"],
+            "isbn": r["isbn"],
+            "title": r["title"],
+            "author": r["author"],
+            "translator": r.get("translator", ""),
+            "publisher": r["publisher"],
+            "cover_url": r["cover_url"],
+            "rating": r["rating"],
+            "source": r.get("source", ""),
+            "summary": r.get("summary", ""),
+            "relevance_score": r.get("relevance_score", 0),
         }
-        for book in books
+        for r in result["results"]
     ]
 
 
@@ -699,11 +725,11 @@ async def get_book_detail(
 
 # ==================== 删除图书 ====================
 
-@router.delete("/{book_id}", response_model=ApiResponse[None], summary="删除图书")
+@router.delete("/{book_id}", summary="删除图书")
 async def delete_book(
     book_id: int,
     db: Session = Depends(get_db),
-) -> ApiResponse[None]:
+) -> ApiResponse[dict]:
     """
     删除图书及其所有关联数据
     
@@ -744,7 +770,7 @@ async def delete_book(
     # 删除图书本身
     db.delete(book)
     db.commit()
-    
+
     return ApiResponse(
         success=True,
         message=f"《{book_title}》已删除",

@@ -8,7 +8,9 @@
 1. 直链访问：直接访问豆瓣图书详情页（/isbn/{isbn}/）
 2. API 接口：使用豆瓣建议搜索 API（/j/subject_suggest）
 3. 搜索页面：通过搜索页面解析结果（/subject_search）
-4. OpenLibrary：备用数据源（openlibrary.org）
+4. Google Books：官方 API 降级数据源
+5. 台湾ISBN：台湾国家图书馆 ISBN 数据库
+6. OpenLibrary：免费备用数据源（openlibrary.org）
 
 关键设计：
 - 多级缓存：内存缓存（TTL 30分钟），减少重复请求
@@ -155,7 +157,7 @@ class DoubanService:
         book_data = await service.search_by_isbn("9787544291163")
     
     数据流：
-        ISBN → 缓存检查 → 直链访问 → API建议 → 搜索页面 → OpenLibrary备用 → 返回结果
+        ISBN → 缓存检查 → 直链访问 → API建议 → 搜索页面 → Google Books → 台湾ISBN → OpenLibrary → 返回结果
     """
     
     def __init__(self):
@@ -306,7 +308,8 @@ class DoubanService:
         2. 直链访问豆瓣详情页
         3. 使用豆瓣建议 API
         4. 通过搜索页面查找
-        5. 使用 OpenLibrary 备用数据源
+        5. 使用 Google Books API
+        6. 使用 OpenLibrary 备用数据源
         
         任一策略成功获取到有效数据（title 不为空）即返回，
         不继续尝试后续策略。
@@ -358,6 +361,8 @@ class DoubanService:
             ("直链访问", self._try_direct),
             ("API建议", self._try_api),
             ("搜索页面", self._try_search),
+            ("Google Books", self._try_google_books),
+            ("台湾ISBN", self._try_taiwan_isbn),
             ("OpenLibrary", self._try_openlib),
         ]
 
@@ -528,7 +533,57 @@ class DoubanService:
             pass
         return None
     
-    # ==================== 策略 4：OpenLibrary 备用 ====================
+    # ==================== 策略 4：Google Books ====================
+
+    async def _try_google_books(self, isbn: str) -> Optional[Dict[str, Any]]:
+        """
+        策略 4：Google Books API
+
+        作为豆瓣爬虫策略之后的第一个降级数据源。
+        使用官方 API，协议稳定，支持 API Key 认证提升配额。
+
+        Args:
+            isbn: 清洗后的 ISBN
+
+        Returns:
+            图书元数据字典，API 不可用返回 None
+        """
+        try:
+            from app.services.google_books_service import google_books_service
+            if not google_books_service.enabled:
+                logger.debug("Google Books 数据源未启用")
+                return None
+            result = await google_books_service.search_by_isbn(isbn)
+            if result and result.get("title"):
+                logger.info(f"[Google Books] 获取成功: {isbn} -> {result['title'][:30]}")
+                return result
+        except Exception as e:
+            logger.warning(f"[Google Books] 查询异常: {e}")
+        return None
+
+    # ==================== 策略 5：台湾国家图书馆 ISBN ====================
+
+    async def _try_taiwan_isbn(self, isbn: str) -> Optional[Dict[str, Any]]:
+        """
+        策略 5：台湾国家图书馆 ISBN 数据库
+
+        专为台湾出版社图书设计，元数据质量高。
+        使用 CSRF token 认证，繁体中文数据。
+
+        Returns:
+            图书元数据字典，不可用返回 None
+        """
+        try:
+            from app.services.taiwan_isbn_service import taiwan_isbn_service
+            result = await taiwan_isbn_service.search_by_isbn(isbn)
+            if result and result.get("title"):
+                logger.info(f"[台湾ISBN] 获取成功: {isbn} -> {result['title'][:30]}")
+                return result
+        except Exception as e:
+            logger.warning(f"[台湾ISBN] 查询异常: {e}")
+        return None
+
+    # ==================== 策略 6：OpenLibrary 备用 ====================
     
     async def _try_openlib(self, isbn: str) -> Optional[Dict[str, Any]]:
         """

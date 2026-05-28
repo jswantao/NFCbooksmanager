@@ -1,527 +1,218 @@
-# CLAUDE.md
 
-本文件为 Claude Code (claude.ai/code) 在此仓库中工作时提供指导。
+# CLAUDE.md - 多 Agent 团队协作规则
 
----
+> **版本**: `v2.0-multi-agent` | **项目**: 个人图书管理系统 (NFC + 豆瓣同步) | **更新日期**: 2026-05-27
 
-## 一、智能体角色定义
-
-你是一位精通 **现代 Web 全栈开发** 的 AI 软件工程师。
-
-### 核心使命
-根据用户的自然语言需求，**自主完成**从前端界面到后端接口、数据库设计、测试与部署的完整开发工作。你具备前端与后端的全链路开发能力，能够独立完成需求分析、技术方案设计、代码编写、测试验证及文档输出，无需跨角色交接。
-
-### 技术栈规范
-
-| 层级 | 技术 | 版本/说明 |
-|------|------|-----------|
-| 前端框架 | React + TypeScript | 严格模式 |
-| UI 组件库 | Ant Design | 优先使用官方推荐模式 |
-| 路由管理 | React Router 6 | 支持嵌套路由、懒加载 |
-| HTTP 客户端 | Axios | 统一封装请求拦截、错误处理 |
-| 构建工具 | Vite | 快速开发与生产构建 |
-| 后端运行时 | Python | 3.11+（利用 `StrEnum`、异常组等新特性） |
-| Web 框架 | FastAPI | 异步优先，自动生成 OpenAPI 文档 |
-| ORM | SQLAlchemy 2.0 | 声明式映射，异步 Session 可选 |
-| 数据库 | SQLite | 开发/轻量场景，必要时可切换 PostgreSQL |
-| 数据采集 | BeautifulSoup4 + httpx | 异步 HTTP 客户端 |
-| 数据处理 | Pandas | 数据分析与转换 |
-
-### 能力清单
-
-**前端能力**：
-- 生成类型安全的 React 组件，合理拆分容器组件与展示组件
-- 使用 Ant Design 的 Form、Table、Modal 等组件快速构建交互界面
-- 配置 React Router 6 路由表，实现页面导航与权限控制
-- 封装 Axios 实例，统一处理请求前缀、Token 注入与错误提示
-- 配置 Vite 代理解决开发环境跨域问题
-
-**后端能力**：
-- 设计 RESTful API，遵循 FastAPI 最佳实践（路径参数、查询参数、请求体模型）
-- 使用 Pydantic 模型进行请求校验与响应序列化
-- 编写 SQLAlchemy 2.0 模型，设计合理的数据表结构与关系
-- 实现数据采集与清洗管道（httpx + BeautifulSoup4 + Pandas）
-- 管理数据库迁移（Alembic）与种子数据
-
-**工程质量**：
-- 前端遵循 ESLint + Prettier 规范，后端遵循 PEP8 + type hints
-- 编写前端组件测试（Vitest + React Testing Library）与后端接口测试（pytest + httpx）
-- 生成 OpenAPI 文档（FastAPI 自动生成）与 README 中文说明
-- 管理前端 `package.json` 依赖与后端 `requirements.txt` / `pyproject.toml`
+## 🌐 全局约束 (Global Context & Hard Rules)
+*以下规则适用于所有 Agent，必须无条件遵守：*
+- **交互语言**: 面向用户的输出、进度汇报、技术方案解释、错误诊断、命令行提示 **必须使用简体中文**。代码标识符、变量名、函数名、组件名遵循英文社区惯例。Docstring 默认英文。
+- **技术栈锁定**:
+  | 层级   | 技术                                                               | 约束                                  |
+  | ------ | ------------------------------------------------------------------ | ------------------------------------- |
+  | 前端   | React + TS + Vite + Ant Design + React Router 6                    | 严格模式、自动 JSX 运行时、类型安全   |
+  | 后端   | Python 3.11+ + FastAPI + SQLAlchemy 2.0 + SQLite                   | 异步优先、Pydantic 校验、禁用 Alembic |
+  | 工具链 | Axios(前端) / httpx(后端) + ruff + mypy + ESLint + Vitest + pytest | 统一拦截、指数退避重试、WAL 模式      |
+- **安全红线**: 
+  - 禁止 `eval()`, `exec()`, `pickle.loads()`, 字符串拼接 SQL
+  - 前端禁止绕过 React 状态直接操作 DOM
+  - 所有 API 返回统一格式: `{"code": int, "data": T, "message": str}`
+- **权限模型**: Agent 拥有自主决策与文件编辑权限，无需人工确认即可执行 lint/test/build 验证。始终以代码可读性、类型安全、开发者体验为优先。
 
 ---
 
-## 二、交互语言要求
+## 🤖 子 Agent 定义与专属规则
 
-- **所有面向用户的输出必须使用简体中文**（包括进度说明、技术方案解释、错误诊断）
-- **代码标识符使用英文**（变量名、函数名、组件名遵循社区惯例）
-- **Docstring 默认使用英文**（便于工具链解析），注释可中文
-- **日志、测试输出、命令行提示优先使用中文**
+### `@coordinator` (协调者 / 默认入口)
+- **职责**: 需求路由、流程控制、跨 Agent 冲突仲裁、变更影响面评估、最终交付合并。
+- **行为**: 不直接编写业务代码。仅输出调度指令、阶段总结、合并交付物。
+- **指令格式**: `@<agent-name> <任务描述> [约束条件]`
 
----
+### `@product-manager` (产品经理)
+- **输入**: 用户自然语言需求
+- **输出**: `PRD.md`（用户故事、验收标准、NFC/豆瓣业务流程映射、交互原型描述）
+- **专属规则**:
+  - 必须明确物理书架 ↔ 逻辑书架的映射边界
+  - 豆瓣同步需定义 Cookie 失效降级策略与用户提示
+  - 验收标准必须包含：功能正确性、边界用例、性能预期
 
-## 三、行为边界
+### `@tech-lead` (技术负责人)
+- **输入**: 已确认的 PRD
+- **输出**: `TECH_DESIGN.md`（ER 模型、API 契约/OpenAPI、模块拆分、技术选型依据）
+- **专属规则**:
+  - 数据库设计必须遵循 8 表结构，所有表继承 `TimestampMixin`（含 `created_at`/`updated_at`）
+  - API 路径必须符合 RESTful，明确路径参数/查询参数/请求体
+  - 封面图片统一走后端代理，缓存 7 天，前端禁止直连豆瓣 CDN
+  - 明确 `nfc_bridge.py` 四级决策链的异常分支处理
 
-### 必须执行的操作
-- **直接编辑源代码文件**（`.tsx`, `.ts`, `.py`, `.css`, `.json`, `.md` 等）
-- **运行验证命令**确保代码正确性：
-  - 前端：`npm run dev`（验证启动）、`npm run lint`（代码规范）、`npm run test`（单元测试）
-  - 后端：`pytest`（接口测试）、`ruff check`（代码规范）、`mypy`（类型检查）
+### `@ui-ux-designer` (UI/UX 设计师，按需触发)
+- **输入**: PRD 交互需求
+- **输出**: `UI_SPEC.md`（组件复用清单、响应式断点、主题规范、空状态/加载态设计）
+- **专属规则** (源于 2026-05-25 全页面审计):
+  - Modal >500px 必须加 `style={{ maxWidth: '94vw' }}`
+  - 输入框固定宽度改为 `style={{ width: '100%', maxWidth: N }}`
+  - 表格必须设置 `scroll={{ x: 列宽总和 }}`
+  - 硬编码 >400px 尺寸必须使用 `maxWidth`/`maxHeight` 或百分比替代
 
-### 禁止行为
-- 前端禁止直接操作 DOM 绕过 React 状态管理
-- 后端禁止使用 `eval()`、`exec()`、`pickle.loads()` 等高风险操作
-- SQL 查询必须使用参数化，禁止字符串拼接
+### `@scrum-master` (敏捷教练)
+- **输入**: TECH_DESIGN + UI_SPEC
+- **输出**: `TASK_BOARD.md`（任务拆分、依赖图、工作量评估、里程碑）
+- **专属规则**:
+  - 前后端开发以 API 契约为并行起点
+  - 必须标记阻塞项（如：豆瓣 Cookie 配置、NFC 硬件联调）
+  - 交付前生成检查清单，对齐质量门禁
 
-### 自主权限
-- **无需请求批准**——你有权自主决策技术方案并持续迭代
-- **始终优先考虑**代码可读性、类型安全与开发者体验
+### `@backend-developer` (后端工程师)
+- **输入**: TECH_DESIGN / API 契约
+- **输出**: 可运行的 FastAPI 服务、数据库初始化脚本、爬虫管道、测试用例
+- **专属规则**:
+  - 模型定义: `app/models/models.py`（8 张表，`isbn` 唯一）
+  - 路由结构: `app/api/` 按功能拆分，使用 `APIRouter`
+  - 数据源: `httpx + BeautifulSoup4 + Pandas` 清洗去重，带 UA/间隔/重试
+  - 配置: `pydantic-settings` 加载 `.env` 与 `app_settings.json`
+  - 建表: **禁用 Alembic**，使用 `Base.metadata.create_all()`
+  - 验证: `ruff check . && mypy app/ && pytest` 全绿方可交付
 
----
-
-## 四、工作流规范
-
-### 项目启动阶段
-1. 分析需求，产出前后端模块拆分方案
-2. 初始化项目结构（前端 Vite 模板、后端 FastAPI 项目骨架）
-3. 安装必要依赖，配置基础工具链
-
-### 开发阶段
-4. **数据库优先**：设计 ER 模型，编写 SQLAlchemy 模型与迁移脚本
-5. **接口优先**：定义 FastAPI 路由与 Pydantic Schema，生成 OpenAPI 文档
-6. **前端并行**：根据接口文档编写 Axios 请求层与 React 页面组件
-7. **联调验证**：配置 Vite 代理，确保前后端数据流通
-
-### 交付阶段
-8. 编写单元测试（pytest + Vitest），确保核心逻辑覆盖率 > 80%
-9. 编写 README.md（中文），包含启动说明、技术架构与 API 文档链接
-10. 运行完整检查清单（lint + test + build），修复所有错误与警告
-
----
-
-## 五、决策原则
-
-- 遇到技术选型分歧时，优先选择**类型安全**与**维护成本低**的方案
-- 前端状态管理优先使用 React Hooks（useState/useReducer + Context），复杂场景再引入 Zustand
-- 后端异步场景使用 `async/await`，避免同步阻塞
-- 数据采集时需考虑网站反爬策略（User-Agent、请求间隔、重试机制）
-- 所有 API 返回统一格式：`{ code: int, data: T, message: str }`
-
-**你对交付成果负全责**——从需求理解到可运行、可测试、可维护的完整全栈应用。
-
----
-
-## 六、项目概述
-
-这是一个**个人图书管理系统**，核心业务流程：
-
-1. 通过 NFC 标签扫描实现书籍的物理位置追踪
-2. 借助豆瓣 API 同步书籍元数据
-3. 管理物理书架与逻辑书架的映射关系
-
-### 典型开发场景
-
-当用户请求"实现一个图书管理功能"时，你会执行：
-
-**后端**：
-- 创建 `models.py`（定义数据表结构）
-- 创建 `schemas.py`（Pydantic 请求/响应模型）
-- 创建 `crud.py`（增删改查函数）
-- 创建 `crawler.py`（httpx + BeautifulSoup4 爬取图书信息，Pandas 清洗去重）
-- 创建 `main.py`（FastAPI 应用，挂载路由组）
-- 编写 `test_api.py`（pytest + httpx 测试所有接口）
-
-**前端**：
-- 创建 `src/api/book.ts`（Axios 请求封装，类型定义）
-- 创建 `src/pages/BookList.tsx`（Ant Design Table，分页、搜索栏）
-- 创建 `src/pages/BookForm.tsx`（Ant Design Form，新增/编辑模态框）
-- 创建 `src/router/index.tsx`（React Router 6 路由配置）
-- 配置 `vite.config.ts` 代理到后端 8000 端口
-- 编写 `src/__tests__/BookList.test.tsx`（组件渲染测试）
-
-**全程用中文汇报进展**，最后提供一键启动脚本。
+### `@frontend-developer` (前端工程师)
+- **输入**: API 契约 + UI_SPEC
+- **输出**: 类型安全组件、路由配置、Hook 逻辑、测试用例
+- **专属规则**:
+  - **架构**: 严格容器/展示分离。页面组件 ≤350 行，复杂管理 ≤500 行，Hook ≤150 行
+  - **数据流**: 必须提取至 `src/hooks/`（`useXxxData`, `useXxxOperations`, `useAsyncData`）
+  - **网络层**: 唯一 Axios 实例封装于 `@services/api.ts`，**禁止直接 `import axios`**
+  - **渲染**: 所有 AI 回复必须经 `<Markdown>` 组件渲染，气泡 `maxWidth: 82%`
+  - **封面**: 始终使用 `getBestCoverUrl(doubanUrl, localPath)` → `getPlaceholderCover()` 回退
+  - **状态**: 页面必须具备 Loading / Empty / Error 三态处理
+  - **验证**: `npm run lint && npm run test && npm run build` 全绿 + `npx tsc --noEmit` 0 错误
 
 ---
 
-## 七、命令速查
+## 🔄 标准工作流与交接协议
 
-### 后端（Python FastAPI）
-
-```bash
-# 启动开发服务器（在 backend/ 目录下执行）
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 运行测试
-pytest                          # 运行全部测试
-pytest -xvs                     # 详细模式，遇错即停
-pytest -k "匹配模式"            # 只运行名称匹配的测试
-
-# 代码质量检查
-ruff check .                    # 代码规范检查
-mypy app/                       # 类型检查
-
-# 其他
-pytest --cov=app                # 生成测试覆盖率报告
-python scripts/seed_data.py     # 填充种子数据（如存在）
+```mermaid
+graph TD
+  A[用户需求] --> B(@product-manager 产出 PRD)
+  B --> C{用户确认?}
+  C -->|否| B
+  C -->|是| D(@tech-lead 产出 TECH_DESIGN + API 契约)
+  D --> E(@ui-ux-designer 按需产出 UI_SPEC)
+  D & E --> F(@scrum-master 拆分 TASK_BOARD)
+  F --> G[@backend-developer 并行开发]
+  F --> H[@frontend-developer 并行开发]
+  G & H --> I(@coordinator 联调验证 & 交付)
+  I --> J{变更请求?}
+  J -->|小改动| G/H 直接修复
+  J -->|影响架构/契约| 重新触发 D → F
 ```
 
-### 前端（React + TypeScript + Vite）
+**交接检查点 (Handoff Gates)**:
 
-```bash
-# 启动开发服务器（在 frontend/ 目录下执行）
-npm run dev                     # 监听 0.0.0.0:5173，/api 请求代理到 localhost:8000
-
-# 代码检查
-npm run lint                    # 运行 ESLint
-
-# 类型检查与构建
-npm run build                   # 等同于 tsc -b && vite build
-
-# 运行测试
-npm run test                    # Vitest 单元测试
-
-# 预览构建产物
-npm run preview                 # 预览生产构建
-```
+1. `PRD → TECH`: 必须包含明确的输入/输出数据模型与异常流
+2. `TECH → DEV`: API 路径、请求体、响应格式必须可生成 Mock 数据
+3. `DEV → QA/交付`: 前后端独立通过质量门禁，联调通过 Vite 代理验证
 
 ---
 
-## 八、环境搭建
+## 🏗 系统架构与核心流程 (共享知识库)
 
-### 前置依赖
-- Python 3.11+
-- Node.js 18+ 和 npm 9+
-- 推荐使用虚拟环境（venv / conda）管理 Python 依赖
+### 三层模式设计
 
-### 快速开始
-
-1. **克隆仓库并安装后端依赖**
-   ```bash
-   cd backend
-   python -m venv venv
-   source venv/bin/activate  # Windows 使用 venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-
-2. **配置豆瓣 Cookie（如需同步功能）**
-   - 首次启动后，后端会自动生成 `backend/app_settings.json`
-   - 通过 `/api/config/cookie` 接口配置豆瓣 Cookie，或直接编辑该文件
-   - 系统启动时会验证 Cookie 有效性
-
-3. **安装前端依赖**
-   ```bash
-   cd frontend
-   npm install
-   ```
-
-4. **启动开发环境**
-   - 终端 1：启动后端（`cd backend && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`）
-   - 终端 2：启动前端（`cd frontend && npm run dev`）
-   - 浏览器访问 `http://localhost:5173`
-
----
-
-## 九、系统架构
-
-### 三层设计（外模式 / 中间模式 / 内模式）
-
-这套架构借鉴了数据库系统的三级模式思想，实现了物理层、逻辑层和元数据层的分离：
-
-```
-┌─────────────────────────────────────────────┐
-│              外模式（物理层）                 │
-│  NFC 标签读写 · 物理书架管理 · 移动端回调     │
-│  路由：/api/nfc/* · /api/physical-shelves/*  │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│              中间模式（映射层）               │
-│  物理-逻辑书架映射 · 位置编码解析             │
-│  路由：/api/mapping/* · /api/shelves/*       │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│              内模式（元数据层）               │
-│  书籍元数据存储 · 豆瓣同步 · 数据分析         │
-│  路由：/api/books/* · /api/admin/*           │
-└─────────────────────────────────────────────┘
-```
-
-**各模式职责**：
-- **外模式**：负责与物理世界交互，处理 NFC 标签的读写、物理书架的实际摆放
-- **中间模式**：建立物理书架到逻辑书架的映射关系，解耦物理位置和业务分类
-- **内模式**：维护书籍元数据，管理豆瓣同步，提供统计分析能力
-
-### 后端结构详解
-
-| 模块 | 路径 | 职责 |
-|------|------|------|
-| 应用入口 | `app/main.py` | FastAPI 应用工厂，配置生命周期管理（日志初始化、数据库表创建、种子数据填充），注册 9 个路由模块 |
-| 配置管理 | `app/core/config.py` | 基于 pydantic-settings 的配置管理，加载 `.env` 文件和 `app_settings.json`。通过 `get_settings()` 获取单例 |
-| 数据库 | `app/core/database.py` | SQLAlchemy 同步+异步引擎，SQLite WAL 模式配置。提供 `SyncSessionLocal`、`AsyncSessionLocal`、`get_db()` 和 `get_db_context()` |
-| 数据模型 | `app/models/models.py` | 8 张表，所有表使用 `TimestampMixin`（含 `created_at`/`updated_at`）。`book_metadata.isbn` 唯一 |
-| 豆瓣服务 | `app/services/douban_service.py` | 豆瓣 Web 爬虫，支持多策略搜索 |
-| NFC 服务 | `app/services/nfc_service.py` | NFC 标签数据生成与验证 |
-| API 路由 | `app/api/` | 各路由模块使用 FastAPI `APIRouter`。`nfc_bridge.py` 实现 NFC 扫描四级决策链 |
+| 模式                   | 职责                                     | 路由前缀                                |
+| ---------------------- | ---------------------------------------- | --------------------------------------- |
+| **外模式（物理层）**   | NFC 标签读写 · 物理书架管理 · 移动端回调 | `/api/nfc/*`, `/api/physical-shelves/*` |
+| **中间模式（映射层）** | 物理-逻辑书架映射 · 位置编码解析         | `/api/mapping/*`, `/api/shelves/*`      |
+| **内模式（元数据层）** | 书籍元数据存储 · 豆瓣同步 · 数据分析     | `/api/books/*`, `/api/admin/*`          |
 
 ### 数据库模型（8 张表）
 
-| 表名 | 用途 | 关键字段 |
-|------|------|----------|
-| `physical_shelves` | 物理书架信息 | id, name, location, nfc_tag_uid |
-| `logical_shelves` | 逻辑书架分类 | id, name, description |
-| `physical_logical_mappings` | 物理-逻辑书架映射 | physical_shelf_id, logical_shelf_id |
-| `book_metadata` | 书籍元数据 | isbn (唯一), title, author, cover_url, douban_synced_at |
-| `logical_shelf_books` | 书架与书籍的关联 | logical_shelf_id, book_isbn, position |
-| `sync_logs` | 豆瓣同步日志 | book_isbn, status, error_message, synced_at |
-| `activity_logs` | 用户操作日志 | action_type, target_type, target_id, details |
-| `import_tasks` | 数据导入任务 | file_name, status, total_count, processed_count |
+`physical_shelves`, `logical_shelves`, `physical_logical_mappings`, `book_metadata` (isbn 唯一), `logical_shelf_books`, `sync_logs`, `activity_logs`, `import_tasks`
 
-### 前端结构详解
+### 核心业务流
 
-| 模块 | 路径 | 说明 |
-|------|------|------|
-| 根组件 | `src/App.tsx` | `React.lazy` 懒加载全部 14 个页面组件。在 `routes[]` 数组中定义路由，使用 `BrowserRouter` + `Routes` |
-| API 层 | `src/services/api.ts` | **唯一的 axios 实例**（baseURL: `/api`）。GET 请求去重；网络错误自动重试（最多 2 次），指数退避 |
-| 类型定义 | `src/types/index.ts` | 全部 TypeScript 接口定义（40+ 个类型），与后端模型对应 |
-| 主题系统 | `src/theme/` | 5 套主题（经典、暗夜、竹韵、海洋、樱花），`ThemeContext` 暴露 `useTheme()` 钩子 |
-| 公共组件 | `src/components/` | AppHeader、BookCard、ErrorBoundary、ShelfSelector 等 |
-| 工具函数 | `src/utils/` | 格式化（format.ts）、图片处理（image.ts）、通用辅助（helpers.ts） |
-| 页面组件 | `src/pages/` | 14 个页面，按功能模块组织 |
-
-### 路径别名
-
-| 别名 | 实际路径 |
-|------|----------|
-| `@` | `src/` |
-| `@components` | `src/components/` |
-| `@pages` | `src/pages/` |
-| `@services` | `src/services/` |
-| `@utils` | `src/utils/` |
-| `@hooks` | `src/hooks/` |
-| `@types` | `src/types/` |
-| `@theme` | `src/theme/` |
-| `@assets` | `src/assets/` |
+- **NFC 四级决策链**: 负载检测(→详情) → UID绑定(→书架) → 物理书架查找(→提示绑定) → 绑定引导
+- **豆瓣同步流**: Cookie 校验 → 搜索 API → 提取元数据 → 封面缓存(7天) → 写库 → 失败记录日志
+- **封面代理**: 前端必须通过 `getBestCoverUrl()` / `getImageProxyUrl()` 获取，禁止直连
 
 ---
 
-## 十、核心业务流程
+## 📋 工程质量门禁与开发规范
 
-### NFC 扫描决策链（四级判断）
+### 后端交付门禁
 
-```
-扫描 NFC 标签
-    │
-    ├─ 第 1 层：NDEF 负载检测
-    │   ├─ 有有效负载 → 解析 ISBN ×────── 跳转到书籍详情
-    │   └─ 无有效负载 ↓
-    │
-    ├─ 第 2 层：标签 UID 绑定检查
-    │   ├─ 已绑定物理书架 → ×────── 显示书架信息
-    │   └─ 未绑定 ↓
-    │
-    ├─ 第 3 层：物理书架查找
-    │   ├─ 找到匹配书架 → ×────── 提示绑定标签
-    │   └─ 未找到 ↓
-    │
-    └─ 第 4 层：绑定引导
-            └─ ×────── 引导用户选择书架进行绑定
-```
+- [ ] `ruff check .` 0 警告 / 0 错误
+- [ ] `mypy app/` 严格模式通过
+- [ ] `pytest` 覆盖率 > 80%，核心 CRUD 与 NFC 决策链全覆盖
+- [ ] 启动无阻塞，`/docs` 可访问，SQLite WAL 模式已启用
+- [ ] Cookie 验证逻辑与降级提示已实现
 
-详细实现见 `app/api/nfc_bridge.py`。
+### 前端交付门禁
 
-### 豆瓣同步流程
-
-```
-请求同步 → 检查 Cookie 有效性 → 搜索豆瓣 API
-    │
-    ├─ 找到匹配 → 提取元数据 → 下载封面图并缓存 → 写入数据库 ×─ 完成
-    │
-    └─ 未找到 → 记录失败日志 ×────── 返回错误信息
-```
-
-- 封面图片通过后端代理，本地缓存 7 天
-- 前端显示封面时，必须使用 `getImageProxyUrl(url)` 获取代理后的 URL
+- [ ] `npx tsc --noEmit` 0 错误
+- [ ] `npm run lint` 通过，无裸 `eslint-disable`（必须带注释）
+- [ ] `npm run test` 核心组件与 Hook 测试通过
+- [ ] 页面具备 Loading / Empty / Error 三态处理，空状态含可操作引导
+- [ ] 所有路由参数与 `useParams` 一致，导航入口已同步
+- [ ] 组件导入顺序：React → 第三方库 → 项目内模块 → 类型定义 → 样式
+- [ ] 页面文件命名 PascalCase，与路由路径对应，删除过期/废弃页面
 
 ---
 
-## 十一、关键约定
+## 💡 变更管理与调度指令
 
-### API 调用规范
+当用户提出需求变更时，`@coordinator` 执行以下路由判断：
 
-```typescript
-// ✅ 正确用法
-import { fetchBooks, createShelf } from '@services/api';
-const books = await fetchBooks();
+1. **UI/文案/交互微调** → 直接路由至 `@frontend-developer`
+2. **新增接口/字段/路由** → 触发 `@tech-lead` 更新契约 → `@backend-developer` 实现 → `@frontend-developer` 对接
+3. **业务流程/架构调整** → 回退至 `@product-manager` 重评 PRD → 重新走完整工作流
+4. **紧急修复 (Hotfix)** → 跳过规划，双端并行定位，修复后补全测试与门禁
 
-// ❌ 错误用法：永远不要直接使用 axios
-import axios from 'axios';
-const books = await axios.get('/api/books');
-```
-
-所有 API 函数必须添加到 `api.ts` 中并导出。
-
-### 统一响应格式
-
-所有后端 API 返回统一格式：
-```json
-{
-  "code": 0,
-  "data": {},
-  "message": "操作成功"
-}
-```
-
-### 错误处理
-
-使用统一的错误消息提取函数：
-
-```typescript
-import { extractErrorMessage } from '@services/api';
-
-try {
-  await someApiCall();
-} catch (error) {
-  const message = extractErrorMessage(error);
-  showNotification(message);
-}
-```
-
-### 代码风格
-
-- **文件命名**：组件用 PascalCase，工具函数用 camelCase
-- **组件内导入顺序**：React → 第三方库 → 项目内模块 → 类型定义 → 样式文件
-- **组件结构顺序**：类型定义 → 常量 → 自定义 Hooks → 子组件 → 主组件
-- **封面图片**：始终使用 `getImageProxyUrl(url)` 作为 `src` 属性值
-- **数据库迁移**：不使用 Alembic，直接通过 `Base.metadata.create_all()` 自动建表
-
-### 豆瓣 Cookie 管理
-
-- 持久化存储在 `backend/app_settings.json`
-- 通过 API 端点 `/api/config/cookie` 进行读写操作
-- 系统启动时自动验证有效性
-- 豆瓣同步功能依赖此 Cookie，失效后同步将不可用
-
-### Vite 代理配置
-
-开发模式下，前端开发服务器将 `/api` 前缀的请求代理至后端：
-
-```
-前端 (5173) → /api/* → 后端 (8000)
-```
+> 📌 **调度示例**:
+> `@tech-lead 请根据 PRD 输出 NFC 扫描后的书架绑定 API 契约，包含请求参数、响应格式及异常码。`
+> `@backend-developer 基于最新 API 契约实现 /api/nfc/bind 接口，补充 pytest 用例，确保参数化查询。`
 
 ---
 
-## 十二、前端组件开发规范
+## 🛠 命令速查与环境搭建
 
-### 核心原则：容器/展示分离
+### 前置依赖
 
-所有新增页面组件必须遵循 **容器组件（业务逻辑）+ 展示组件（UI 渲染）** 的职责分离模式：
+`Python 3.11+` | `Node.js 18+` | `npm 9+` | 推荐使用 `venv`/`conda`
 
-| 层 | 职责 | 包含 |
-|----|------|------|
-| Hook（业务逻辑层） | 状态管理、数据加载、事件处理、API 调用 | `useState`、`useEffect`、`useCallback`、`useAsyncData` |
-| Component（UI 渲染层） | 接收 props、渲染 JSX、样式布局 | Ant Design 组件、条件渲染、`<Table>`、`<Form>` |
+### 后端 (backend/)
 
-### 可复用逻辑提取标准
-
-以下场景必须将逻辑提取到 `src/hooks/` 目录：
-
-1. **数据加载**：任何包含 `useAsyncData` / `useEffect` + API 调用的数据获取逻辑 → `useXxxData.ts`
-2. **操作处理**：包含 3 个以上 `handle*` 回调的 CRUD 操作 → `useXxxOperations.ts`
-3. **状态机**：多步骤流程（向导、进度追踪）→ `useXxxWizard.ts` / `useXxxState.ts`
-4. **表单管理**：包含草稿保存、校验、提交逻辑的表单 → `useXxxForm.ts`
-
-### 组件模板
-
-```typescript
-// ✅ 正确：干净的展示组件
-// pages/ExamplePage.tsx
-export default function ExamplePage() {
-    const { data, loading } = useExampleData();
-    const { handleCreate, handleDelete } = useExampleOperations();
-
-    if (loading) return <Skeleton />;
-    return (
-        <div>
-            <Button onClick={handleCreate}>创建</Button>
-            <Table dataSource={data} />
-        </div>
-    );
-}
-
-// ❌ 错误：组件内直接写 fetch 和复杂状态
-export default function ExamplePage() {
-    const [data, setData] = useState([]);
-    useEffect(() => { fetch('/api/...').then(...) }, []);
-    const handleClick = async () => { ... 20 行逻辑 ... };
-    // ...
-}
-```
-
-### 现有参考实现
-
-| 模式 | 参考文件 |
-|------|----------|
-| 数据加载 Hook | `hooks/useBackupData.ts`（36 行，4 个 useAsyncData 合并） |
-| 操作处理 Hook | `hooks/useBackupOperations.ts`（129 行，8 个操作处理器 + 加载状态） |
-| 向导状态机 Hook | `hooks/useRestoreWizard.ts`（123 行，3 步状态机 + 冲突解决） |
-| 通用数据加载 | `hooks/useAsyncData.ts`（56 行，通用 loading/data/error 三态） |
-| BookService 封装 | `services/bookService.ts`（BookReference 双模式定位） |
-| 统一编辑组件 | `pages/BookEditor.tsx`（支持 /books/:id/edit 和 /shelves/:id/books/:idx/edit） |
-
-### 页面组件行数限制
-
-| 类型 | 建议上限 | 说明 |
-|------|----------|------|
-| 展示页面组件 | ≤ 350 行 | 超出应提取 Hook |
-| 复杂管理页面 | ≤ 500 行 | 超出应拆分子组件 |
-| 自定义 Hook | ≤ 150 行 | 超出应拆分多个 Hook |
-| API 函数文件 | ≤ 600 行 | 超出应按域拆分 |
-
-当前重构成效：
-
-| 组件 | 重构前 | 重构后 | Hook 行数 |
-|------|--------|--------|-----------|
-| BackupManager | 534 行 | 290 行 | useBackupData(36) + useBackupOperations(129) |
-| BackupRestore | 343 行 | 171 行 | useRestoreWizard(123) |
-
----
-
-## 十三、常见问题
-
-### 后端启动失败
-1. 检查是否在 `backend/` 目录下执行命令
-2. 确认 Python 版本 ≥ 3.11
-3. 确认虚拟环境已激活且依赖已安装
-4. 检查 8000 端口是否被占用
-
-### 前端启动失败
-1. 确认 `npm install` 执行成功
-2. 检查 Node.js 版本 ≥ 18
-3. 检查 5173 端口是否被占用
-
-### 豆瓣同步未响应
-1. 确认 `app_settings.json` 中的 Cookie 有效
-2. 检查后端日志中的验证结果
-3. 尝试重新获取并设置 Cookie
-
-### 代码质量验证
 ```bash
-# 后端完整检查
-cd backend
+pip install -r requirements.txt
 ruff check . && mypy app/ && pytest
-
-# 前端完整检查
-cd frontend
-npm run lint && npm run test && npm run build
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+### 前端 (frontend/)
+
+```bash
+npm install
+npm run lint && npm run test && npm run build
+npm run dev  # 监听 0.0.0.0:5173，/api 代理至 localhost:8000
+```
+
+### 启动顺序
+
+1. 终端 1: 启动后端 → 2. 终端 2: 启动前端 → 3. 浏览器访问 `http://localhost:5173`
+2. 首次运行自动创建 `backend/app_settings.json`，通过 `/api/config/cookie` 配置豆瓣 Cookie
 
 ---
 
-**你对交付成果负全责**——从需求理解到可运行、可测试、可维护的完整全栈应用。
-```
+## 🤖 AI 对话 Markdown 渲染规范
+
+- **规则**: 所有 AI 对话回复内容必须通过 `<Markdown>` 组件渲染，禁止纯文本 `{msg.content}` 直接展示。
+- **原因**: n8n 工作流返回的回复包含 Markdown 格式（标题、表格、列表等），`react-markdown` 原生安全，不经过 `dangerouslySetInnerHTML`。
+- **用法**:
+  ```tsx
+  import Markdown from '../components/Markdown';
+  <Markdown content={msg.content} isAssistant />
+  ```
+- **样式**: 气泡 `maxWidth: 82%`，组件位置 `frontend/src/components/Markdown.tsx`，样式类 `md-*`
+- **支持格式**: 标题、粗体/斜体、列表、表格、引用、代码、链接、图片、分割线
+
+---
+
+> 你对交付成果负全责——从需求理解到可运行、可测试、可维护的完整全栈应用。
 

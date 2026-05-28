@@ -805,7 +805,7 @@ const AllBooksManager: FC = () => {
                             setSearchKeyword(value || '');
                             setCurrentPage(1);
                         }}
-                        style={{ width: 280 }}
+                        style={{ width: '100%', maxWidth: 280 }}
                         prefix={<SearchOutlined />}
                     />
                     <Segmented
@@ -832,7 +832,7 @@ const AllBooksManager: FC = () => {
                             setFilterSource(v as FilterSource);
                             setCurrentPage(1);
                         }}
-                        style={{ width: 140 }}
+                        style={{ width: '100%', maxWidth: 140 }}
                         options={[
                             { value: 'all', label: '全部来源' },
                             {
@@ -854,7 +854,7 @@ const AllBooksManager: FC = () => {
                             setFilterShelfId(v === 0 ? undefined : v);
                             setCurrentPage(1);
                         }}
-                        style={{ width: 180 }}
+                        style={{ width: '100%', maxWidth: 180 }}
                         options={[
                             { value: 0, label: '全部书架' },
                             ...shelfList.map((s) => ({

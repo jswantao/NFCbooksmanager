@@ -18,6 +18,20 @@ from app.schemas.backup import (
     WebDAVConfigResponse, WebDAVConfigSaveRequest, WebDAVTestResponse,
     AutoBackupStatusResponse,
 )
+from app.schemas.chat import (
+    ChatSearchRequest, ChatSearchResult, ChatSearchResponse,
+    ChatBookDetailResponse, ChatBookShelfInfo,
+    ChatExportResponse,
+)
+from app.schemas.smart_entry import (
+    OCRExtractRequest, OCRExtractResponse,
+    ISBNLookupRequest, ISBNLookupResponse,
+    AutoFillRequest, AutoFillFormData, AutoFillResponse,
+    MissingFieldsResult, EnrichBookResponse,
+    BatchEnrichRequest, BatchEnrichResultItem, BatchEnrichResponse,
+    MissingBooksListItem, MissingBooksListResponse,
+    ImageUploadResponse,
+)
 
 # ==================== 修复 Pydantic 前向引用 ====================
 # ShelfBooksResponse 引用了 MappingResolveResponse 和 BookInShelf

@@ -1,27 +1,32 @@
 // frontend/src/pages/BookEditor.tsx
 /**
- * BookEditor - 统一图书编辑组件
+ * BookEditor - 统一图书编辑组件（含本地封面上传）
  *
  * 支持两种路由模式：
  * - /books/:bookId/edit       → 独立图书编辑 (globalBookId)
  * - /shelves/:shelfId/books/:index/edit → 书架内图书编辑 (shelfRef)
  */
 
-import React, { useState, useEffect, useCallback, useMemo, type FC } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, type FC } from 'react';
 import {
     Card, Form, Input, InputNumber, Button, Select, Skeleton, Result,
-    Breadcrumb, Typography, Space, message, Divider,
+    Breadcrumb, Typography, Space, message, Divider, Upload, Image,
 } from 'antd';
 import {
     ArrowLeftOutlined, HomeOutlined, SaveOutlined, UndoOutlined,
+    UploadOutlined, DeleteOutlined, PictureOutlined,
 } from '@ant-design/icons';
+import type { UploadFile, RcFile } from 'antd/es/upload';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useBookManager } from '../hooks/useBookManager';
 import bookService from '../services/bookService';
+import { uploadBookCover, deleteBookCover } from '../services/api';
+import { extractErrorMessage } from '../services/api';
 import type { BookReference } from '../types/bookRef';
 import { resolveBookRef, isGlobalBookId } from '../types/bookRef';
+import { getBestCoverUrl, getPlaceholderCover } from '../utils/image';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 const { TextArea } = Input;
 
 const BINDING_OPTIONS = [
@@ -45,6 +50,21 @@ const BookEditor: FC = () => {
     const [saving, setSaving] = useState(false);
     const [bookData, setBookData] = useState<any>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
+    const [localCoverPath, setLocalCoverPath] = useState<string | null>(null);
+    const [uploading, setUploading] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const coverUrlValue = Form.useWatch('cover_url', form);
+    const currentTitle = Form.useWatch('title', form);
+    const currentAuthor = Form.useWatch('author', form);
+
+    // 当前最佳封面
+    const doubanUrlValue = Form.useWatch('douban_url', form);
+    const displayCover = useMemo(
+        () => getBestCoverUrl(coverUrlValue, localCoverPath, doubanUrlValue) || getPlaceholderCover(currentTitle, currentAuthor),
+        [coverUrlValue, localCoverPath, doubanUrlValue, currentTitle, currentAuthor]
+    );
 
     // ---- 构建 BookReference ----
     const bookRef = useMemo((): BookReference | null => {
@@ -76,12 +96,13 @@ const BookEditor: FC = () => {
         getBook(numericId).then(book => {
             if (cancelled || !book) return;
             setBookData(book);
+            setLocalCoverPath(book.local_cover_path || null);
         }).catch(err => {
             if (cancelled) return;
             setLoadError(err?.response?.data?.detail || err?.message || '加载失败');
         });
         return () => { cancelled = true; };
-    }, [numericId]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [numericId]); // getBook is stable (useCallback), bookRef guard doesn't need to retrigger
 
     // ---- 填充表单 ----
     useEffect(() => {
@@ -104,9 +125,34 @@ const BookEditor: FC = () => {
         });
     }, [bookData, form]);
 
-    const currentCoverUrl = Form.useWatch('cover_url', form);
-    const currentTitle = Form.useWatch('title', form);
-    const currentAuthor = Form.useWatch('author', form);
+    // ---- 封面上传 ----
+    const handleUpload = useCallback(async (file: RcFile) => {
+        if (!numericId) return;
+        setUploading(true);
+        try {
+            const result = await uploadBookCover(numericId, file);
+            setLocalCoverPath(result.local_cover_path);
+            message.success({ content: '封面上传成功', key: 'cover-upload' });
+        } catch (err: unknown) {
+            message.error({ content: extractErrorMessage(err) || '上传失败', key: 'cover-upload' });
+        } finally {
+            setUploading(false);
+        }
+    }, [numericId]);
+
+    const handleDeleteCover = useCallback(async () => {
+        if (!numericId) return;
+        setDeleting(true);
+        try {
+            await deleteBookCover(numericId);
+            setLocalCoverPath(null);
+            message.success({ content: '本地封面已删除', key: 'cover-delete' });
+        } catch (err: unknown) {
+            message.error({ content: extractErrorMessage(err) || '删除失败', key: 'cover-delete' });
+        } finally {
+            setDeleting(false);
+        }
+    }, [numericId]);
 
     // ---- 保存 ----
     const handleSave = useCallback(async () => {
@@ -157,6 +203,9 @@ const BookEditor: FC = () => {
         </div>;
     }
 
+    const hasDoubanCover = !!coverUrlValue;
+    const hasLocalCover = !!localCoverPath;
+
     return (
         <div style={{ maxWidth: 960, margin: '0 auto', padding: 24 }}>
             <Breadcrumb style={{ marginBottom: 16 }} items={[
@@ -173,6 +222,101 @@ const BookEditor: FC = () => {
 
             <Card>
                 <Form form={form} layout="vertical" onFinish={handleSave}>
+                    {/* 封面预览与上传 */}
+                    <Form.Item label="图书封面">
+                        <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                            <div style={{
+                                width: 140,
+                                borderRadius: 10,
+                                overflow: 'hidden',
+                                boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
+                                flexShrink: 0,
+                            }}>
+                                <Image
+                                    src={displayCover}
+                                    alt="封面预览"
+                                    style={{ width: 140, height: 196, objectFit: 'cover', display: 'block' }}
+                                    fallback={getPlaceholderCover(currentTitle, currentAuthor)}
+                                    preview={{ mask: '查看大图' }}
+                                    onError={(e) => {
+                                        (e.currentTarget as HTMLImageElement).src = getPlaceholderCover(currentTitle, currentAuthor);
+                                    }}
+                                />
+                            </div>
+                            <div style={{ flex: 1, minWidth: 200 }}>
+                                {hasDoubanCover && (
+                                    <div style={{
+                                        padding: '6px 12px', borderRadius: 8, marginBottom: 12,
+                                        background: '#f0fdf4', border: '1px solid #bbf7d0',
+                                        fontSize: 13, color: '#166534',
+                                    }}>
+                                        已设置豆瓣封面（优先显示）
+                                    </div>
+                                )}
+                                {hasLocalCover && (
+                                    <div style={{
+                                        padding: '6px 12px', borderRadius: 8, marginBottom: 12,
+                                        background: '#eff6ff', border: '1px solid #bfdbfe',
+                                        fontSize: 13, color: '#1d4ed8',
+                                    }}>
+                                        已上传本地封面{hasDoubanCover ? '（备选）' : '（当前显示）'}
+                                    </div>
+                                )}
+                                {!hasDoubanCover && !hasLocalCover && (
+                                    <div style={{
+                                        padding: '6px 12px', borderRadius: 8, marginBottom: 12,
+                                        background: '#fffbeb', border: '1px solid #fde68a',
+                                        fontSize: 13, color: '#92400e',
+                                    }}>
+                                        暂无封面图片，可上传本地封面
+                                    </div>
+                                )}
+                                <Space size={8} wrap>
+                                    <input
+                                        ref={fileInputRef}
+                                        type="file"
+                                        accept="image/jpeg,image/png,image/webp"
+                                        title="上传本地封面图片"
+                                        style={{ display: 'none' }}
+                                        onChange={(e) => {
+                                            const file = e.target.files?.[0];
+                                            if (file) handleUpload(file as RcFile);
+                                            e.target.value = '';
+                                        }}
+                                    />
+                                    <Button
+                                        icon={<UploadOutlined />}
+                                        onClick={() => fileInputRef.current?.click()}
+                                        loading={uploading}
+                                        size="middle"
+                                    >
+                                        {hasLocalCover ? '替换本地封面' : '上传本地封面'}
+                                    </Button>
+                                    {hasLocalCover && (
+                                        <Button
+                                            icon={<DeleteOutlined />}
+                                            danger
+                                            onClick={handleDeleteCover}
+                                            loading={deleting}
+                                            size="middle"
+                                        >
+                                            删除本地封面
+                                        </Button>
+                                    )}
+                                </Space>
+                                <div style={{ marginTop: 8 }}>
+                                    <Text type="secondary" style={{ fontSize: 11 }}>
+                                        支持 JPG/PNG/WebP，最大 5MB
+                                    </Text>
+                                </div>
+                            </div>
+                        </div>
+                    </Form.Item>
+
+                    <Form.Item name="cover_url" label="豆瓣封面 URL">
+                        <Input placeholder="https://img.doubanio.com/view/subject/..." />
+                    </Form.Item>
+
                     <Form.Item name="title" label="书名"
                         rules={[{ required: true, message: '请输入书名' }]}>
                         <Input placeholder="书名" />
@@ -206,9 +350,6 @@ const BookEditor: FC = () => {
                     </Form.Item>
                     <Form.Item name="series" label="丛书">
                         <Input placeholder="丛书系列" />
-                    </Form.Item>
-                    <Form.Item name="cover_url" label="封面 URL">
-                        <Input placeholder="https://img.doubanio.com/..." />
                     </Form.Item>
                     <Form.Item name="douban_url" label="豆瓣链接">
                         <Input placeholder="https://book.douban.com/subject/..." />

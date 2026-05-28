@@ -12,11 +12,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from loguru import logger
 
 from app.api import mapping, shelves, books, admin, images, config_api, import_api, nfc_bridge
-from app.api import physical_shelves, backup
+from app.api import physical_shelves, backup, chat, smart_entry
 from app.core.config import get_settings, validate_config_on_startup
 from app.core.database import (
     init_db, close_all_connections,
@@ -124,6 +125,12 @@ async def lifespan(app: FastAPI):
         _backup_task = asyncio.create_task(_scheduled_backup_loop())
         logger.info(f"[Startup] 自动备份任务已启动 (间隔: {s.BACKUP_AUTO_INTERVAL_HOURS}h)")
 
+    # 启动 Dify 知识库每日对账任务
+    _reconcile_task = None
+    if s.dify_configured:
+        _reconcile_task = asyncio.create_task(_scheduled_reconciliation_loop())
+        logger.info("[Startup] Dify 知识库对账任务已启动 (每日 3:00)")
+
     yield
 
     # 停止清理任务
@@ -139,6 +146,14 @@ async def lifespan(app: FastAPI):
         _backup_task.cancel()
         try:
             await _backup_task
+        except asyncio.CancelledError:
+            pass
+
+    # 停止对账任务
+    if _reconcile_task:
+        _reconcile_task.cancel()
+        try:
+            await _reconcile_task
         except asyncio.CancelledError:
             pass
 
@@ -210,6 +225,33 @@ async def _scheduled_backup_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def _scheduled_reconciliation_loop() -> None:
+    """每日凌晨 3:00 执行 Dify 知识库全量对账"""
+    from datetime import datetime, timezone
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            # 计算到明日凌晨 3:00 的秒数
+            next_run = now.replace(hour=19, minute=0, second=0, microsecond=0)  # UTC 19:00 = CST 3:00
+            if next_run <= now:
+                from datetime import timedelta
+                next_run += timedelta(days=1)
+            delay = (next_run - now).total_seconds()
+            logger.info(f"Dify 对账任务: 下次执行 {next_run.isoformat()} (等待 {delay:.0f}s)")
+            await asyncio.sleep(delay)
+
+            from app.services.dify_sync_service import get_dify_sync_service
+            sync = get_dify_sync_service()
+            if sync.enabled:
+                result = await sync.full_reconciliation()
+                logger.info(f"Dify 每日对账完成: {result}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Dify 对账任务异常: {e}")
+            await asyncio.sleep(3600)
+
+
 app = FastAPI(
     title=_config.APP_NAME,
     version=_config.APP_VERSION,
@@ -218,6 +260,11 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
+
+# 静态文件服务（本地封面上传）
+_uploads_dir = Path("uploads")
+_uploads_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # CORS
 if _config.DEBUG:
@@ -297,6 +344,8 @@ app.include_router(
     tags=["🏗️ 物理书架"],
 )
 app.include_router(backup.router, prefix="/api/backup", tags=["💾 备份"])
+app.include_router(chat.router, prefix="/api/chat", tags=["🤖 AI 助手"])
+app.include_router(smart_entry.router, prefix="/api/smart-entry", tags=["✨ 智能录入"])
 
 
 @app.get("/")

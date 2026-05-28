@@ -237,3 +237,131 @@ async def clear_image_cache(
         "message": f"已清空 {deleted_count} 个文件",
         "deleted_count": deleted_count,
     }
+
+
+# ==================== 本地封面上传 ====================
+
+from fastapi import UploadFile, File as FastAPIFile
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.models.models import BookMetadata
+
+COVER_UPLOAD_DIR = Path("uploads/covers")
+ALLOWED_COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_COVER_SIZE = 5 * 1024 * 1024  # 5MB
+
+
+def _ensure_cover_dir():
+    COVER_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@router.post("/cover/{book_id}", summary="上传本地封面图片")
+async def upload_local_cover(
+    book_id: int,
+    file: UploadFile = FastAPIFile(...),
+    db: Session = Depends(get_db),
+):
+    """
+    为指定图书上传本地封面图片。
+
+    支持的格式: jpg, jpeg, png, webp。最大 5MB。
+    上传后自动更新数据库 local_cover_path 字段。
+    如已有本地封面，旧文件会被替换。
+    """
+    book = db.query(BookMetadata).filter(BookMetadata.book_id == book_id).first()
+    if not book:
+        raise HTTPException(status_code=404, detail="图书不存在")
+
+    # 校验扩展名
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in ALLOWED_COVER_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"不支持的图片格式: {suffix}，仅支持 {', '.join(ALLOWED_COVER_EXTENSIONS)}")
+
+    # 校验文件大小
+    content = await file.read()
+    if len(content) > MAX_COVER_SIZE:
+        raise HTTPException(status_code=400, detail=f"图片过大，最大 {MAX_COVER_SIZE // (1024*1024)}MB")
+
+    _ensure_cover_dir()
+
+    # 删除旧本地封面文件
+    if book.local_cover_path:
+        old_path = Path("uploads") / book.local_cover_path
+        try:
+            old_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # 保存新文件
+    save_name = f"{book_id}_{int(__import__('time').time())}{suffix}"
+    save_path = COVER_UPLOAD_DIR / save_name
+    save_path.write_bytes(content)
+
+    # 更新数据库
+    book.local_cover_path = f"covers/{save_name}"
+    db.commit()
+
+    logger.info(f"本地封面上传成功: book={book_id} path={book.local_cover_path}")
+    return {
+        "success": True,
+        "message": "封面上传成功",
+        "local_cover_path": book.local_cover_path,
+        "local_cover_url": f"/uploads/{book.local_cover_path}",
+    }
+
+
+@router.delete("/cover/{book_id}", summary="删除本地封面图片")
+async def delete_local_cover(
+    book_id: int,
+    db: Session = Depends(get_db),
+):
+    """删除指定图书的本地封面图片（文件和数据库记录）。"""
+    book = db.query(BookMetadata).filter(BookMetadata.book_id == book_id).first()
+    if not book:
+        raise HTTPException(status_code=404, detail="图书不存在")
+
+    if not book.local_cover_path:
+        raise HTTPException(status_code=404, detail="该书没有本地封面")
+
+    # 删除文件
+    file_path = Path("uploads") / book.local_cover_path
+    try:
+        file_path.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning(f"删除封面文件失败: {file_path} - {e}")
+
+    # 清除数据库记录
+    book.local_cover_path = None
+    db.commit()
+
+    logger.info(f"本地封面已删除: book={book_id}")
+    return {"success": True, "message": "本地封面已删除"}
+
+
+# ==================== 本地缓存封面直连 ====================
+
+
+@router.get("/cache/{filename:path}", summary="直接获取本地缓存封面")
+async def serve_cached_cover(filename: str):
+    """
+    直接提供 backend/cache/images/ 目录下的封面文件。
+
+    用于 NeDB 导入等场景，封面已复制到 cache/images/ 但未挂载静态路由。
+    比 /proxy 端点更轻量，无需 URL 参数和域名白名单。
+    """
+    cache_dir = Path("cache/images")
+    file_path = (cache_dir / filename).resolve()
+
+    # 安全检查：确保文件在 cache/images/ 目录内
+    if not str(file_path).startswith(str(cache_dir.resolve())):
+        raise HTTPException(status_code=403, detail="路径非法")
+
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="封面文件不存在")
+
+    media_type, _ = mimetypes.guess_type(str(file_path))
+    return FileResponse(
+        str(file_path),
+        media_type=media_type or "image/jpeg",
+        headers={"Cache-Control": f"public, max-age={BROWSER_CACHE_MAX_AGE}"},
+    )

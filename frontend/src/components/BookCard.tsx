@@ -21,7 +21,7 @@ import {
     TranslationOutlined,
 } from '../icons';
 import type { Book } from '../types';
-import { getCoverUrl, getPlaceholderCover } from '../utils/image';
+import { getBestCoverUrl, getPlaceholderCover } from '../utils/image';
 import { truncateText } from '../utils/format';
 import LazyImage from './LazyImage';
 
@@ -76,8 +76,8 @@ const BookCover: FC<{
     viewMode: string;
 }> = memo(({ book, size, viewMode }) => {
     const coverUrl = useMemo(
-        () => getCoverUrl(book.cover_url) || '',
-        [book.cover_url]
+        () => getBestCoverUrl(book.cover_url, book.local_cover_path, book.douban_url) || '',
+        [book.cover_url, book.local_cover_path, book.douban_url]
     );
 
     const placeholderUrl = useMemo(

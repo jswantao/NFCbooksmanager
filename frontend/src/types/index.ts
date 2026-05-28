@@ -66,6 +66,7 @@ export interface Book {
     publisher?: string;
     publish_date?: string;
     cover_url?: string;
+    local_cover_path?: string;
     summary?: string;
     source: BookSource;
     sort_order: number;
@@ -360,6 +361,29 @@ export interface ImportTaskError {
     error: string;
 }
 
+/** NeDB 导入预览 */
+export interface NedbImportPreview {
+    total: number;
+    new_count: number;
+    existing_count: number;
+    invalid_count: number;
+    internal_dup_count?: number;
+    samples: Array<{
+        title: string;
+        author: string;
+        isbn: string;
+        publisher: string;
+        status: string;
+    }>;
+    duplicate_items: Array<{
+        isbn: string;
+        nedb_title: string;
+        nedb_author: string;
+        existing_book_id: number;
+        existing_title: string;
+    }>;
+}
+
 /** 导入开始参数 */
 export interface ImportStartParams {
     file: File;
@@ -611,4 +635,97 @@ export interface AutoBackupStatus {
     webdav_sync_enabled: boolean;
     webdav_last_sync_at: string | null;
     local_backup_count: number;
+}
+
+
+
+// ==================== 智能录入与信息补全 ====================
+
+export interface OCRExtractResult {
+    success: boolean;
+    isbn?: string;
+    candidates: string[];
+    message: string;
+}
+
+export interface ISBNLookupResult {
+    success: boolean;
+    data?: Record<string, unknown>;
+    source: string;
+    message: string;
+}
+
+export interface AutoFillFormData {
+    isbn?: string;
+    title?: string;
+    author?: string;
+    translator?: string;
+    publisher?: string;
+    publish_date?: string;
+    cover_url?: string;
+    summary?: string;
+    pages?: string;
+    price?: string;
+    binding?: string;
+    original_title?: string;
+    series?: string;
+    rating?: string;
+    douban_url?: string;
+    source?: string;
+}
+
+export interface AutoFillResult {
+    success: boolean;
+    form_data?: AutoFillFormData;
+    source: string;
+    message: string;
+}
+
+export interface MissingFieldsInfo {
+    book_id: number;
+    isbn?: string;
+    title: string;
+    missing_fields: string[];
+    filled_fields: string[];
+    completeness: number;
+    critical_missing: string[];
+    suggestion: string;
+}
+
+export interface EnrichResult {
+    success: boolean;
+    message: string;
+    filled_fields: string[];
+    skipped_fields: string[];
+    completeness: number;
+    lookup_source: string;
+}
+
+export interface BatchEnrichResult {
+    success: boolean;
+    total: number;
+    enriched: number;
+    failed: number;
+    results: Array<{
+        book_id: number;
+        title: string;
+        filled: string[];
+        skipped: string[];
+        success: boolean;
+    }>;
+    message: string;
+}
+
+export interface MissingBooksList {
+    books: MissingFieldsInfo[];
+    total: number;
+    message: string;
+}
+
+export interface ImageUploadISBNResult {
+    success: boolean;
+    isbn?: string;
+    barcode_detected: boolean;
+    message: string;
+    file_path: string;
 }

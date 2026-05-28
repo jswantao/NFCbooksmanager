@@ -38,6 +38,8 @@ import {
     ImportOutlined,
     EnvironmentOutlined,
     CloudServerOutlined,
+    RobotOutlined,
+    ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
 import ThemeSwitcher from './ThemeSwitcher';
@@ -75,12 +77,6 @@ const NAV_ITEMS: NavMenuItem[] = [
         shortcut: 'H',
     },
     {
-        key: '/operate',
-        icon: <ScanOutlined />,
-        label: 'NFC 操作',
-        shortcut: 'N',
-    },
-    {
         key: '/search',
         icon: <SearchOutlined />,
         label: '图书搜索',
@@ -102,10 +98,32 @@ const NAV_ITEMS: NavMenuItem[] = [
         label: '批量导入',
     },
     {
+        key: 'ai',
+        icon: <RobotOutlined />,
+        label: 'AI',
+        children: [
+            {
+                key: '/chat',
+                icon: <RobotOutlined />,
+                label: 'AI 助手',
+            },
+            {
+                key: '/smart-entry',
+                icon: <ThunderboltOutlined />,
+                label: '智能录入',
+            },
+        ],
+    },
+    {
         key: 'admin',
         icon: <SettingOutlined />,
         label: '管理',
         children: [
+            {
+                key: '/operate',
+                icon: <ScanOutlined />,
+                label: 'NFC 操作',
+            },
             {
                 key: '/admin',
                 icon: <DashboardOutlined />,
@@ -229,9 +247,9 @@ const getOpenKeys = (selectedKey: string, items: NavMenuItem[]): string[] => {
 const AppHeader: FC<AppHeaderProps> = ({ currentTitle }) => {
     const navigate = useNavigate();
     const { pathname } = useLocation();
-    const { md } = useBreakpoint();
+    const { xl } = useBreakpoint();
     const { currentTheme } = useTheme();
-    const isMobile = !md;
+    const isMobile = !xl;
 
     // 移动端抽屉状态
     const [drawerOpen, setDrawerOpen] = useState(false);
@@ -369,20 +387,20 @@ const AppHeader: FC<AppHeaderProps> = ({ currentTitle }) => {
 
     /** 桌面端导航菜单 */
     const renderDesktopMenu = () => (
-        <Menu
-            mode="horizontal"
-            selectedKeys={[selectedKey]}
-            defaultOpenKeys={defaultOpenKeys}
-            items={toMenuItems(NAV_ITEMS)}
-            onClick={handleMenuClick}
-            style={{
-                flex: 1,
-                border: 'none',
-                background: 'transparent',
-                minWidth: 0,
-            }}
-            subMenuCloseDelay={0.3}
-        />
+        <div style={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
+            <Menu
+                mode="horizontal"
+                selectedKeys={[selectedKey]}
+                defaultOpenKeys={defaultOpenKeys}
+                items={toMenuItems(NAV_ITEMS)}
+                onClick={handleMenuClick}
+                style={{
+                    border: 'none',
+                    background: 'transparent',
+                }}
+                subMenuCloseDelay={0.3}
+            />
+        </div>
     );
 
     /** 操作按钮区域 */

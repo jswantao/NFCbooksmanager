@@ -819,3 +819,197 @@ async def _run_import_task(
                     await db.commit()
         except Exception:
             pass
+
+
+# ==================== NeDB 数据导入 ====================
+
+
+@router.post("/nedb/preview", summary="预览 NeDB 数据导入")
+async def preview_nedb_import_endpoint(
+    file: UploadFile = File(..., description="NeDB 数据库文件 (.db)"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    预览 NeDB 数据库文件内容
+
+    返回统计和重复 ISBN 详情:
+    - total, new_count, existing_count, invalid_count
+    - samples: 前 10 条样本
+    - duplicate_items: 重复 ISBN 详情 [{isbn, nedb_title, existing_book_id, existing_title}]
+    """
+    extension = (
+        file.filename.rsplit(".", 1)[-1].lower()
+        if file.filename and "." in file.filename
+        else ""
+    )
+    if extension != "db":
+        raise HTTPException(status_code=400, detail="仅支持 .db (NeDB) 文件格式")
+
+    from app.services.nedb_import_service import parse_nedb_file, preview_nedb_import
+
+    file_content = await file.read()
+    try:
+        docs = parse_nedb_file(file_content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"NeDB 文件解析失败: {e}")
+
+    if not docs:
+        raise HTTPException(status_code=400, detail="NeDB 文件中无数据")
+
+    return preview_nedb_import(docs, db)
+
+
+@router.post("/nedb/start", summary="启动 NeDB 数据导入")
+async def start_nedb_import(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="NeDB 数据库文件 (.db)"),
+    shelf_id: Optional[int] = Form(None, description="导入后添加到书架"),
+    cover_path: Optional[str] = Form(None, description="封面文件所在目录（如 D:/ManageBooks/covers）"),
+    duplicate_resolution: Optional[str] = Form(None, description="重复ISBN处理策略 JSON: {\"978xxx\":\"merge\",\"978yyy\":\"skip\"}"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    启动 NeDB 数据导入任务
+
+    后台异步逐条导入，通过 GET /api/import/status/{task_id} 查询进度。
+
+    Args:
+        file: NeDB .db 文件
+        shelf_id: 可选书架 ID
+        cover_path: 封面文件目录（用户手动指定，如 D:/ManageBooks/covers）
+        duplicate_resolution: JSON 字符串，ISBN→action 映射
+    """
+    extension = (
+        file.filename.rsplit(".", 1)[-1].lower()
+        if file.filename and "." in file.filename
+        else ""
+    )
+    if extension != "db":
+        raise HTTPException(status_code=400, detail="仅支持 .db (NeDB) 文件格式")
+
+    from app.services.nedb_import_service import parse_nedb_file, execute_nedb_import
+
+    file_content = await file.read()
+    try:
+        docs = parse_nedb_file(file_content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"NeDB 文件解析失败: {e}")
+
+    if not docs:
+        raise HTTPException(status_code=400, detail="NeDB 文件中无数据")
+
+    # 解析去重决策
+    resolution_dict = {}
+    if duplicate_resolution:
+        try:
+            resolution_dict = json.loads(duplicate_resolution)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="duplicate_resolution JSON 格式无效")
+
+    task_id = str(uuid.uuid4())
+
+    task = ImportTask(
+        task_id=task_id,
+        file_name=file.filename or "unknown.db",
+        total=len(docs),
+        completed=0,
+        success=0,
+        failed=0,
+        synced=0,
+        status=ImportStatus.PENDING.value,
+    )
+    db.add(task)
+    db.commit()
+
+    background_tasks.add_task(
+        _run_nedb_import,
+        task_id=task_id,
+        docs=docs,
+        cover_path=cover_path or "",
+        shelf_id=shelf_id,
+        duplicate_resolution=resolution_dict,
+    )
+
+    return {
+        "task_id": task_id,
+        "total": len(docs),
+        "status": "pending",
+        "message": f"NeDB 导入任务已创建 ({len(docs)} 条记录)",
+    }
+
+
+async def _run_nedb_import(
+    task_id: str,
+    docs: List[Dict[str, Any]],
+    cover_path: str,
+    shelf_id: Optional[int],
+    duplicate_resolution: Dict[str, str],
+) -> None:
+    """后台执行 NeDB 导入"""
+    from app.services.nedb_import_service import execute_nedb_import
+    from app.models.models import ImportTask, ImportStatus
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ImportTask).filter(ImportTask.task_id == task_id)
+        )
+        task = result.scalar_one_or_none()
+        if not task:
+            return
+
+        task.status = ImportStatus.RUNNING.value
+        task.started_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    try:
+        import asyncio as _asyncio
+
+        def _do_import():
+            from app.core.database import SyncSessionLocal
+            db_sync = SyncSessionLocal()
+            try:
+                outcome = execute_nedb_import(
+                    docs=docs,
+                    db_session=db_sync,
+                    cover_path=cover_path,
+                    shelf_id=shelf_id,
+                    duplicate_resolution=duplicate_resolution,
+                )
+                db_sync.commit()
+                return outcome
+            except Exception as e:
+                db_sync.rollback()
+                raise
+            finally:
+                db_sync.close()
+
+        outcome = await _asyncio.to_thread(_do_import)
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(ImportTask).filter(ImportTask.task_id == task_id)
+            )
+            task = result.scalar_one_or_none()
+            if task:
+                task.status = ImportStatus.COMPLETED.value
+                task.completed = outcome["total"]
+                task.success = outcome["inserted"]
+                task.failed = outcome["skipped"] + len(outcome.get("errors", []))
+                task.finished_at = datetime.now(timezone.utc)
+                await db.commit()
+
+    except Exception as e:
+        logger.error(f"NeDB 导入任务异常 [{task_id[:8]}]: {e}")
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(ImportTask).filter(ImportTask.task_id == task_id)
+                )
+                task = result.scalar_one_or_none()
+                if task:
+                    task.status = ImportStatus.FAILED.value
+                    task.error = str(e)[:500]
+                    task.finished_at = datetime.now(timezone.utc)
+                    await db.commit()
+        except Exception:
+            pass

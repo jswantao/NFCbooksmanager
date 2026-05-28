@@ -1,0 +1,81 @@
+# =============================================================================
+# 书房管理系统 (NFC Books Manager) — Git 忽略规则
+# =============================================================================
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.manifest
+*.spec
+
+# ---------- 虚拟环境 ----------
+venv/
+.venv/
+env/
+.env/
+*.env
+.env.*
+!.env.example
+
+# ---------- Node / 前端 ----------
+node_modules/
+.npm
+.pnpm
+*.log
+npm-debug.log*
+frontend/dist/
+
+# ---------- IDE / 编辑器 ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 测试与覆盖率 ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# ---------- 数据库 ----------
+*.db
+*.db-shm
+*.db-wal
+!*.backup
+
+# ---------- 运行时数据 ----------
+backend/logs/
+backend/backups/
+backend/cache/
+backend/uploads/
+backend/app_settings.json
+
+# ---------- Storybook ----------
+frontend/storybook-static/
+
+# ---------- 临时文件 ----------
+*.tmp
+*.temp
+*.bak
+*.swp
+tmp/
+temp/
+
+# ---------- 项目配置 (本地) ----------
+CLAUDE.md
+.claude/
+.backups
+ManageBooksMac/

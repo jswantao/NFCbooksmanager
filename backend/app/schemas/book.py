@@ -14,7 +14,8 @@ class BookBase(AppSchema):
     translator: Optional[str] = Field(None, max_length=300, description="译者")
     publisher: Optional[str] = Field(None, max_length=200, description="出版社", examples=["重庆出版社"])
     publish_date: Optional[str] = Field(None, max_length=50, description="出版日期", examples=["2008-1"])
-    cover_url: Optional[str] = Field(None, max_length=500, description="封面图片 URL")
+    cover_url: Optional[str] = Field(None, max_length=500, description="封面图片 URL（豆瓣）")
+    local_cover_path: Optional[str] = Field(None, max_length=200, description="本地封面上传路径")
     summary: Optional[str] = Field(None, description="图书内容简介")
     pages: Optional[int] = Field(None, description="总页数", examples=[302])
     price: Optional[str] = Field(None, max_length=50, description="定价", examples=["23.00元"])
@@ -34,9 +35,10 @@ class BookBase(AppSchema):
 
 
 class BookCreateManualRequest(BookBase):
-    """手动创建图书请求"""
+    """手动/智能录入创建图书请求"""
     shelf_id: Optional[int] = Field(None, description="目标逻辑书架 ID", examples=[1])
     sort_order: int = Field(0, description="在书架中的排序位置")
+    source: str = Field("manual", description="数据来源: manual / smart_entry / isbn / nfc", examples=["smart_entry"])
 
 
 class BookUpdateManualRequest(AppSchema):

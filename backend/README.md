@@ -151,6 +151,8 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `/api/images/*`           | 图片代理/缓存        | 工具     |
 | `/api/import/*`           | 批量导入             | 工具     |
 | `/api/config/*`           | Cookie 配置          | 工具     |
+| `/api/chat/*`             | AI 聊天/搜索/知识库同步 | AI 集成  |
+| `/api/smart-entry/*`      | 智能录入/OCR/ISBN查询/信息补全 | AI 集成  |
 
 ---
 
@@ -212,8 +214,11 @@ NFCbooksmanager/
 │   │   │   ├── import_schema.py  # 批量导入模型
 │   │   │   └── dashboard.py      # 仪表盘与管理配置模型
 │   │   ├── services/         # 业务服务
-│   │   │   ├── douban_service.py # 豆瓣服务编排（多策略搜索 + 限流 + 缓存）
+│   │   │   ├── douban_service.py # 豆瓣服务编排（5 策略搜索 + 限流 + 缓存）
 │   │   │   ├── douban_parser.py  # 豆瓣 HTML 解析器（纯函数式）
+│   │   │   ├── google_books_service.py # Google Books API 适配器（缓存/限流/统计）
+│   │   │   ├── smart_entry_service.py  # 智能录入（多源查询 + 字段检测 + 自动补全）
+│   │   │   ├── chat_service.py   # 聊天搜索服务
 │   │   │   └── nfc_service.py    # NFC 载荷生成/校验
 │   │   ├── templates/        # Jinja2 模板
 │   │   │   ├── error.html        # 错误页面

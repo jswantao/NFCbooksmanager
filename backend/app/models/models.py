@@ -23,9 +23,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship, validates
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.sql import func, select, case, and_
+from sqlalchemy.sql import func, select, case, and_, text as sa_text
 
-from app.core.database import Base
+from app.core.database import Base, is_postgresql
+from app.models.fields import FlexJSON
 
 
 # ==================== 枚举定义 ====================
@@ -44,15 +45,17 @@ class MappingType(str, enum.Enum):
 class BookSource(str, enum.Enum):
     """
     图书数据来源标识
-    
+
     用于追踪图书元数据的来源渠道：
     - DOUBAN: 豆瓣 API 自动同步
-    - MANUAL: 用户手动录入（豆瓣失败时的补录方式）
+    - MANUAL: 用户手动录入
+    - SMART_ENTRY: 智能录入助手 (n8n + 多源查询)
     - ISBN: 通过 ISBN 数据库查询
     - NFC: 通过 NFC 标签关联获取
     """
     DOUBAN = "douban"
     MANUAL = "manual"
+    SMART_ENTRY = "smart_entry"
     ISBN = "isbn"
     NFC = "nfc"
 
@@ -481,7 +484,12 @@ class BookMetadata(Base, TimestampMixin):
     cover_url = Column(
         String(500),
         nullable=True,
-        
+
+    )
+    local_cover_path = Column(
+        String(200),
+        nullable=True,
+        comment="用户手动上传的本地封面图片路径（如 covers/42_1712345678.jpg）"
     )
     summary = Column(
         Text,
@@ -831,24 +839,20 @@ class ActivityLog(Base, TimestampMixin):
         
     )
     detail = Column(
-        Text,
+        FlexJSON,
         nullable=True,
-        
     )
     entity_type = Column(
         String(50),
         nullable=True,
-        
     )
     entity_id = Column(
         Integer,
         nullable=True,
-        
     )
     status = Column(
         String(20),
         default="success",
-        
     )
 
     # 表级索引
@@ -936,14 +940,12 @@ class ImportTask(Base, TimestampMixin):
         
     )
     results = Column(
-        Text,
+        FlexJSON,
         nullable=True,
-        
     )
     errors = Column(
-        Text,
+        FlexJSON,
         nullable=True,
-        
     )
     options = Column(
         Text,
@@ -1054,3 +1056,7 @@ class NfcWriteTask(Base):
 
     def __repr__(self) -> str:
         return f"<NfcWriteTask '{self.task_id}' shelf=#{self.shelf_id}>"
+
+
+    def __repr__(self) -> str:
+        return f"<DifySyncLog book=#{self.book_id} op={self.operation} status={self.status}>"

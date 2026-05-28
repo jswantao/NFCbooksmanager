@@ -600,7 +600,7 @@ const ShelfView: FC = () => {
                             value={searchKeyword}
                             onChange={(e) => setSearchKeyword(e.target.value)}
                             onSearch={(value) => setSearchKeyword(value || '')}
-                            style={{ width: 300 }}
+                            style={{ width: '100%', maxWidth: 300 }}
                             size="large"
                             prefix={<SearchOutlined />}
                         />
@@ -820,6 +820,7 @@ const ShelfView: FC = () => {
                 cancelText="取消"
                 okButtonProps={{ disabled: !targetShelfId }}
                 width={460}
+                style={{ maxWidth: '94vw' }}
             >
                 <div style={{ marginBottom: 12 }}>
                     <Text type="secondary">

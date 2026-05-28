@@ -240,5 +240,18 @@ export default defineConfig(({ mode }) => {
         
         // 环境变量前缀
         envPrefix: 'VITE_',
+
+        // Vitest 测试配置
+        test: {
+            globals: true,
+            environment: 'jsdom',
+            setupFiles: ['./src/test/setup.ts'],
+            css: false,
+            server: {
+                deps: {
+                    inline: ['react', 'react-dom', '@testing-library/react'],
+                },
+            },
+        },
     };
 });

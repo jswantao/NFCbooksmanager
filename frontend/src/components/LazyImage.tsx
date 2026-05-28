@@ -175,7 +175,7 @@ const LazyImage: FC<LazyImageProps> = ({
     };
 
     // 决定显示哪个图片
-    const displaySrc = isError && fallback ? fallback : src;
+    const displaySrc = (isError && fallback) || !src ? (fallback || placeholder || '') : src;
     const showPlaceholder = !isLoaded && !isError && placeholder;
 
     return (
@@ -214,7 +214,7 @@ const LazyImage: FC<LazyImageProps> = ({
             )}
 
             {/* 主图片 */}
-            {isInView && (
+            {isInView && displaySrc && (
                 <img
                     key={`${displaySrc}-${retryKey}`}
                     src={displaySrc}

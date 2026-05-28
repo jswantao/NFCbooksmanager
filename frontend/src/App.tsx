@@ -36,7 +36,6 @@ const pages = {
     BookCoverWall: lazy(() => import('./pages/BookCoverWall')),
     BatchImport: lazy(() => import('./pages/BatchImport')),
     BookManualAdd: lazy(() => import('./pages/BookManualAdd')),
-    BookManualEdit: lazy(() => import('./pages/BookManualEdit')),
     CookieConfig: lazy(() => import('./pages/CookieConfig')),
     Dashboard: lazy(() => import('./pages/Dashboard')),
     ShelfManager: lazy(() => import('./pages/ShelfManager')),
@@ -45,6 +44,8 @@ const pages = {
     BackupManager: lazy(() => import('./pages/BackupManager')),
     BackupRestore: lazy(() => import('./pages/BackupRestore')),
     BookEditor: lazy(() => import('./pages/BookEditor')),
+    ChatAssistant: lazy(() => import('./pages/ChatAssistant')),
+    SmartEntry: lazy(() => import('./pages/SmartEntry')),
     // 保留旧编辑页兼容
     BookManualEdit: lazy(() => import('./pages/BookManualEdit')),
 } as const;
@@ -65,6 +66,8 @@ const routes: RouteConfig[] = [
     { path: '/', component: pages.HomePage, preload: true, meta: { title: '首页' } },
     { path: '/operate', component: pages.NFCOperator, meta: { title: 'NFC 操作' } },
     { path: '/search', component: pages.BookSearch, meta: { title: '搜索图书' } },
+    { path: '/chat', component: pages.ChatAssistant, meta: { title: 'AI 助手' } },
+    { path: '/smart-entry', component: pages.SmartEntry, meta: { title: '智能录入' } },
     { path: '/shelf/:shelfId', component: pages.ShelfView, preload: true, meta: { title: '书架视图' } },
     { path: '/shelf/:shelfId/book/:bookId', component: pages.BookDetail, meta: { title: '图书详情' } },
     { path: '/wall', component: pages.BookCoverWall, meta: { title: '封面墙' } },

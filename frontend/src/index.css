@@ -294,8 +294,23 @@ img {
 .ant-breadcrumb a { color: var(--app-text-secondary); transition: color var(--transition-fast); }
 .ant-breadcrumb a:hover { color: var(--brand-primary); }
 
-.ant-menu-item { border-radius: var(--radius-md) !important; margin: 2px 8px !important; }
+.ant-menu-item { border-radius: var(--radius-md) !important; margin: 2px 4px !important; }
 .ant-menu-item-selected { background: var(--brand-primary-bg, #fdf5ef) !important; font-weight: 600; }
+
+/* ---- 顶部导航溢出处理 ---- */
+.ant-layout-header .ant-menu-horizontal {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    overflow: hidden !important;
+    width: max-content !important;
+}
+/* 溢出时由 antd 自动将超出的项移入"更多"子菜单 */
+.ant-menu-overflow {
+    flex-wrap: nowrap !important;
+}
+.ant-menu-submenu-title {
+    padding: 0 12px !important;
+}
 
 /* ---- 消息/弹出 ---- */
 .ant-message-notice-content { border-radius: var(--radius-lg) !important; box-shadow: var(--shadow-lg) !important; }
@@ -548,7 +563,126 @@ img {
     }
 }
 
-/* ==================== 9. 暗色模式 ====================
+/* ==================== 9. 聊天助手 ==================== */
+
+.chat-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.chat-message-user {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 16px;
+}
+
+.chat-message-assistant {
+    display: flex;
+    justify-content: flex-start;
+    margin-bottom: 16px;
+}
+
+.chat-typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 12px;
+}
+
+.chat-typing-indicator span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #8c7b72;
+    animation: typingBounce 1.4s infinite ease-in-out both;
+}
+
+.chat-typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.chat-typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+.chat-typing-indicator span:nth-child(3) { animation-delay: 0s; }
+
+/* ---- AI 对话 Markdown 渲染样式 ---- */
+.md-content { line-height: 1.7; word-break: break-word; }
+.md-content.md-assistant { color: #2c3e1f; }
+.md-content.md-user { color: #fff; }
+
+.md-h1 { font-size: 1.3em; font-weight: 700; margin: 0.6em 0 0.3em; padding-bottom: 0.2em; border-bottom: 1px solid rgba(0,0,0,0.1); }
+.md-h2 { font-size: 1.15em; font-weight: 700; margin: 0.5em 0 0.25em; }
+.md-h3 { font-size: 1.05em; font-weight: 600; margin: 0.4em 0 0.2em; }
+.md-h4 { font-size: 1em; font-weight: 600; margin: 0.3em 0 0.15em; }
+
+.md-p { margin: 0.25em 0; }
+.md-p:first-child { margin-top: 0; }
+.md-p:last-child { margin-bottom: 0; }
+
+.md-strong { font-weight: 700; }
+.md-em { font-style: italic; }
+
+.md-code-inline {
+    background: rgba(0,0,0,0.07); padding: 1px 5px; border-radius: 4px;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.9em;
+}
+.md-code-block {
+    display: block; background: rgba(0,0,0,0.06); padding: 8px 12px; border-radius: 8px;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85em;
+    overflow-x: auto; margin: 0.5em 0;
+}
+.md-pre { margin: 0.5em 0; }
+
+.md-ul, .md-ol { padding-left: 1.4em; margin: 0.3em 0; }
+.md-ul li::marker, .md-ol li::marker { color: inherit; opacity: 0.6; }
+
+.md-blockquote {
+    border-left: 3px solid rgba(0,0,0,0.15); padding: 4px 0 4px 12px; margin: 0.4em 0;
+    color: inherit; opacity: 0.85; font-style: italic;
+}
+
+.md-table-wrap { overflow-x: auto; margin: 0.5em 0; }
+.md-table { border-collapse: collapse; width: 100%; font-size: 0.92em; }
+.md-table th, .md-table td {
+    border: 1px solid rgba(0,0,0,0.12); padding: 6px 10px; text-align: left;
+}
+.md-table th { background: rgba(0,0,0,0.05); font-weight: 600; }
+
+.md-link { color: inherit; text-decoration: underline; opacity: 0.9; }
+.md-link:hover { opacity: 1; }
+
+.md-img { max-width: 100%; border-radius: 8px; margin: 0.3em 0; }
+
+.md-hr { border: none; border-top: 1px solid rgba(0,0,0,0.1); margin: 0.5em 0; }
+
+/* 助手气泡内 Markdown 颜色适配 */
+.md-assistant .md-code-inline { background: rgba(0,0,0,0.06); }
+.md-assistant .md-table th { background: rgba(0,0,0,0.04); }
+.md-assistant .md-blockquote { border-left-color: rgba(0,0,0,0.15); }
+.md-assistant .md-link { color: #4a6741; }
+
+/* 用户气泡内 Markdown 颜色适配 */
+.md-user .md-code-inline { background: rgba(255,255,255,0.2); }
+.md-user .md-table th { background: rgba(255,255,255,0.15); }
+.md-user .md-table th, .md-user .md-table td { border-color: rgba(255,255,255,0.2); }
+.md-user .md-blockquote { border-left-color: rgba(255,255,255,0.3); }
+.md-user .md-link { color: #fff; }
+.md-user .md-h1 { border-bottom-color: rgba(255,255,255,0.2); }
+
+@keyframes typingBounce {
+    0%, 80%, 100% { transform: scale(0); }
+    40% { transform: scale(1); }
+}
+
+.chat-suggestion-tag {
+    transition: all 0.2s ease;
+}
+
+.chat-suggestion-tag:hover {
+    border-style: solid !important;
+    border-color: var(--brand-primary, #8B4513) !important;
+    background: rgba(139, 69, 19, 0.06);
+    transform: translateY(-1px);
+}
+
+/* ==================== 10. 暗色模式 ====================
  * 由 JS 主题系统 (ThemeContext) 统一管理，
  * 通过设置 CSS 变量和 Ant Design ConfigProvider 实现。
  * 用户可通过 ThemeSwitcher 组件切换主题。 */

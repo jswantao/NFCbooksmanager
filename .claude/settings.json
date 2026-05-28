@@ -220,7 +220,22 @@
       "Bash(sed -n '870,880p' /g/Desktop/NFCbooksmanager/frontend/src/pages/HomePage.tsx)",
       "Bash(timeout 12 bash -c 'cd /g/Desktop/NFCbooksmanager/frontend && \"$PROGRAMFILES\"/nodejs/npx.cmd tsc --noEmit 2>&1 | grep -i \"HomePage\" | head -10')",
       "Bash(sed -n '65,78p' /g/Desktop/NFCbooksmanager/frontend/src/pages/HomePage.tsx)",
-      "Bash(sed -n '81,144p' /g/Desktop/NFCbooksmanager/frontend/src/pages/HomePage.tsx)"
+      "Bash(sed -n '81,144p' /g/Desktop/NFCbooksmanager/frontend/src/pages/HomePage.tsx)",
+      "Bash(python -c \"from app.models.models import DifySyncLog; print\\('DifySyncLog model OK'\\)\")",
+      "Bash(python -c \"from app.schemas.chat import ChatSearchRequest, DifySyncStatusResponse; print\\('Chat schemas OK'\\)\")",
+      "Bash(python -c \"from app.services.dify_sync_service import get_dify_sync_service; print\\('DifySyncService OK'\\)\")",
+      "Bash(python -c \"from app.services.chat_service import search_local_books, tokenize_query; print\\('tokens:', tokenize_query\\('日本文学的书'\\)\\); print\\('Chat service OK'\\)\")",
+      "Bash(python -m pytest test_api.py -x -q --tb=short)",
+      "Bash(curl -s -X POST http://localhost:8000/api/chat/search -H \"Content-Type: application/json\" -d '{\"query\":\"日本文学\",\"limit\":3}')",
+      "Bash(curl -s -X POST http://localhost:8000/api/chat/search -H \"Content-Type: application/json\" -d \"{\\\\\"query\\\\\":\\\\\"test\\\\\",\\\\\"limit\\\\\":3}\")",
+      "Bash(curl -s http://localhost:8000/api/chat/book/1)",
+      "Bash(curl -s http://localhost:8000/api/chat/export)",
+      "Bash(python -c \"from app.services.chat_service import export_books_for_knowledge_base; print\\('Import OK'\\)\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\" https://udify.app/chatbot/CIMR7kLaNiC6AtiR)",
+      "Bash(curl -s https://udify.app/chatbot/CIMR7kLaNiC6AtiR)",
+      "Bash(python -c \"from app.api.images import upload_local_cover, delete_local_cover; print\\('Upload endpoints OK'\\)\")",
+      "Bash(python -c \"from app.models.models import BookMetadata; print\\('local_cover_path' in [c.name for c in BookMetadata.__table__.columns]\\)\")",
+      "Bash(curl -s -X POST http://localhost:8000/api/images/cover/1 -F \"file=@-;filename=test.jpg\")"
     ],
     "additionalDirectories": [
       "G:\\Desktop\\NFCbooksmanager\\backend\\app\\schemas\\__pycache__"

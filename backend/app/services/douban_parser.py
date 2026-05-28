@@ -47,15 +47,15 @@ def parse_book(html: str, isbn: str, url: str = "") -> Dict[str, Any]:
 def _parse_info_block(text: str, data: Dict[str, Any]) -> None:
     """解析豆瓣详情页 #info 区块的键值对文本"""
     patterns = {
-        "author": r"作者[：:]\s*(.+?)(?:\n|$)",
-        "translator": r"译者[：:]\s*(.+?)(?:\n|$)",
-        "publisher": r"出版社[：:]\s*(.+?)(?:\n|$)",
-        "publish_date": r"出版年[：:]\s*(.+?)(?:\n|$)",
-        "pages": r"页数[：:]\s*(.+?)(?:\n|$)",
-        "price": r"定价[：:]\s*(.+?)(?:\n|$)",
-        "binding": r"装帧[：:]\s*(.+?)(?:\n|$)",
-        "original_title": r"原作名[：:]\s*(.+?)(?:\n|$)",
-        "series": r"丛书[：:]\s*(.+?)(?:\n|$)",
+        "author": r"作者\s*[：:]\s*(.+?)(?:\n|$)",
+        "translator": r"译者\s*[：:]\s*(.+?)(?:\n|$)",
+        "publisher": r"出版社\s*[：:]\s*(.+?)(?:\n|$)",
+        "publish_date": r"出版年\s*[：:]\s*(.+?)(?:\n|$)",
+        "pages": r"页数\s*[：:]\s*(.+?)(?:\n|$)",
+        "price": r"定价\s*[：:]\s*(.+?)(?:\n|$)",
+        "binding": r"装帧\s*[：:]\s*(.+?)(?:\n|$)",
+        "original_title": r"原作名\s*[：:]\s*(.+?)(?:\n|$)",
+        "series": r"丛书\s*[：:]\s*(.+?)(?:\n|$)",
     }
 
     for field, pattern in patterns.items():

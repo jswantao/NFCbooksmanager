@@ -34,72 +34,82 @@ from .config import settings
 
 # ==================== 数据库类型判断 ====================
 
-def _is_sqlite() -> bool:
-    """
-    判断当前使用的数据库是否为 SQLite
-    
-    通过检查 DATABASE_URL 中是否包含 'sqlite' 关键字判断。
-    
-    Returns:
-        True 表示使用 SQLite，False 表示使用其他数据库（如 PostgreSQL）
-    """
-    return "sqlite" in settings.DATABASE_URL.lower()
+is_sqlite: bool = settings.is_sqlite
+is_postgresql: bool = settings.is_postgresql
 
 
 def _sync_url() -> str:
     """
     获取同步数据库引擎 URL
-    
+
     SQLite：sqlite+aiosqlite:///... → sqlite:///...
-    其他数据库：保持不变
+    PostgreSQL / 其他：保持不变
     """
-    return settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "sqlite:///")
+    if is_sqlite:
+        return settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "sqlite:///")
+    return settings.DATABASE_URL
 
 
 def _async_url() -> str:
     """
     获取异步数据库引擎 URL
-    
-    SQLite：sqlite:///... → sqlite+aiosqlite:///...
-    其他数据库：保持不变
+
+    SQLite：确保使用 aiosqlite 驱动
+    PostgreSQL：确保使用 asyncpg 驱动
+    其他：保持不变
     """
     url = settings.DATABASE_URL
-    if "aiosqlite" in url or "asyncpg" in url:
+    if is_postgresql:
+        if "+asyncpg" not in url:
+            return url.replace("postgresql://", "postgresql+asyncpg://")
         return url
-    return url.replace("sqlite:///", "sqlite+aiosqlite:///")
+    if is_sqlite and "aiosqlite" not in url:
+        return url.replace("sqlite:///", "sqlite+aiosqlite:///")
+    return url
 
 
 def _engine_kwargs() -> dict:
     """
     获取数据库引擎配置参数
-    
-    根据数据库类型返回不同的连接池配置：
-    
+
     SQLite:
-    - check_same_thread=False: 允许多线程访问（FastAPI 异步需要）
-    - StaticPool: 静态连接池（SQLite 不支持连接复用）
-    
-    PostgreSQL / 其他:
-    - pool_size: 连接池大小
+    - check_same_thread=False: 允许多线程访问
+    - StaticPool: 静态连接池
+
+    PostgreSQL:
+    - pool_size + max_overflow: 连接池动态管理
     - QueuePool: 队列连接池
     - pool_pre_ping=True: 连接前检测可用性
     - pool_recycle: 连接回收时间（1 小时）
-    
-    Returns:
-        引擎参数字典
+    - connect_args: server_settings 设置 search_path
     """
-    if _is_sqlite():
+    if is_sqlite:
         return {
             "connect_args": {"check_same_thread": False},
             "poolclass": StaticPool,
         }
 
-    # 非 SQLite 数据库（PostgreSQL 等）
+    if is_postgresql:
+        kwargs: dict = {
+            "pool_size": settings.DATABASE_POOL_SIZE,
+            "max_overflow": settings.DATABASE_POOL_MAX_OVERFLOW,
+            "poolclass": QueuePool,
+            "pool_pre_ping": True,
+            "pool_recycle": 3600,
+        }
+        # 设置 PostgreSQL search_path
+        if settings.PG_SCHEMA and settings.PG_SCHEMA != "public":
+            kwargs["connect_args"] = {
+                "server_settings": {"search_path": settings.PG_SCHEMA}
+            }
+        return kwargs
+
+    # 其他数据库
     return {
         "pool_size": settings.DATABASE_POOL_SIZE,
         "poolclass": QueuePool,
-        "pool_pre_ping": True,      # 连接前 ping 检测
-        "pool_recycle": 3600,        # 连接 1 小时后回收
+        "pool_pre_ping": True,
+        "pool_recycle": 3600,
     }
 
 
@@ -138,7 +148,7 @@ AsyncSessionLocal = async_sessionmaker(
 
 # ==================== SQLite 特殊配置 ====================
 
-if _is_sqlite():
+if is_sqlite:
     @event.listens_for(sync_engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, connection_record):
         """
@@ -236,28 +246,73 @@ def get_db_context():
 def init_db() -> None:
     """
     初始化数据库
-    
+
     执行步骤：
     1. SQLite：确保数据库文件所在目录存在
-    2. 根据 ORM 模型定义创建所有未存在的表
-    
-    注意：
-    - 使用 create_all 而非 migration，适合开发和小型部署
-    - 生产环境建议使用 Alembic 进行数据库迁移管理
-    - 不会删除或修改已存在的表
+    2. PostgreSQL：确保 pg_trgm 扩展已启用
+    3. 根据 ORM 模型定义创建所有未存在的表
     """
     # SQLite 需要确保目录存在
-    if _is_sqlite():
+    if is_sqlite:
         db_dir = os.path.dirname(settings.database_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
 
+    # PostgreSQL 扩展
+    if is_postgresql:
+        _setup_postgresql_extensions()
+
     # 创建所有表
     Base.metadata.create_all(bind=sync_engine)
 
-    # 统计创建的表数量
     table_count = len(Base.metadata.tables)
-    logger.info(f"表创建完成 ({table_count} 张表)")
+    db_label = "PostgreSQL" if is_postgresql else "SQLite"
+    logger.info(f"数据库初始化完成 ({db_label}, {table_count} 张表)")
+
+
+def _setup_postgresql_extensions() -> None:
+    """
+    启用 PostgreSQL 必要扩展并创建 GIN 索引
+
+    - pg_trgm: 三字组模糊匹配，为 ILIKE 查询提供 GIN 索引加速
+    - ix_books_fts: 全文搜索 GIN 索引（tsvector）
+    - ix_books_title_trgm: 标题三字组 GIN 索引
+    """
+    try:
+        with get_db_context() as db:
+            db.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            db.commit()
+        logger.info("PostgreSQL 扩展已就绪 (pg_trgm)")
+    except Exception as e:
+        logger.warning(f"PostgreSQL pg_trgm 扩展启用失败 (非阻塞): {e}")
+        return
+
+    # 全文搜索 GIN 索引（安全创建，已存在则跳过）
+    try:
+        with get_db_context() as db:
+            db.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_books_fts ON book_metadata "
+                "USING gin(to_tsvector('simple', "
+                "coalesce(title,'') || ' ' || coalesce(author,'') || ' ' || "
+                "coalesce(publisher,'') || ' ' || coalesce(series,'') || ' ' || "
+                "coalesce(summary,'') || ' ' || coalesce(original_title,'')))"
+            ))
+            db.commit()
+        logger.info("PostgreSQL 全文搜索索引已就绪 (ix_books_fts)")
+    except Exception as e:
+        logger.warning(f"全文搜索索引创建失败 (非阻塞): {e}")
+
+    # 标题三字组 GIN 索引
+    try:
+        with get_db_context() as db:
+            db.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_books_title_trgm ON book_metadata "
+                "USING gin(title gin_trgm_ops)"
+            ))
+            db.commit()
+        logger.info("PostgreSQL 三字组索引已就绪 (ix_books_title_trgm)")
+    except Exception as e:
+        logger.warning(f"三字组索引创建失败 (非阻塞): {e}")
 
 
 def check_database_health() -> Dict[str, Any]:
@@ -317,11 +372,11 @@ def get_database_stats() -> Dict[str, Any]:
     - 仪表盘数据展示
     """
     stats = {
-        "type": "SQLite" if _is_sqlite() else "PostgreSQL",
+        "type": "SQLite" if is_sqlite else "PostgreSQL",
     }
 
     # SQLite 文件大小统计
-    if _is_sqlite() and os.path.exists(settings.database_path):
+    if is_sqlite and os.path.exists(settings.database_path):
         size_bytes = os.path.getsize(settings.database_path)
         if size_bytes < 1024 * 1024:
             stats["size"] = f"{size_bytes / 1024:.1f} KB"
@@ -331,20 +386,32 @@ def get_database_stats() -> Dict[str, Any]:
     # 表数量统计
     try:
         with get_db_context() as db:
-            if _is_sqlite():
+            if is_postgresql:
+                result = db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM information_schema.tables "
+                        "WHERE table_schema = :schema"
+                    ),
+                    {"schema": settings.PG_SCHEMA},
+                )
+                stats["tables"] = result.scalar()
+                # 数据库总大小
+                size_result = db.execute(
+                    text("SELECT pg_database_size(current_database())")
+                )
+                pg_size = size_result.scalar()
+                if pg_size:
+                    stats["size"] = (
+                        f"{pg_size / (1024*1024):.1f} MB"
+                        if pg_size > 1024 * 1024
+                        else f"{pg_size / 1024:.0f} KB"
+                    )
+            else:
+                # SQLite
                 result = db.execute(
                     text(
                         "SELECT COUNT(*) FROM sqlite_master "
                         "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                    )
-                )
-                stats["tables"] = result.scalar()
-            else:
-                # PostgreSQL 使用 information_schema
-                result = db.execute(
-                    text(
-                        "SELECT COUNT(*) FROM information_schema.tables "
-                        "WHERE table_schema = 'public'"
                     )
                 )
                 stats["tables"] = result.scalar()

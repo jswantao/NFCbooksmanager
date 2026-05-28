@@ -197,11 +197,11 @@ async def list_shelves(
 
 # ==================== 创建书架 ====================
 
-@router.post("/", response_model=ApiResponse[None], summary="创建逻辑书架")
+@router.post("/", response_model=ApiResponse[dict], summary="创建逻辑书架")
 async def create_shelf(
     request: ShelfCreateRequest,
     db: Session = Depends(get_db),
-) -> ApiResponse[None]:
+) -> ApiResponse[dict]:
     """
     创建新的逻辑书架
     

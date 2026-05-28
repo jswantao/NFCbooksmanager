@@ -38,6 +38,7 @@ import {
     Col,
     Select,
     Switch,
+    Input,
     InputNumber,
     Modal,
     Breadcrumb,
@@ -78,6 +79,8 @@ import {
     startImport,
     getImportStatus,
     cancelImportTask,
+    previewNedbImport,
+    startNedbImport,
     downloadImportTemplate,
     listShelves,
     extractErrorMessage,
@@ -110,7 +113,7 @@ interface ShelfOption {
 
 const POLL_INTERVAL_MS = 1500;
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
-const VALID_EXTENSIONS = ['csv', 'xlsx', 'xls', 'txt'];
+const VALID_EXTENSIONS = ['csv', 'xlsx', 'xls', 'txt', 'db'];
 const MAX_POLL_RETRIES = 60; // 最多轮询 60 次（约 90 秒）
 
 const IMPORT_STEPS = [
@@ -206,6 +209,11 @@ const BatchImport: FC = () => {
     const [loadError, setLoadError] = useState<string | null>(null);
     const [shelfLoading, setShelfLoading] = useState(false);
 
+    // NeDB 特有状态
+    const [coverPath, setCoverPath] = useState('');
+    const [duplicateResolutions, setDuplicateResolutions] = useState<Record<string, 'merge' | 'skip'>>({});
+    const [nedbPreview, setNedbPreview] = useState<any>(null);
+
     const isMounted = useRef(true);
 
     // ==================== 生命周期 ====================
@@ -297,7 +305,7 @@ const BatchImport: FC = () => {
 
     const uploadProps: UploadProps = useMemo(
         () => ({
-            accept: '.xlsx,.xls,.csv,.txt',
+            accept: '.xlsx,.xls,.csv,.txt,.db',
             maxCount: 1,
             showUploadList: {
                 showRemoveIcon: true,
@@ -348,15 +356,45 @@ const BatchImport: FC = () => {
         setUploading(true);
         setLoadError(null);
 
+        const isNedb = file.name.toLowerCase().endsWith('.db');
+
         try {
-            const data = await previewImport(file);
-            if (isMounted.current) {
-                setPreview(data);
-                setStep('preview');
-                message.success({
-                    content: `预览完成，发现 ${data.new_count} 本新书`,
-                    key: 'preview-success',
-                });
+            if (isNedb) {
+                const data = await previewNedbImport(file);
+                if (isMounted.current) {
+                    // 补齐字段以兼容 ImportPreview 渲染（NeDB 数据缺少 total_rows/file_name 等）
+                    setPreview({
+                        ...data,
+                        total_rows: data.total,
+                        file_name: file.name,
+                        file_size: file.size,
+                        isbn_column: 'N/A',
+                        duplicate_count: data.duplicate_count || 0,
+                    } as any);
+                    setNedbPreview(data);
+                    // 默认所有重复项选择"合并"
+                    const resolutions: Record<string, 'merge' | 'skip'> = {};
+                    (data.duplicate_items || []).forEach((item: any) => {
+                        resolutions[item.isbn] = 'merge';
+                    });
+                    setDuplicateResolutions(resolutions);
+                    setStep('preview');
+                    message.success({
+                        content: `预览完成，${data.new_count} 新书 + ${data.existing_count} 重复`,
+                        key: 'preview-success',
+                    });
+                }
+            } else {
+                const data = await previewImport(file);
+                if (isMounted.current) {
+                    setPreview(data);
+                    setNedbPreview(null);
+                    setStep('preview');
+                    message.success({
+                        content: `预览完成，发现 ${data.new_count} 本新书`,
+                        key: 'preview-success',
+                    });
+                }
             }
         } catch (err: any) {
             const errorMsg = extractErrorMessage(err) || '文件解析失败';
@@ -381,13 +419,21 @@ const BatchImport: FC = () => {
         setImporting(true);
         setStep('importing');
 
+        const isNedb = file.name.toLowerCase().endsWith('.db');
+
         try {
-            const result = await startImport(file, {
-                file,
-                auto_sync: autoSync,
-                sync_delay: syncDelay,
-                shelf_id: targetShelfId && targetShelfId > 0 ? targetShelfId : undefined,
-            });
+            const result = isNedb
+                ? await startNedbImport(file, {
+                    cover_path: coverPath || undefined,
+                    shelf_id: targetShelfId && targetShelfId > 0 ? targetShelfId : undefined,
+                    duplicate_resolution: duplicateResolutions,
+                })
+                : await startImport(file, {
+                    file,
+                    auto_sync: autoSync,
+                    sync_delay: syncDelay,
+                    shelf_id: targetShelfId && targetShelfId > 0 ? targetShelfId : undefined,
+                });
 
             if (result.task_id) {
                 startPoll(
@@ -416,6 +462,8 @@ const BatchImport: FC = () => {
         autoSync,
         syncDelay,
         targetShelfId,
+        coverPath,
+        duplicateResolutions,
         startPoll,
         handlePollUpdate,
         handlePollComplete,
@@ -575,7 +623,7 @@ const BatchImport: FC = () => {
                 title="文件要求"
                 description={
                     <ul style={{ paddingLeft: 20, margin: '4px 0' }}>
-                        <li>支持格式：.xlsx / .xls / .csv / .txt</li>
+                        <li>支持格式：.xlsx / .xls / .csv / .txt / .db (NeDB)</li>
                         <li>必须包含 ISBN 列</li>
                         <li>文件大小不超过 {formatFileSize(MAX_FILE_SIZE)}</li>
                         <li>建议使用模板文件以确保格式正确</li>
@@ -786,32 +834,33 @@ const BatchImport: FC = () => {
                         导入选项
                     </Title>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                        {/* 自动同步 */}
-                        <div
-                            style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                                padding: '14px 16px',
-                                background: token.colorBgLayout,
-                                borderRadius: 10,
-                            }}
-                        >
-                            <Space size={8}>
-                                <ThunderboltOutlined style={{ color: '#3b82f6', fontSize: 16 }} />
-                                <div>
-                                    <Text strong>自动同步豆瓣数据</Text>
-                                    <br />
-                                    <Text type="secondary" style={{ fontSize: 12 }}>
-                                        导入后自动获取封面、评分等信息
-                                    </Text>
-                                </div>
-                            </Space>
-                            <Switch checked={autoSync} onChange={setAutoSync} />
-                        </div>
-
-                        {/* 同步延迟 */}
-                        {autoSync && (
+                        {/* 自动同步 (非 NeDB 导入时显示) */}
+                        {!file?.name?.toLowerCase().endsWith('.db') && (
+                            <div
+                                style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    padding: '14px 16px',
+                                    background: token.colorBgLayout,
+                                    borderRadius: 10,
+                                }}
+                            >
+                                <Space size={8}>
+                                    <ThunderboltOutlined style={{ color: '#3b82f6', fontSize: 16 }} />
+                                    <div>
+                                        <Text strong>自动同步豆瓣数据</Text>
+                                        <br />
+                                        <Text type="secondary" style={{ fontSize: 12 }}>
+                                            导入后自动获取封面、评分等信息
+                                        </Text>
+                                    </div>
+                                </Space>
+                                <Switch checked={autoSync} onChange={setAutoSync} />
+                            </div>
+                        )}
+                        {/* 同步延迟 (非 NeDB + 启用同步时显示) */}
+                        {!file?.name?.toLowerCase().endsWith('.db') && autoSync && (
                             <div
                                 style={{
                                     display: 'flex',
@@ -874,6 +923,100 @@ const BatchImport: FC = () => {
                         </div>
                     </div>
                 </Card>
+
+                {/* NeDB: 封面目录 */}
+                {file?.name?.toLowerCase().endsWith('.db') && (
+                    <Card
+                        style={{
+                            marginBottom: 24,
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                        }}
+                    >
+                        <Title level={5} style={{ marginTop: 0 }}>
+                            <FileTextOutlined style={{ marginRight: 8 }} />
+                            封面图片目录（可选）
+                        </Title>
+                        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
+                            指定 ManageBooksMac 封面文件夹路径，系统将从中复制封面图片
+                        </Text>
+                        <Input
+                            placeholder="如 D:/ManageBooks/covers"
+                            value={coverPath}
+                            onChange={(e) => setCoverPath(e.target.value)}
+                            style={{ maxWidth: 400 }}
+                            allowClear
+                        />
+                    </Card>
+                )}
+
+                {/* NeDB: 重复 ISBN 决策 */}
+                {nedbPreview?.duplicate_items?.length > 0 && (
+                    <Card
+                        style={{
+                            marginBottom: 24,
+                            borderRadius: 12,
+                            border: `1px solid ${token.colorWarningBorder}`,
+                            background: token.colorWarningBg,
+                        }}
+                    >
+                        <Title level={5} style={{ marginTop: 0 }}>
+                            <ExclamationCircleOutlined style={{ marginRight: 8, color: token.colorWarning }} />
+                            重复 ISBN 处理 ({nedbPreview.duplicate_items.length} 条)
+                        </Title>
+                        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
+                            以下 ISBN 已存在于馆藏中，请逐条选择处理方式：<strong>合并</strong>（填充空缺字段）或<strong>跳过</strong>
+                        </Text>
+                        <div style={{ maxHeight: 300, overflow: 'auto' }}>
+                            <Table
+                                dataSource={nedbPreview.duplicate_items}
+                                rowKey="isbn"
+                                size="small"
+                                pagination={false}
+                                columns={[
+                                    {
+                                        title: 'ISBN',
+                                        dataIndex: 'isbn',
+                                        width: 130,
+                                        ellipsis: true,
+                                    },
+                                    {
+                                        title: 'NeDB 书名',
+                                        dataIndex: 'nedb_title',
+                                        width: 160,
+                                        ellipsis: true,
+                                    },
+                                    {
+                                        title: '馆藏书名',
+                                        dataIndex: 'existing_title',
+                                        width: 160,
+                                        ellipsis: true,
+                                    },
+                                    {
+                                        title: '操作',
+                                        width: 120,
+                                        render: (_: any, record: any) => (
+                                            <Select
+                                                value={duplicateResolutions[record.isbn] || 'merge'}
+                                                onChange={(v) =>
+                                                    setDuplicateResolutions((prev) => ({
+                                                        ...prev,
+                                                        [record.isbn]: v as 'merge' | 'skip',
+                                                    }))
+                                                }
+                                                style={{ width: 100 }}
+                                                options={[
+                                                    { value: 'merge', label: '合并' },
+                                                    { value: 'skip', label: '跳过' },
+                                                ]}
+                                            />
+                                        ),
+                                    },
+                                ]}
+                            />
+                        </div>
+                    </Card>
+                )}
 
                 {/* 操作按钮 */}
                 <Card
@@ -1136,6 +1279,7 @@ const BatchImport: FC = () => {
                     onCancel={() => setShowResults(false)}
                     footer={null}
                     width={900}
+                    style={{ maxWidth: '96vw' }}
                     destroyOnHidden
                 >
                     <Table<ImportTaskResult>
@@ -1155,6 +1299,7 @@ const BatchImport: FC = () => {
                     onCancel={() => setShowErrors(false)}
                     footer={null}
                     width={700}
+                    style={{ maxWidth: '94vw' }}
                     destroyOnHidden
                 >
                     <Alert

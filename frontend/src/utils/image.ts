@@ -65,6 +65,54 @@ export const getCoverUrl = (url?: string, size: 's' | 'm' | 'l' = 'm'): string =
 };
 
 /**
+ * 获取最佳可用封面 URL（多源回退链）
+ *
+ * 优先级:
+ * ① 本地缓存封面 (/uploads/, /api/images/cache/)
+ * ② 豆瓣/外部封面 URL (通过代理)
+ * ③ 用户本地上传封面
+ * ④ 返回空 → 前端显示占位图
+ */
+export const getBestCoverUrl = (
+    coverUrl?: string | null,
+    localCoverPath?: string | null,
+    doubanUrl?: string | null,
+    size: 's' | 'm' | 'l' = 'm'
+): string => {
+    // ① 本地缓存封面
+    if (coverUrl) {
+        if (coverUrl.startsWith('/uploads/') || coverUrl.startsWith('/api/images/')) {
+            return coverUrl;
+        }
+        if (coverUrl.startsWith('http')) {
+            return getCoverUrl(coverUrl, size);
+        }
+        // 裸文件名 → 尝试 /uploads/ 路径
+        if (!coverUrl.startsWith('/') && !/^[A-Za-z]:[/\\]/.test(coverUrl)) {
+            return `/uploads/${coverUrl}`;
+        }
+    }
+
+    // ② 豆瓣 URL（从 douban_url 构造封面，走代理）
+    if (doubanUrl && isDoubanUrl(doubanUrl)) {
+        // 尝试从豆瓣 URL 提取 cover image（通过代理）
+        return `/api/images/proxy?url=${encodeURIComponent(doubanUrl)}`;
+    }
+
+    // ③ 用户本地上传封面
+    if (localCoverPath) {
+        if (localCoverPath.startsWith('/uploads/')) return localCoverPath;
+        if (localCoverPath.startsWith('http')) return getCoverUrl(localCoverPath, size);
+        if (!localCoverPath.startsWith('/') && !/^[A-Za-z]:[/\\]/.test(localCoverPath)) {
+            return `/uploads/${localCoverPath}`;
+        }
+    }
+
+    // ④ 无可用封面
+    return '';
+};
+
+/**
  * 获取豆瓣封面特定尺寸的 URL
  * 
  * @param url - 豆瓣封面 URL

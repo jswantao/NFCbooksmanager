@@ -83,7 +83,7 @@ import {
     extractErrorMessage,
 } from '../services/api';
 import { useAsyncData } from '../hooks/useAsyncData';
-import { getCoverUrl, getPlaceholderCover } from '../utils/image';
+import { getBestCoverUrl, getPlaceholderCover } from '../utils/image';
 import { formatRating, formatDate, formatCurrency, formatAuthors } from '../utils/format';
 import ShelfSelector from '../components/ShelfSelector';
 import type { BookDetail as BookDetailData } from '../types';
@@ -187,8 +187,8 @@ const BookDetail: FC = () => {
     // ==================== 派生数据 ====================
 
     const coverUrl = useMemo(
-        () => getCoverUrl(book?.cover_url) || '',
-        [book?.cover_url]
+        () => getBestCoverUrl(book?.cover_url, book?.local_cover_path, book?.douban_url) || '',
+        [book?.cover_url, book?.local_cover_path, book?.douban_url]
     );
 
     const placeholderUrl = useMemo(
@@ -455,7 +455,7 @@ const BookDetail: FC = () => {
                 key: 'author',
                 label: '作者',
                 span: { xs: 1, sm: book.translator ? 1 : 2 },
-                content: (
+                children: (
                     <Space size={4}>
                         <UserOutlined />
                         <Text strong>{formatAuthors(book.author, 3)}</Text>
@@ -469,7 +469,7 @@ const BookDetail: FC = () => {
                 key: 'translator',
                 label: '译者',
                 span: 1,
-                content: (
+                children: (
                     <Space size={4}>
                         <TranslationOutlined />
                         <Text>{book.translator}</Text>
@@ -483,7 +483,7 @@ const BookDetail: FC = () => {
                 key: 'isbn',
                 label: 'ISBN',
                 span: 1,
-                content: (
+                children: (
                     <Space size={4}>
                         <BarcodeOutlined />
                         <Text code copyable>
@@ -498,7 +498,7 @@ const BookDetail: FC = () => {
                           key: 'publisher',
                           label: '出版社',
                           span: 1,
-                          content: (
+                          children: (
                               <Space size={4}>
                                   <EnvironmentOutlined />
                                   <Text>{book.publisher}</Text>
@@ -513,7 +513,7 @@ const BookDetail: FC = () => {
                           key: 'publish_date',
                           label: '出版日期',
                           span: 1,
-                          content: (
+                          children: (
                               <Space size={4}>
                                   <CalendarOutlined />
                                   <Text>{book.publish_date}</Text>
@@ -528,7 +528,7 @@ const BookDetail: FC = () => {
                           key: 'pages',
                           label: '页数',
                           span: 1,
-                          content: (
+                          children: (
                               <Space size={4}>
                                   <FileTextOutlined />
                                   <Text>{book.pages} 页</Text>
@@ -543,7 +543,7 @@ const BookDetail: FC = () => {
                           key: 'price',
                           label: '定价',
                           span: 1,
-                          content: (
+                          children: (
                               <Space size={4}>
                                   <DollarOutlined />
                                   <Text>{formatCurrency(book.price)}</Text>
@@ -558,7 +558,7 @@ const BookDetail: FC = () => {
                           key: 'binding',
                           label: '装帧',
                           span: 1,
-                          content: (
+                          children: (
                               <Tag color={BINDING_COLORS[book.binding] || 'default'}>
                                   {book.binding}
                               </Tag>
@@ -571,7 +571,7 @@ const BookDetail: FC = () => {
                       {
                           key: 'series',
                           label: '丛书',
-                          span: 2,
+                          span: { xs: 1, sm: 2 },
                           children: <Text>{book.series}</Text>,
                       } as const,
                   ]
@@ -581,8 +581,8 @@ const BookDetail: FC = () => {
                       {
                           key: 'original_title',
                           label: '原作名',
-                          span: 2,
-                          content: (
+                          span: { xs: 1, sm: 2 },
+                          children: (
                               <Space size={4}>
                                   <TranslationOutlined />
                                   <Text italic>{book.original_title}</Text>
@@ -596,8 +596,8 @@ const BookDetail: FC = () => {
                       {
                           key: 'shelf',
                           label: '所在书架',
-                          span: 2,
-                          content: (
+                          span: { xs: 1, sm: 2 },
+                          children: (
                               <Tag
                                   color="blue"
                                   icon={<BookOutlined />}
@@ -844,9 +844,9 @@ const BookDetail: FC = () => {
                                     onLoad={handleImageLoad}
                                     onError={handleImageError}
                                     preview={{
-                                        visible: imagePreviewVisible,
-                                        onVisibleChange: setImagePreviewVisible,
-                                        mask: (
+                                        open: imagePreviewVisible,
+                                        onOpenChange: setImagePreviewVisible,
+                                        cover: (
                                             <div
                                                 style={{
                                                     display: 'flex',
@@ -925,14 +925,6 @@ const BookDetail: FC = () => {
                             >
                                 {sourceConfig.label}
                             </Tag>
-                            {book.binding && (
-                                <Tag
-                                    color={BINDING_COLORS[book.binding] || 'default'}
-                                    style={{ borderRadius: 6, padding: '2px 12px' }}
-                                >
-                                    {book.binding}
-                                </Tag>
-                            )}
                             {hasShelf && (
                                 <Tag
                                     color="blue"
@@ -1005,16 +997,6 @@ const BookDetail: FC = () => {
                         >
                             {book.title}
                         </Title>
-
-                        {/* 原作名 */}
-                        {book.original_title && (
-                            <Text
-                                type="secondary"
-                                style={{ display: 'block', marginBottom: 12, fontSize: 14 }}
-                            >
-                                <TranslationOutlined /> 原作名：{book.original_title}
-                            </Text>
-                        )}
 
                         {/* 评分 */}
                         {ratingValue > 0 && (

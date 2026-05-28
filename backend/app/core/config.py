@@ -90,17 +90,29 @@ class Settings(BaseSettings):
     )
 
     # ==================== 数据库配置 ====================
+    DB_TYPE: str = Field(
+        "auto",
+        description="数据库类型：auto（从 URL 自动检测）/ sqlite / postgresql"
+    )
     DATABASE_URL: str = Field(
         "sqlite+aiosqlite:///./bookshelf.db",
-        description="数据库连接 URL。SQLite 使用 sqlite+aiosqlite:/// 前缀，PostgreSQL 使用 postgresql+asyncpg:// 前缀"
+        description="数据库连接 URL。SQLite: sqlite+aiosqlite:///...，PostgreSQL: postgresql+asyncpg://user:pass@host:5432/dbname"
     )
     DATABASE_POOL_SIZE: int = Field(
         5,
-        description="数据库连接池大小（仅非 SQLite 数据库生效）"
+        description="PostgreSQL 连接池基础大小"
+    )
+    DATABASE_POOL_MAX_OVERFLOW: int = Field(
+        10,
+        description="PostgreSQL 连接池最大溢出连接数"
     )
     DATABASE_ECHO: bool = Field(
         False,
-        description="SQL 语句回显开关，开启后打印所有 SQL 语句（调试用）"
+        description="SQL 语句回显开关，调试用"
+    )
+    PG_SCHEMA: str = Field(
+        "public",
+        description="PostgreSQL 模式名（search_path）"
     )
 
     # ==================== 豆瓣数据源配置 ====================
@@ -245,6 +257,40 @@ class Settings(BaseSettings):
         description="WebDAV 请求超时时间（秒）"
     )
 
+    # ==================== Google Books API 配置 ====================
+    GOOGLE_BOOKS_API_KEY: str = Field(
+        "",
+        description="Google Books API 密钥，从 Google Cloud Console 获取。用于图书元数据查询"
+    )
+    GOOGLE_BOOKS_ENABLED: bool = Field(
+        True,
+        description="是否启用 Google Books API 数据源。即使无 API Key，也可使用匿名配额（较低）"
+    )
+
+    @property
+    def google_books_configured(self) -> bool:
+        """Google Books API Key 是否已配置"""
+        return bool(self.GOOGLE_BOOKS_API_KEY and len(self.GOOGLE_BOOKS_API_KEY) > 10)
+
+    # ==================== Dify AI 助手配置 ====================
+    DIFY_API_URL: str = Field(
+        "",
+        description="Dify 平台 API 地址，如 http://localhost:5001/v1"
+    )
+    DIFY_API_KEY: str = Field(
+        "",
+        description="Dify 知识库 API 密钥，格式如 dataset-xxx"
+    )
+    DIFY_DATASET_ID: str = Field(
+        "",
+        description="Dify 知识库 ID，通过 Dify 后台创建知识库后获取"
+    )
+
+    @property
+    def dify_configured(self) -> bool:
+        """Dify 知识库是否已配置"""
+        return bool(self.DIFY_API_URL and self.DIFY_API_KEY and self.DIFY_DATASET_ID)
+
     # ==================== 配置持久化 ====================
     CONFIG_FILE: str = Field(
         "",
@@ -346,13 +392,34 @@ class Settings(BaseSettings):
         return bool(self.DOUBAN_COOKIE and len(self.DOUBAN_COOKIE) > 20)
 
     @property
+    def is_sqlite(self) -> bool:
+        """判断当前配置是否使用 SQLite"""
+        if self.DB_TYPE == "sqlite":
+            return True
+        if self.DB_TYPE == "postgresql":
+            return False
+        return "sqlite" in self.DATABASE_URL.lower()
+
+    @property
+    def is_postgresql(self) -> bool:
+        """判断当前配置是否使用 PostgreSQL"""
+        if self.DB_TYPE == "postgresql":
+            return True
+        if self.DB_TYPE == "sqlite":
+            return False
+        return "postgresql" in self.DATABASE_URL.lower()
+
+    @property
     def database_path(self) -> str:
         """
         数据库文件路径（仅 SQLite 有效）
-        
+
         从 DATABASE_URL 中提取文件路径部分。
         示例：'sqlite+aiosqlite:///./bookshelf.db' → './bookshelf.db'
+        PostgreSQL 返回空字符串。
         """
+        if self.is_postgresql:
+            return ""
         return (
             self.DATABASE_URL
             .replace("sqlite+aiosqlite:///", "")
@@ -746,10 +813,15 @@ def validate_config_on_startup() -> None:
         f"运行模式: "
         f"{'[DEV] 开发' if settings.DEBUG else '[PROD] 生产'}"
     )
-    logger.info(f"数据库: {settings.database_path}")
+    db_type_label = "PostgreSQL" if settings.is_postgresql else "SQLite"
+    logger.info(f"数据库: {db_type_label} | {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.database_path}")
     logger.info(
         f"豆瓣 Cookie: "
         f"{'[OK] 已配置' if settings.douban_configured else '[INFO] 未配置（豆瓣同步功能不可用）'}"
+    )
+    logger.info(
+        f"Google Books API: "
+        f"{'[OK] 已配置' if settings.google_books_configured else '[INFO] 未配置（使用匿名配额）'}"
     )
     logger.info(
         f"图片缓存: "

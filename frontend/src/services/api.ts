@@ -45,6 +45,8 @@ import type {
     WebDAVConfig,
     WebDAVConfigSaveParams,
     AutoBackupStatus,
+    ChatSearchResponse,
+    ChatBookDetailResponse,
 } from '../types';
 
 // ==================== 类型定义 ====================
@@ -428,6 +430,40 @@ export const startImport = (
 export const getImportStatus = (taskId: string): Promise<ImportTask> =>
     apiClient.get(`/import/status/${taskId}`).then(unwrap);
 
+export const previewNedbImport = (
+    file: File
+): Promise<NedbImportPreview> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    return apiClient
+        .post('/import/nedb/preview', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 60000,
+        })
+        .then(unwrap);
+};
+
+export const startNedbImport = (
+    file: File,
+    options: { cover_path?: string; shelf_id?: number; duplicate_resolution?: Record<string, string> }
+): Promise<{ task_id: string; total: number; message: string }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (options.cover_path) formData.append('cover_path', options.cover_path);
+    if (options.shelf_id) formData.append('shelf_id', String(options.shelf_id));
+    if (options.duplicate_resolution) {
+        formData.append('duplicate_resolution', JSON.stringify(options.duplicate_resolution));
+    }
+
+    return apiClient
+        .post('/import/nedb/start', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 120000,
+        })
+        .then(unwrap);
+};
+
 export const cancelImportTask = (taskId: string): Promise<ApiResponse> =>
     apiClient.post(`/import/task/${taskId}/cancel`).then(unwrap);
 
@@ -504,6 +540,25 @@ export const listMappings = (): Promise<PhysicalMappingInfo[]> =>
 export const getImageProxyUrl = (originalUrl: string): string =>
     `/api/images/proxy?url=${encodeURIComponent(originalUrl)}`;
 
+export const uploadBookCover = (
+    bookId: number,
+    file: File
+): Promise<{ success: boolean; message: string; local_cover_path: string; local_cover_url: string }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return apiClient
+        .post(`/images/cover/${bookId}`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 30000,
+        })
+        .then(unwrap);
+};
+
+export const deleteBookCover = (
+    bookId: number
+): Promise<{ success: boolean; message: string }> =>
+    apiClient.delete(`/images/cover/${bookId}`).then(unwrap);
+
 // ==================== 备份与恢复 ====================
 
 export const createBackup = (): Promise<ApiResponse<BackupMetadata>> =>
@@ -547,6 +602,93 @@ export const getAutoBackupStatus = (): Promise<AutoBackupStatus> =>
 
 export const triggerAutoBackup = (): Promise<ApiResponse<BackupMetadata>> =>
     apiClient.post('/backup/auto/run').then(unwrap);
+
+// ==================== 智能录入与信息补全 ====================
+
+export const extractISBNFromText = (text: string): Promise<import('../types').OCRExtractResult> =>
+    apiClient.post('/smart-entry/ocr', { text }).then(unwrap);
+
+export const isbnLookup = (isbn: string): Promise<import('../types').ISBNLookupResult> =>
+    apiClient.post('/smart-entry/isbn-lookup', { isbn }).then(unwrap);
+
+export const autoFillForm = (isbn: string, title?: string): Promise<import('../types').AutoFillResult> =>
+    apiClient.post('/smart-entry/auto-fill', { isbn, title: title || '' }).then(unwrap);
+
+export const detectMissingFields = (bookId: number): Promise<import('../types').MissingFieldsInfo> =>
+    apiClient.post(`/smart-entry/detect-missing/${bookId}`).then(unwrap);
+
+export const enrichBook = (bookId: number): Promise<import('../types').EnrichResult> =>
+    apiClient.post(`/smart-entry/enrich/${bookId}`).then(unwrap);
+
+export const batchEnrichBooks = (bookIds: number[]): Promise<import('../types').BatchEnrichResult> =>
+    apiClient.post('/smart-entry/batch-enrich', { book_ids: bookIds }).then(unwrap);
+
+export const listMissingBooks = (limit?: number): Promise<import('../types').MissingBooksList> =>
+    apiClient.get('/smart-entry/missing-books', { params: { limit } }).then(unwrap);
+
+export const uploadImageForISBN = (file: File): Promise<import('../types').ImageUploadISBNResult> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return apiClient.post('/smart-entry/upload-image', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    }).then(unwrap);
+};
+
+// ==================== n8n 智能录入助手 ====================
+
+/** n8n 工作流 Webhook 地址（根据部署环境配置） */
+const N8N_WEBHOOK_URL = import.meta.env.VITE_N8N_BOOK_ENTRY_URL || 'http://localhost:5678/webhook/book-entry';
+
+// n8n Webhook response now handled by extractN8NReply()
+
+// ==================== n8n 书房智能助手 ====================
+
+/**
+ * Extract reply text from n8n Webhook response.
+ *
+ * n8n Respond to Webhook node returns array-wrapped format:
+ *   [{ "output": "reply content..." }]
+ * Also supports legacy format: { "reply": "..." }
+ */
+function extractN8NReply(raw: unknown): string {
+    if (Array.isArray(raw) && raw.length > 0 && (raw[0] as any)?.output) {
+        return String((raw[0] as any).output);
+    }
+    if (raw && typeof raw === 'object' && 'reply' in (raw as Record<string, unknown>)) {
+        return String((raw as Record<string, unknown>).reply);
+    }
+    if (typeof raw === 'string') {
+        return raw;
+    }
+    throw new Error('Cannot parse n8n response format');
+}
+
+const N8N_BOOK_ASSISTANT_URL = import.meta.env.VITE_N8N_BOOK_ASSISTANT_URL || 'http://localhost:5678/webhook/smart-book-assistant';
+
+export const callN8NBookAssistant = async (query: string, sessionId?: string): Promise<string> => {
+    const sid = sessionId || localStorage.getItem('chat_session_id') || '';
+    const response = await fetch(N8N_BOOK_ASSISTANT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, sessionId: sid }),
+    });
+    if (!response.ok) {
+        throw new Error(`n8n webhook error: ${response.status}`);
+    }
+    return extractN8NReply(await response.json());
+};
+
+export const callN8NSmartEntry = async (userQuery: string, imageUrl: string = ''): Promise<string> => {
+    const response = await fetch(N8N_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: userQuery, image_url: imageUrl }),
+    });
+    if (!response.ok) {
+        throw new Error(`n8n webhook error: ${response.status}`);
+    }
+    return extractN8NReply(await response.json());
+};
 
 // ==================== 健康检查 ====================
 
@@ -630,8 +772,23 @@ export default {
     getAutoBackupStatus,
     triggerAutoBackup,
 
+
+    // 智能录入
+    extractISBNFromText,
+    isbnLookup,
+    autoFillForm,
+    detectMissingFields,
+    enrichBook,
+    batchEnrichBooks,
+    listMissingBooks,
+    uploadImageForISBN,
+    callN8NSmartEntry,
+    callN8NBookAssistant,
+
     // 工具
     getImageProxyUrl,
+    uploadBookCover,
+    deleteBookCover,
     healthCheck,
     extractErrorMessage,
     onNetworkChange,
