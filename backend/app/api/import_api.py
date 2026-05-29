@@ -390,110 +390,171 @@ async def start_import(
         le=10.0,
         description="每次豆瓣请求间隔（秒），范围 0.5~10",
     ),
+    duplicate_resolution: str = Form(
+        "skip",
+        description="重复 ISBN 处理方案: skip(跳过) / update(覆盖更新) / keep(保留两者)",
+    ),
     db: Session = Depends(get_db),
 ) -> ImportStartResponse:
     """
     启动异步批量导入任务
-    
+
     任务在后台执行，前端通过 task_id 轮询进度。
-    
+
+    重复 ISBN 处理方案（duplicate_resolution）：
+    - skip: 跳过已存在的 ISBN，仅导入新书
+    - update: 用豆瓣同步数据更新已存在图书的信息
+    - keep: 保留原数据，新数据创建副本（标题加"（副本）"后缀）
+
     导入流程：
-    1. 解析文件获取所有新增 ISBN
+    1. 解析文件获取所有有效 ISBN（含新增和已存在）
     2. 创建 ImportTask 记录（status=pending）
     3. 提交后台任务
     4. 后台逐条处理：
-       - 创建 BookMetadata（source=manual）
-       - 可选自动同步豆瓣（source 更新为 douban）
+       - 新增 ISBN：创建 BookMetadata
+       - 已存在 ISBN：按 duplicate_resolution 处理
+       - 可选自动同步豆瓣
        - 可选添加到指定书架
-    5. 更新任务进度（completed/success/failed）
-    
+    5. 更新任务进度（completed/success/updated/skipped/failed）
+
     Args:
         background_tasks: FastAPI 后台任务管理器
         file: 上传的文件
         shelf_id: 目标书架 ID
         auto_sync: 是否自动同步豆瓣
         sync_delay: 请求间隔
-    
+        duplicate_resolution: 重复处理方案
+
     Returns:
         任务 ID 和待导入总数
-    
+
     Raises:
-        HTTPException 400: 文件格式不支持或没有新 ISBN
+        HTTPException 400: 文件格式不支持或没有有效 ISBN
     """
     # 解析文件
     if not file.filename:
         raise HTTPException(status_code=400, detail="文件名为空")
-    
+
     extension = (
         file.filename.rsplit(".", 1)[-1].lower()
         if "." in file.filename
         else ""
     )
-    file_content = await file.read()
-    df = parse_file_content(file_content, extension)
-    isbn_column = find_isbn_column(df)
-    
-    # 提取并校验所有 ISBN
-    new_isbns = []
-    seen = set()
-    
-    for raw_isbn in df[isbn_column].dropna().astype(str):
-        cleaned = clean_and_validate_isbn(raw_isbn)
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            # 仅收录数据库中不存在的
-            existing = (
-                db.query(BookMetadata)
-                .filter(BookMetadata.isbn == cleaned)
-                .first()
-            )
-            if not existing:
-                new_isbns.append(cleaned)
-    
-    if not new_isbns:
+    if extension not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail="文件中没有新的 ISBN 需要导入",
+            detail=f"不支持的文件格式，支持: {', '.join(SUPPORTED_EXTENSIONS)}",
         )
-    
+
+    file_content = await file.read()
+    try:
+        df = parse_file_content(file_content, extension)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if df.empty:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+
+    isbn_column = find_isbn_column(df)
+    if not isbn_column:
+        raise HTTPException(status_code=400, detail="未找到 ISBN 列")
+
+    # 提取并校验所有 ISBN，分类为新增/已存在/无效
+    all_valid_isbns: List[str] = []          # 所有有效且去重后的 ISBN
+    existing_isbns: List[str] = []           # 数据库中已存在的 ISBN
+    new_isbns: List[str] = []                # 数据库中不存在的 ISBN
+    invalid_count = 0
+    seen = set()
+
+    # 批量查询一次获取所有已存在的 ISBN，避免 N+1 查询
+    raw_isbn_list = df[isbn_column].dropna().astype(str).tolist()
+    cleaned_isbns: List[str] = []
+    for raw in raw_isbn_list:
+        c = clean_and_validate_isbn(raw)
+        if c and c not in seen:
+            seen.add(c)
+            cleaned_isbns.append(c)
+        elif not c:
+            invalid_count += 1
+
+    if not cleaned_isbns:
+        raise HTTPException(
+            status_code=400,
+            detail="文件中没有有效的 ISBN 数据",
+        )
+
+    # 批量查询已存在的 ISBN
+    existing_set: set = set()
+    if cleaned_isbns:
+        batch_size = 500
+        for i in range(0, len(cleaned_isbns), batch_size):
+            batch = cleaned_isbns[i:i + batch_size]
+            records = (
+                db.query(BookMetadata.isbn)
+                .filter(BookMetadata.isbn.in_(batch))
+                .all()
+            )
+            existing_set.update(r[0] for r in records)
+
+    for isbn in cleaned_isbns:
+        all_valid_isbns.append(isbn)
+        if isbn in existing_set:
+            existing_isbns.append(isbn)
+        else:
+            new_isbns.append(isbn)
+
+    # 不再阻止全部重复的导入，按用户选择方案处理
+    total_to_process = len(all_valid_isbns)
+
     # 创建导入任务记录
     task_id = str(uuid.uuid4())
     task = ImportTask(
         task_id=task_id,
         status=ImportStatus.PENDING.value,
         file_name=file.filename,
-        total=len(new_isbns),
+        total=total_to_process,
         options=json.dumps(
             {
                 "shelf_id": shelf_id,
                 "auto_sync": auto_sync,
                 "sync_delay": sync_delay,
+                "duplicate_resolution": duplicate_resolution,
+                "new_count": len(new_isbns),
+                "existing_count": len(existing_isbns),
+                "invalid_count": invalid_count,
             },
             ensure_ascii=False,
         ),
     )
     db.add(task)
     db.commit()
-    
-    # 提交后台任务
+
+    # 提交后台任务（传递分类数据 + 处理方案）
     background_tasks.add_task(
         _run_import_task,
         task_id,
-        new_isbns,
+        all_valid_isbns,
+        existing_set,
         shelf_id,
         auto_sync,
         sync_delay,
+        duplicate_resolution,
     )
-    
+
     logger.info(
         f"导入任务已创建: {task_id[:8]}... | "
-        f"文件: {file.filename} | 数量: {len(new_isbns)}"
+        f"文件: {file.filename} | 总数: {total_to_process} | "
+        f"新增: {len(new_isbns)} | 重复: {len(existing_isbns)} | "
+        f"方案: {duplicate_resolution}"
     )
-    
+
     return ImportStartResponse(
         task_id=task_id,
-        total=len(new_isbns),
-        message=f"导入任务已创建，共 {len(new_isbns)} 本图书待处理",
+        total=total_to_process,
+        message=(
+            f"导入任务已创建，共 {total_to_process} 本图书待处理"
+            f"（新增 {len(new_isbns)}，重复 {len(existing_isbns)}，方案: {duplicate_resolution}）"
+        ),
     )
 
 
@@ -538,8 +599,8 @@ async def get_import_status(
         "failed": task.failed,
         "skipped": task.skipped,
         "progress": task.progress,
-        "results": json.loads(task.results) if task.results else [],
-        "errors": json.loads(task.errors) if task.errors else [],
+        "results": task.results if isinstance(task.results, list) else (json.loads(task.results) if isinstance(task.results, str) else []),
+        "errors": task.errors if isinstance(task.errors, list) else (json.loads(task.errors) if isinstance(task.errors, str) else []),
         "error": task.error,
         "started_at": (
             task.started_at.isoformat() if task.started_at else None
@@ -652,34 +713,45 @@ async def download_template() -> StreamingResponse:
 async def _run_import_task(
     task_id: str,
     isbns: List[str],
+    existing_isbns: set,
     shelf_id: Optional[int],
     auto_sync: bool,
     sync_delay: float,
+    duplicate_resolution: str = "skip",
 ) -> None:
     """
     后台异步执行导入任务
-    
+
     使用独立的异步数据库会话，避免阻塞主线程。
     每处理一条记录都更新任务进度（支持前端实时轮询）。
-    
+
+    重复 ISBN 处理逻辑：
+    - skip: 跳过已存在的 ISBN，仅记录跳过结果
+    - update: 查找已存在的图书，通过豆瓣同步更新元数据
+    - keep: 创建新副本记录（ISBN 加前缀确保唯一，标题加"（副本）"后缀）
+
     处理步骤（每条 ISBN）：
     1. 检查任务是否被取消
-    2. 创建 BookMetadata 记录（初始 title="ISBN:{isbn}"）
-    3. 可选：自动同步豆瓣元数据
-    4. 可选：添加到指定书架
-    5. 更新任务进度和结果列表
-    
-    错误处理：
-    - 单条失败不影响后续处理
-    - 失败记录写入 errors 列表
-    - 异常时回滚单条记录的事务
-    
+    2. 判断 ISBN 是新增还是已存在
+    3. 按 duplicate_resolution 执行对应操作
+    4. 可选：自动同步豆瓣元数据
+    5. 可选：添加到指定书架
+    6. 更新任务进度和结果列表
+
+    结果追踪：
+    - task.success: 新增成功的图书数
+    - task.skipped: 跳过的重复数（skip 方案）
+    - task.failed: 处理失败数
+    - results 中 status 字段: success / updated / skipped / failed
+
     Args:
         task_id: 任务 ID
-        isbns: 待导入 ISBN 列表
+        isbns: 所有待处理 ISBN 列表（含新增和已存在）
+        existing_isbns: 数据库中已存在的 ISBN 集合
         shelf_id: 目标书架 ID
         auto_sync: 是否自动同步
         sync_delay: 请求间隔
+        duplicate_resolution: 重复处理方案 (skip/update/keep)
     """
     try:
         async with AsyncSessionLocal() as db:
@@ -691,16 +763,19 @@ async def _run_import_task(
             if not task:
                 logger.error(f"任务不存在: {task_id[:8]}...")
                 return
-            
+
             # 更新任务状态为运行中
             task.status = ImportStatus.RUNNING.value
             task.started_at = datetime.now(timezone.utc)
             await db.commit()
-            
+
             # 逐条处理
             results = []
             errors = []
-            
+
+            # 用于 keep 方案的副本计数器
+            copy_counter = 1
+
             for i, isbn in enumerate(isbns):
                 # 检查是否被取消
                 await db.refresh(task)
@@ -710,61 +785,189 @@ async def _run_import_task(
                         f"已处理 {i}/{len(isbns)}"
                     )
                     break
-                
+
+                is_existing = isbn in existing_isbns
+
                 try:
-                    # 创建图书记录
-                    book = BookMetadata(
-                        isbn=isbn,
-                        title=f"ISBN:{isbn}",
-                        source=BookSource.MANUAL.value,
-                    )
-                    db.add(book)
-                    await db.commit()
-                    await db.refresh(book)
-                    
-                    # 可选：自动同步豆瓣数据
-                    synced = False
-                    if auto_sync:
-                        try:
-                            douban_svc = get_douban_service()
-                            douban_data = await douban_svc.search_by_isbn(isbn)
-                            if douban_data and douban_data.get("title"):
-                                # 更新同步到的字段
-                                for field in (
-                                    "title", "author", "cover_url",
-                                    "publisher", "rating",
-                                ):
-                                    if value := douban_data.get(field):
-                                        setattr(book, field, value)
-                                book.source = BookSource.DOUBAN.value
-                                synced = True
-                                task.synced += 1
-                                await db.commit()
-                        except Exception as sync_error:
-                            logger.warning(
-                                f"豆瓣同步失败 [{isbn}]: {sync_error}"
+                    if is_existing:
+                        # ========== 处理已存在的 ISBN ==========
+                        if duplicate_resolution == "skip":
+                            # 跳过重复
+                            task.skipped += 1
+                            results.append({
+                                "index": i + 1,
+                                "isbn": isbn,
+                                "status": "skipped",
+                                "message": "已存在，跳过",
+                            })
+
+                        elif duplicate_resolution == "update":
+                            # 更新已存在的图书
+                            book_query = await db.execute(
+                                select(BookMetadata).filter(BookMetadata.isbn == isbn)
                             )
-                    
-                    # 可选：添加到书架
-                    if shelf_id:
-                        shelf_book = LogicalShelfBook(
-                            logical_shelf_id=shelf_id,
-                            book_id=book.book_id,
-                            status=BookStatus.IN_SHELF.value,
+                            book = book_query.scalar_one_or_none()
+
+                            if not book:
+                                # 理论上不会发生（isbn 在 existing_isbns 中）
+                                task.skipped += 1
+                                results.append({
+                                    "index": i + 1, "isbn": isbn,
+                                    "status": "skipped",
+                                    "message": "已存在但查询失败，跳过",
+                                })
+                                await db.commit()
+                                continue
+
+                            synced = False
+                            if auto_sync:
+                                try:
+                                    douban_svc = get_douban_service()
+                                    douban_data = await douban_svc.search_by_isbn(isbn)
+                                    if douban_data and douban_data.get("title"):
+                                        for field in (
+                                            "title", "author", "cover_url",
+                                            "publisher", "rating",
+                                        ):
+                                            if value := douban_data.get(field):
+                                                setattr(book, field, value)
+                                        book.source = BookSource.DOUBAN.value
+                                        synced = True
+                                        task.synced += 1
+                                except Exception as sync_error:
+                                    logger.warning(
+                                        f"豆瓣同步失败 [{isbn}]: {sync_error}"
+                                    )
+
+                            await db.commit()
+                            task.success += 1
+                            results.append({
+                                "index": i + 1,
+                                "isbn": isbn,
+                                "status": "updated",
+                                "title": book.title,
+                                "synced": synced,
+                                "message": "已存在，已更新",
+                            })
+
+                        elif duplicate_resolution == "keep":
+                            # 保留两者：创建副本（修改 ISBN 确保唯一，标题加后缀）
+                            # 查询原书信息用于副本创建
+                            orig_query = await db.execute(
+                                select(BookMetadata).filter(BookMetadata.isbn == isbn)
+                            )
+                            orig_book = orig_query.scalar_one_or_none()
+
+                            # 生成唯一副本 ISBN：DUP + 原ISBN后10位（跳过前3位978前缀）
+                            copy_isbn = f"DUP{isbn[3:13]}"
+                            # 检查副本 ISBN 是否也冲突（极端情况，如同系列书籍）
+                            dup_check = await db.execute(
+                                select(BookMetadata).filter(
+                                    BookMetadata.isbn == copy_isbn
+                                )
+                            )
+                            if dup_check.scalar_one_or_none():
+                                copy_isbn = f"DUP{copy_counter:010d}"
+                                copy_counter += 1
+
+                            # 确定副本标题
+                            copy_title = f"{orig_book.title}（副本）" if (
+                                orig_book and orig_book.title
+                            ) else f"ISBN:{isbn}（副本）"
+
+                            copy_book = BookMetadata(
+                                isbn=copy_isbn,
+                                title=copy_title,
+                                author=orig_book.author if orig_book else None,
+                                publisher=orig_book.publisher if orig_book else None,
+                                cover_url=orig_book.cover_url if orig_book else None,
+                                source=BookSource.MANUAL.value,
+                            )
+                            db.add(copy_book)
+                            await db.commit()
+                            await db.refresh(copy_book)
+
+                            # 可选：添加到书架
+                            if shelf_id:
+                                shelf_book = LogicalShelfBook(
+                                    logical_shelf_id=shelf_id,
+                                    book_id=copy_book.book_id,
+                                    status=BookStatus.IN_SHELF.value,
+                                )
+                                db.add(shelf_book)
+                                await db.commit()
+
+                            task.success += 1
+                            results.append({
+                                "index": i + 1,
+                                "isbn": copy_isbn,
+                                "status": "success",
+                                "title": copy_book.title,
+                                "message": f"副本创建（原 ISBN: {isbn}）",
+                            })
+
+                        else:
+                            # 未知方案，默认跳过
+                            task.skipped += 1
+                            results.append({
+                                "index": i + 1, "isbn": isbn,
+                                "status": "skipped",
+                                "message": f"未知处理方案: {duplicate_resolution}",
+                            })
+
+                    else:
+                        # ========== 处理新增 ISBN ==========
+                        book = BookMetadata(
+                            isbn=isbn,
+                            title=f"ISBN:{isbn}",
+                            source=BookSource.MANUAL.value,
                         )
-                        db.add(shelf_book)
+                        db.add(book)
                         await db.commit()
-                    
-                    # 记录成功
-                    task.success += 1
-                    results.append({
-                        "index": i + 1,
-                        "isbn": isbn,
-                        "status": "success",
-                        "title": book.title,
-                        "synced": synced,
-                    })
-                    
+                        await db.refresh(book)
+
+                        # 可选：自动同步豆瓣数据
+                        synced = False
+                        if auto_sync:
+                            try:
+                                douban_svc = get_douban_service()
+                                douban_data = await douban_svc.search_by_isbn(isbn)
+                                if douban_data and douban_data.get("title"):
+                                    for field in (
+                                        "title", "author", "cover_url",
+                                        "publisher", "rating",
+                                    ):
+                                        if value := douban_data.get(field):
+                                            setattr(book, field, value)
+                                    book.source = BookSource.DOUBAN.value
+                                    synced = True
+                                    task.synced += 1
+                                    await db.commit()
+                            except Exception as sync_error:
+                                logger.warning(
+                                    f"豆瓣同步失败 [{isbn}]: {sync_error}"
+                                )
+
+                        # 可选：添加到书架
+                        if shelf_id:
+                            shelf_book = LogicalShelfBook(
+                                logical_shelf_id=shelf_id,
+                                book_id=book.book_id,
+                                status=BookStatus.IN_SHELF.value,
+                            )
+                            db.add(shelf_book)
+                            await db.commit()
+
+                        # 记录成功
+                        task.success += 1
+                        results.append({
+                            "index": i + 1,
+                            "isbn": isbn,
+                            "status": "success",
+                            "title": book.title,
+                            "synced": synced,
+                        })
+
                 except Exception as process_error:
                     # 记录失败
                     task.failed += 1
@@ -781,225 +984,31 @@ async def _run_import_task(
                         "error": error_msg,
                     })
                     await db.rollback()
-                
+
                 # 更新进度
                 task.completed = i + 1
                 task.results = json.dumps(results, ensure_ascii=False)
                 task.errors = json.dumps(errors, ensure_ascii=False)
                 await db.commit()
-                
+
                 # 请求间隔（避免豆瓣限流）
                 if sync_delay > 0:
                     await asyncio.sleep(sync_delay)
-            
+
             # 任务完成
             task.status = ImportStatus.COMPLETED.value
             task.finished_at = datetime.now(timezone.utc)
             await db.commit()
-            
+
             logger.info(
                 f"导入任务完成: {task_id[:8]}... | "
-                f"成功: {task.success} | 失败: {task.failed} | "
+                f"成功: {task.success} | 跳过: {task.skipped} | 失败: {task.failed} | "
                 f"同步: {task.synced}"
             )
-            
+
     except Exception as e:
         logger.error(f"导入任务异常: {task_id[:8]}... | {e}")
         # 尝试更新任务状态为失败
-        try:
-            async with AsyncSessionLocal() as db:
-                result = await db.execute(
-                    select(ImportTask).filter(ImportTask.task_id == task_id)
-                )
-                task = result.scalar_one_or_none()
-                if task:
-                    task.status = ImportStatus.FAILED.value
-                    task.error = str(e)[:500]
-                    task.finished_at = datetime.now(timezone.utc)
-                    await db.commit()
-        except Exception:
-            pass
-
-
-# ==================== NeDB 数据导入 ====================
-
-
-@router.post("/nedb/preview", summary="预览 NeDB 数据导入")
-async def preview_nedb_import_endpoint(
-    file: UploadFile = File(..., description="NeDB 数据库文件 (.db)"),
-    db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    """
-    预览 NeDB 数据库文件内容
-
-    返回统计和重复 ISBN 详情:
-    - total, new_count, existing_count, invalid_count
-    - samples: 前 10 条样本
-    - duplicate_items: 重复 ISBN 详情 [{isbn, nedb_title, existing_book_id, existing_title}]
-    """
-    extension = (
-        file.filename.rsplit(".", 1)[-1].lower()
-        if file.filename and "." in file.filename
-        else ""
-    )
-    if extension != "db":
-        raise HTTPException(status_code=400, detail="仅支持 .db (NeDB) 文件格式")
-
-    from app.services.nedb_import_service import parse_nedb_file, preview_nedb_import
-
-    file_content = await file.read()
-    try:
-        docs = parse_nedb_file(file_content)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"NeDB 文件解析失败: {e}")
-
-    if not docs:
-        raise HTTPException(status_code=400, detail="NeDB 文件中无数据")
-
-    return preview_nedb_import(docs, db)
-
-
-@router.post("/nedb/start", summary="启动 NeDB 数据导入")
-async def start_nedb_import(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(..., description="NeDB 数据库文件 (.db)"),
-    shelf_id: Optional[int] = Form(None, description="导入后添加到书架"),
-    cover_path: Optional[str] = Form(None, description="封面文件所在目录（如 D:/ManageBooks/covers）"),
-    duplicate_resolution: Optional[str] = Form(None, description="重复ISBN处理策略 JSON: {\"978xxx\":\"merge\",\"978yyy\":\"skip\"}"),
-    db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    """
-    启动 NeDB 数据导入任务
-
-    后台异步逐条导入，通过 GET /api/import/status/{task_id} 查询进度。
-
-    Args:
-        file: NeDB .db 文件
-        shelf_id: 可选书架 ID
-        cover_path: 封面文件目录（用户手动指定，如 D:/ManageBooks/covers）
-        duplicate_resolution: JSON 字符串，ISBN→action 映射
-    """
-    extension = (
-        file.filename.rsplit(".", 1)[-1].lower()
-        if file.filename and "." in file.filename
-        else ""
-    )
-    if extension != "db":
-        raise HTTPException(status_code=400, detail="仅支持 .db (NeDB) 文件格式")
-
-    from app.services.nedb_import_service import parse_nedb_file, execute_nedb_import
-
-    file_content = await file.read()
-    try:
-        docs = parse_nedb_file(file_content)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"NeDB 文件解析失败: {e}")
-
-    if not docs:
-        raise HTTPException(status_code=400, detail="NeDB 文件中无数据")
-
-    # 解析去重决策
-    resolution_dict = {}
-    if duplicate_resolution:
-        try:
-            resolution_dict = json.loads(duplicate_resolution)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="duplicate_resolution JSON 格式无效")
-
-    task_id = str(uuid.uuid4())
-
-    task = ImportTask(
-        task_id=task_id,
-        file_name=file.filename or "unknown.db",
-        total=len(docs),
-        completed=0,
-        success=0,
-        failed=0,
-        synced=0,
-        status=ImportStatus.PENDING.value,
-    )
-    db.add(task)
-    db.commit()
-
-    background_tasks.add_task(
-        _run_nedb_import,
-        task_id=task_id,
-        docs=docs,
-        cover_path=cover_path or "",
-        shelf_id=shelf_id,
-        duplicate_resolution=resolution_dict,
-    )
-
-    return {
-        "task_id": task_id,
-        "total": len(docs),
-        "status": "pending",
-        "message": f"NeDB 导入任务已创建 ({len(docs)} 条记录)",
-    }
-
-
-async def _run_nedb_import(
-    task_id: str,
-    docs: List[Dict[str, Any]],
-    cover_path: str,
-    shelf_id: Optional[int],
-    duplicate_resolution: Dict[str, str],
-) -> None:
-    """后台执行 NeDB 导入"""
-    from app.services.nedb_import_service import execute_nedb_import
-    from app.models.models import ImportTask, ImportStatus
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(ImportTask).filter(ImportTask.task_id == task_id)
-        )
-        task = result.scalar_one_or_none()
-        if not task:
-            return
-
-        task.status = ImportStatus.RUNNING.value
-        task.started_at = datetime.now(timezone.utc)
-        await db.commit()
-
-    try:
-        import asyncio as _asyncio
-
-        def _do_import():
-            from app.core.database import SyncSessionLocal
-            db_sync = SyncSessionLocal()
-            try:
-                outcome = execute_nedb_import(
-                    docs=docs,
-                    db_session=db_sync,
-                    cover_path=cover_path,
-                    shelf_id=shelf_id,
-                    duplicate_resolution=duplicate_resolution,
-                )
-                db_sync.commit()
-                return outcome
-            except Exception as e:
-                db_sync.rollback()
-                raise
-            finally:
-                db_sync.close()
-
-        outcome = await _asyncio.to_thread(_do_import)
-
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(ImportTask).filter(ImportTask.task_id == task_id)
-            )
-            task = result.scalar_one_or_none()
-            if task:
-                task.status = ImportStatus.COMPLETED.value
-                task.completed = outcome["total"]
-                task.success = outcome["inserted"]
-                task.failed = outcome["skipped"] + len(outcome.get("errors", []))
-                task.finished_at = datetime.now(timezone.utc)
-                await db.commit()
-
-    except Exception as e:
-        logger.error(f"NeDB 导入任务异常 [{task_id[:8]}]: {e}")
         try:
             async with AsyncSessionLocal() as db:
                 result = await db.execute(

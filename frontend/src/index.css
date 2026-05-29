@@ -33,21 +33,53 @@
     --gray-800: #1f2937;
     --gray-900: #111827;
     
-    /* ---- 主题变量（默认：书香经典） ---- */
+    /* ---- 主题变量（默认：书香经典 - WCAG AA 合规） ---- */
     --app-bg: #fdf8f4;
     --app-bg-secondary: #faf0e6;
     --app-card-bg: #ffffff;
     --app-card-bg-hover: #fdf5ef;
-    --app-card-border: #e8d5c8;
+    --app-card-border: #c4a590;
     --app-text-primary: #2c1810;
-    --app-text-secondary: #6b5e56;
-    --app-text-tertiary: #8c7b72;
+    --app-text-secondary: #4d3e35;
+    --app-text-tertiary: #5c4a3e;
     --app-header-bg: #ffffff;
     --app-header-gradient: linear-gradient(135deg, #8B4513, #a0522d);
     --app-brand-color: #8B4513;
+    --app-brand-color-hover: #a0522d;
+    --app-brand-color-light: #fdf6f0;
     --app-accent-color: #22c55e;
-    --app-divider-color: #e8d5c8;
+    --app-divider-color: #c4a590;
     --app-skeleton-color: #f0e6db;
+    --app-shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+    --app-shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+    --app-shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+
+    /* ---- 语义强调色（WCAG AA 合规：前景/bg ≥ 4.5:1，边框/bg ≥ 3:1） ---- */
+    --color-accent-blue: #1d4ed8;
+    --color-accent-blue-bg: #eff6ff;
+    --color-accent-blue-border: #93c5fd;
+    --color-accent-green: #15803d;
+    --color-accent-green-bg: #f0fdf4;
+    --color-accent-green-border: #86efac;
+    --color-accent-amber: #b45309;
+    --color-accent-amber-bg: #fffbeb;
+    --color-accent-amber-border: #fcd34d;
+    --color-accent-purple: #7c3aed;
+    --color-accent-purple-bg: #faf5ff;
+    --color-accent-purple-border: #c4b5fd;
+    --color-accent-orange: #c2410c;
+    --color-accent-orange-bg: #fff7ed;
+    --color-accent-orange-border: #fdba74;
+    --color-accent-cyan: #0e7490;
+    --color-accent-cyan-bg: #ecfeff;
+    --color-accent-cyan-border: #67e8f9;
+    --color-accent-rose: #be185d;
+    --color-accent-rose-bg: #fdf2f8;
+    --color-accent-rose-border: #f9a8d4;
+    --color-danger: #dc2626;
+    --color-danger-bg: #fef2f2;
+    --color-danger-border: #fca5a5;
+    --focus-ring: #2563eb;
     
     /* ---- 阴影系统 (现代柔和风格) ---- */
     --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -169,8 +201,39 @@ img {
 
 /* ==================== 3. 焦点与无障碍 ==================== */
 :focus-visible {
-    outline: 2px solid var(--brand-primary);
-    outline-offset: 2px;
+    outline: 3px solid var(--focus-ring, #2563eb);
+    outline-offset: 3px;
+    border-radius: 2px;
+}
+
+/* Windows 高对比度模式 */
+@media (forced-colors: active) {
+    :focus-visible {
+        outline: 3px solid CanvasText;
+    }
+
+    .ant-card {
+        border: 1px solid CanvasText;
+    }
+
+    .ant-btn {
+        border: 1px solid ButtonText;
+    }
+
+    .ant-tag {
+        border: 1px solid CanvasText;
+    }
+
+    .ant-input,
+    .ant-select-selector {
+        border: 1px solid CanvasText;
+    }
+}
+
+/* 主题切换过渡动画 */
+.theme-wrapper {
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+    min-height: 100vh;
 }
 
 /* 减少动画偏好 */

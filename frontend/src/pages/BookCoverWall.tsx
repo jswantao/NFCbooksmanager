@@ -24,25 +24,9 @@ import React, {
     type KeyboardEvent,
 } from 'react';
 import {
-    Card,
-    Spin,
-    Empty,
-    Typography,
-    Select,
-    Button,
-    Space,
-    Tooltip,
-    message,
-    Skeleton,
-    Drawer,
-    Tag,
-    Rate,
-    FloatButton,
-    Dropdown,
-    Divider,
-    Breadcrumb,
-    theme,
-    Badge,
+    Card, Spin, Empty, Typography, Select, Button, Space, Tooltip, message,
+    Skeleton, Drawer, Tag, Rate, FloatButton, Dropdown, Divider, Breadcrumb,
+    theme, Badge, Input, Statistic, Row, Col, Segmented,
     type MenuProps,
 } from 'antd';
 import {
@@ -68,9 +52,8 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { getBookWall, listShelves } from '../services/api';
 import { useAsyncData } from '../hooks/useAsyncData';
-import { getCoverUrl, getPlaceholderCover } from '../utils/image';
 import { truncateText, formatAuthors } from '../utils/format';
-import LazyImage from '../components/LazyImage';
+import UnifiedCover from '../components/UnifiedCover';
 import type { BookWallParams, Book } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -355,16 +338,6 @@ const CoverCard: FC<{
     onShelfClick: (id: number) => void;
     onContextMenu?: (book: BookWallItem, e: React.MouseEvent) => void;
 }> = memo(({ book, density, onClick, onShelfClick, onContextMenu }) => {
-    const coverUrl = useMemo(
-        () => getCoverUrl(book.cover_url) || '',
-        [book.cover_url]
-    );
-
-    const placeholderUrl = useMemo(
-        () => getPlaceholderCover(book.title, book.author),
-        [book.title, book.author]
-    );
-
     const config = DENSITY_CONFIG[density] || DENSITY_CONFIG.cozy;
     const showOverlay = density !== 'compact';
     const showExtra = density === 'spacious';
@@ -417,16 +390,13 @@ const CoverCard: FC<{
                 className="cover-card-hover"
             >
                 {/* 封面图片 */}
-                <LazyImage
-                    src={coverUrl}
-                    alt={`《${book.title}》封面`}
-                    fallback={placeholderUrl}
+                <UnifiedCover
+                    book={book}
+                    mode="lazy"
                     aspectRatio="3/4"
-                    style={{
-                        width: '100%',
-                        height: '100%',
-                        borderRadius: 10,
-                    }}
+                    borderRadius={10}
+                    shadow={false}
+                    style={{ width: '100%', height: '100%' }}
                 />
 
                 {/* 评分角标 */}
@@ -569,6 +539,9 @@ const BookCoverWall: FC = () => {
     const [selectedShelfId, setSelectedShelfId] = useState<number | undefined>();
     const [sortBy, setSortBy] = useState('added_at_desc');
     const [density, setDensity] = useState<DensityType>('cozy');
+    const [searchText, setSearchText] = useState('');
+    const [ratingFilter, setRatingFilter] = useState<string>('all');
+    const [sourceFilter, setSourceFilter] = useState<string>('all');
     const [drawerBook, setDrawerBook] = useState<BookWallItem | null>(null);
     const [shelfList, setShelfList] = useState<ShelfOption[]>([]);
 
@@ -688,9 +661,27 @@ const BookCoverWall: FC = () => {
         </div>
     );
 
+    // ── 客户端筛选 ──
+    const filteredBooks = useMemo(() => {
+        let r = books;
+        const kw = searchText.toLowerCase().trim();
+        if (kw) r = r.filter(b => (b.title || '').toLowerCase().includes(kw) || (b.author || '').toLowerCase().includes(kw));
+        if (ratingFilter !== 'all') { const min = parseFloat(ratingFilter); r = r.filter(b => { const v = parseFloat(b.rating || '0'); return v >= min; }); }
+        if (sourceFilter !== 'all') r = r.filter(b => b.source === sourceFilter);
+        return r;
+    }, [books, searchText, ratingFilter, sourceFilter]);
+
     // ==================== 渲染封面网格 ====================
 
     const renderCoverGrid = () => {
+        if (filteredBooks.length === 0 && books.length > 0) {
+            return (
+                <Card style={{ borderRadius: 12, textAlign: 'center', padding: 48, border: `1px solid ${token.colorBorderSecondary}` }}>
+                    <Empty image={<BookOutlined style={{ fontSize: 56, opacity: 0.3 }} />}
+                        description={<Text type="secondary">筛选无结果 — <a onClick={() => { setSearchText(''); setRatingFilter('all'); setSourceFilter('all'); }}>清除筛选</a></Text>} />
+                </Card>
+            );
+        }
         if (books.length === 0) {
             return (
                 <Card
@@ -754,7 +745,7 @@ const BookCoverWall: FC = () => {
                         gap: densityConfig.gap,
                     }}
                 >
-                    {books.map((book, index) => (
+                    {filteredBooks.map((book, index) => (
                         <CoverCard
                             key={`${book.book_id}-${index}`}
                             book={book}
@@ -849,20 +840,13 @@ const BookCoverWall: FC = () => {
                 <div>
                     {/* 封面 */}
                     <div style={{ textAlign: 'center', marginBottom: 20 }}>
-                        <LazyImage
-                            src={getCoverUrl(drawerBook.cover_url) || ''}
-                            alt={`《${drawerBook.title}》封面`}
-                            fallback={getPlaceholderCover(
-                                drawerBook.title,
-                                drawerBook.author
-                            )}
+                        <UnifiedCover
+                            book={drawerBook}
+                            mode="lazy"
+                            width={180}
                             aspectRatio="3/4"
-                            style={{
-                                width: 180,
-                                borderRadius: 10,
-                                boxShadow: '0 8px 24px rgba(139,69,19,0.18)',
-                                margin: '0 auto',
-                            }}
+                            borderRadius={10}
+                            style={{ margin: '0 auto' }}
                         />
                     </div>
 
@@ -1157,77 +1141,43 @@ const BookCoverWall: FC = () => {
                     </Space>
                 </div>
 
-                <Space wrap size={12}>
-                    {/* 书架筛选 */}
-                    <Select
-                        value={selectedShelfId || 0}
-                        onChange={(v) =>
-                            setSelectedShelfId(v === 0 ? undefined : v)
-                        }
-                        style={{ width: 170 }}
-                        size="large"
+                <Space wrap size={10}>
+                    <Input.Search placeholder="搜索书名/作者..." allowClear value={searchText}
+                        onChange={(e) => setSearchText(e.target.value)} style={{ width: 200 }}
+                        prefix={<SearchOutlined />} />
+
+                    <Select value={selectedShelfId || 0} onChange={(v) => setSelectedShelfId(v === 0 ? undefined : v)}
+                        style={{ width: 150 }} options={[{ value: 0, label: '全部书架' }, ...shelfList]} />
+
+                    <Select value={sortBy} onChange={setSortBy} style={{ width: 150 }} options={SORT_OPTIONS} />
+
+                    {/* 评分快速筛选 */}
+                    <Segmented size="small" value={ratingFilter} onChange={(v) => setRatingFilter(v as string)}
                         options={[
-                            { value: 0, label: '📚 全部书架' },
-                            ...shelfList,
-                        ]}
-                        prefix={<FilterOutlined />}
-                    />
+                            { value: 'all', label: '全部' },
+                            { value: '9', label: '9.0+' },
+                            { value: '8', label: '8.0+' },
+                            { value: '7', label: '7.0+' },
+                        ]} />
 
-                    {/* 排序 */}
-                    <Select
-                        value={sortBy}
-                        onChange={setSortBy}
-                        style={{ width: 170 }}
-                        size="large"
-                        options={SORT_OPTIONS}
-                        prefix={<SortAscendingOutlined />}
-                    />
+                    {/* 来源筛选 */}
+                    <Select value={sourceFilter} onChange={setSourceFilter} style={{ width: 110 }} size="small"
+                        options={[
+                            { value: 'all', label: '全部来源' },
+                            { value: 'douban', label: '豆瓣' },
+                            { value: 'manual', label: '手动' },
+                            { value: 'nedb_import', label: 'NeDB' },
+                        ]} />
 
-                    {/* 密度切换 */}
-                    <Dropdown
-                        menu={{
-                            items: DENSITY_MENU_ITEMS,
-                            onClick: ({ key }) =>
-                                setDensity(key as DensityType),
-                        }}
-                    >
-                        <Button size="large" icon={<AppstoreOutlined />}>
-                            {density === 'compact'
-                                ? '紧凑'
-                                : density === 'spacious'
-                                ? '宽敞'
-                                : '舒适'}
-                        </Button>
+                    <Dropdown menu={{ items: DENSITY_MENU_ITEMS, onClick: ({ key }) => setDensity(key as DensityType) }}>
+                        <Button size="large" icon={<AppstoreOutlined />}>{density === 'compact' ? '紧凑' : density === 'spacious' ? '宽敞' : '舒适'}</Button>
                     </Dropdown>
 
-                    {/* 全屏切换 */}
-                    <Tooltip
-                        title={
-                            isFullscreen
-                                ? '退出全屏 (Esc)'
-                                : '全屏模式 (F)'
-                        }
-                    >
-                        <Button
-                            size="large"
-                            icon={
-                                isFullscreen ? (
-                                    <FullscreenExitOutlined />
-                                ) : (
-                                    <FullscreenOutlined />
-                                )
-                            }
-                            onClick={toggleFullscreen}
-                        />
+                    <Tooltip title={isFullscreen ? '退出全屏 (Esc)' : '全屏模式 (F)'}>
+                        <Button size="large" icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={toggleFullscreen} />
                     </Tooltip>
 
-                    {/* 刷新 */}
-                    <Button
-                        size="large"
-                        icon={<ReloadOutlined />}
-                        loading={loading}
-                        onClick={() => loadBooks(true)}
-                    />
+                    <Button size="large" icon={<ReloadOutlined />} loading={loading} onClick={() => loadBooks(true)} />
                 </Space>
             </div>
 
@@ -1253,6 +1203,17 @@ const BookCoverWall: FC = () => {
                         </Button>
                     </div>
                 </Card>
+            )}
+
+            {/* 统计概览 */}
+            {!loading && books.length > 0 && (
+                <Row gutter={[12, 12]} style={{ marginBottom: 20 }}>
+                    <Col xs={12} sm={6}><Card size="small" style={{ borderRadius: 10, background: '#eff6ff', border: '1px solid #bfdbfe' }}><Statistic title="藏书" value={total} valueStyle={{ color: '#3b82f6', fontSize: 20 }} prefix={<BookOutlined />} /></Card></Col>
+                    <Col xs={12} sm={6}><Card size="small" style={{ borderRadius: 10, background: '#f0fdf4', border: '1px solid #bbf7d0' }}><Statistic title="已评分" value={books.filter(b => b.rating).length} valueStyle={{ color: '#22c55e', fontSize: 20 }} prefix={<StarFilled />} suffix={`/${books.length}`} /></Card></Col>
+                    <Col xs={12} sm={6}><Card size="small" style={{ borderRadius: 10, background: '#faf5ff', border: '1px solid #e9d5ff' }}>
+                        <Statistic title="平均评分" value={(() => { const r = books.filter(b => b.rating); return r.length ? (r.reduce((s, b) => s + parseFloat(b.rating || '0'), 0) / r.length).toFixed(1) : '-'; })()} valueStyle={{ color: '#a855f7', fontSize: 20 }} prefix={<StarFilled style={{ color: '#f59e0b' }} />} /></Card></Col>
+                    <Col xs={12} sm={6}><Card size="small" style={{ borderRadius: 10, background: '#fff7ed', border: '1px solid #fed7aa' }}><Statistic title="当前书架" value={selectedShelfId ? (books[0]?.shelf_name || '—') : '全部'} valueStyle={{ color: '#f97316', fontSize: 16 }} /></Card></Col>
+                </Row>
             )}
 
             {/* 加载骨架屏 */}

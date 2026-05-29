@@ -21,9 +21,8 @@ import {
     TranslationOutlined,
 } from '../icons';
 import type { Book } from '../types';
-import { getBestCoverUrl, getPlaceholderCover } from '../utils/image';
 import { truncateText } from '../utils/format';
-import LazyImage from './LazyImage';
+import UnifiedCover from './UnifiedCover';
 
 const { Text, Paragraph } = Typography;
 
@@ -75,21 +74,7 @@ const BookCover: FC<{
     size: 'small' | 'large';
     viewMode: string;
 }> = memo(({ book, size, viewMode }) => {
-    const coverUrl = useMemo(
-        () => getBestCoverUrl(book.cover_url, book.local_cover_path, book.douban_url) || '',
-        [book.cover_url, book.local_cover_path, book.douban_url]
-    );
-
-    const placeholderUrl = useMemo(
-        () => getPlaceholderCover(book.title, book.author),
-        [book.title, book.author]
-    );
-
     const isSmall = size === 'small';
-    const dims = isSmall
-        ? { width: 80, height: 112 }
-        : { width: '100%', height: viewMode === 'compact' ? 200 : 280 };
-
     const borderRadius = isSmall ? 6 : viewMode === 'compact' ? '6px 6px 0 0' : '12px 12px 0 0';
 
     return (
@@ -101,35 +86,18 @@ const BookCover: FC<{
                 overflow: 'hidden',
                 borderRadius,
                 background: isSmall ? 'transparent' : '#fafaf9',
-                ...dims,
+                ...(isSmall ? { width: 80, height: 112 } : { width: '100%', height: viewMode === 'compact' ? 200 : 280 }),
                 position: 'relative',
             }}
         >
-            {coverUrl ? (
-                <LazyImage
-                    src={coverUrl}
-                    alt={`《${book.title}》封面`}
-                    fallback={placeholderUrl}
-                    aspectRatio={isSmall ? '80/112' : '3/4'}
-                    style={{
-                        width: '100%',
-                        height: '100%',
-                        borderRadius,
-                    }}
-                />
-            ) : (
-                <img
-                    alt={`《${book.title}》封面占位图`}
-                    src={placeholderUrl}
-                    style={{
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'cover',
-                        borderRadius,
-                    }}
-                    loading="lazy"
-                />
-            )}
+            <UnifiedCover
+                book={book}
+                mode="lazy"
+                aspectRatio={isSmall ? '80/112' : '3/4'}
+                borderRadius={typeof borderRadius === 'number' ? borderRadius : 0}
+                shadow={false}
+                style={{ width: '100%', height: '100%', borderRadius }}
+            />
         </div>
     );
 });

@@ -114,6 +114,11 @@ export default defineConfig(({ mode }) => {
                         });
                     },
                 },
+                '/uploads': {
+                    target: 'http://localhost:8000',
+                    changeOrigin: true,
+                    secure: false,
+                },
             },
             // 开发服务器预热
             warmup: {

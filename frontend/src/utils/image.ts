@@ -87,9 +87,25 @@ export const getBestCoverUrl = (
         if (coverUrl.startsWith('http')) {
             return getCoverUrl(coverUrl, size);
         }
+        // cache/ 相对路径 → /api/images/cache/ 端点，只提取文件名
+        if (coverUrl.startsWith('cache/')) {
+            const basename = coverUrl.replace(/\\/g, '/').split('/').pop()?.trim();
+            if (basename && /\.(jpg|png|jpeg|webp)$/i.test(basename)) {
+                return `/api/images/cache/${basename}`;
+            }
+            return '';
+        }
+        // Windows 绝对路径 (G:\...) → 提取文件名尝试 /api/images/cache/
+        if (/^[A-Za-z]:[/\\]/.test(coverUrl)) {
+            const basename = coverUrl.replace(/\\/g, '/').split('/').pop()?.trim();
+            if (basename && /\.(jpg|png|jpeg|webp)$/i.test(basename)) {
+                return `/api/images/cache/${basename}`;
+            }
+            return '';
+        }
         // 裸文件名 → 尝试 /uploads/ 路径
-        if (!coverUrl.startsWith('/') && !/^[A-Za-z]:[/\\]/.test(coverUrl)) {
-            return `/uploads/${coverUrl}`;
+        if (!coverUrl.startsWith('/')) {
+            return `/uploads/${coverUrl.trim()}`;
         }
     }
 

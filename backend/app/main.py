@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from loguru import logger
 
-from app.api import mapping, shelves, books, admin, images, config_api, import_api, nfc_bridge
+from app.api import mapping, shelves, books, admin, images, config_api, import_api, nfc_bridge, nedb_import
 from app.api import physical_shelves, backup, chat, smart_entry
 from app.core.config import get_settings, validate_config_on_startup
 from app.core.database import (
@@ -53,7 +53,7 @@ def setup_logging():
     log_dir = Path(s.LOG_FILE).parent
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. 文件输出
+    # 3. 文件输出（delay=True 避免 Windows 多进程文件锁冲突）
     logger.add(
         s.LOG_FILE,
         level=log_config["level"],
@@ -65,6 +65,7 @@ def setup_logging():
         backtrace=log_config["backtrace"],
         enqueue=log_config["enqueue"],
         encoding="utf-8",
+        delay=True,
     )
 
     error_log = str(Path(s.LOG_FILE).with_name('app.error.log'))
@@ -79,6 +80,7 @@ def setup_logging():
         backtrace=True,
         enqueue=log_config["enqueue"],
         encoding="utf-8",
+        delay=True,
     )
 
     logger.info(f"日志系统已初始化 | 文件: {s.LOG_FILE} | 错误: {error_log}")
@@ -338,6 +340,7 @@ app.include_router(admin.router, prefix="/api/admin", tags=["⚙️ 管理"])
 app.include_router(images.router, prefix="/api/images", tags=["🖼️ 图片"])
 app.include_router(config_api.router, prefix="/api/config", tags=["🔧 配置"])
 app.include_router(import_api.router, prefix="/api/import", tags=["📥 导入"])
+app.include_router(nedb_import.router, prefix="/api/import", tags=["📥 NeDB导入"])
 app.include_router(
     physical_shelves.router,
     prefix="/api/physical-shelves",

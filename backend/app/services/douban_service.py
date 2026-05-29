@@ -293,6 +293,9 @@ class DoubanService:
         except httpx.HTTPStatusError as e:
             self._stats["fail"] += 1
             raise DoubanError(f"HTTP 错误 {e.response.status_code}: {str(e)[:100]}")
+        except UnicodeError as e:
+            self._stats["fail"] += 1
+            raise DoubanError(f"URL编码错误(非ASCII重定向): {str(e)[:80]}")
         except Exception as e:
             self._stats["fail"] += 1
             raise DoubanError(f"请求异常: {str(e)[:100]}")

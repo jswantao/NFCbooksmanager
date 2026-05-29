@@ -531,6 +531,56 @@ class BookMetadata(Base, TimestampMixin):
         nullable=True,
         comment="豆瓣图书详情页完整 URL"
     )
+    douban_id = Column(
+        String(30),
+        nullable=True,
+        comment="豆瓣图书 ID（纯数字）"
+    )
+    douban_rating = Column(
+        Float,
+        nullable=True,
+        comment="豆瓣评分（数值型，如 8.5）"
+    )
+    personal_rating = Column(
+        Integer,
+        nullable=True,
+        comment="个人评分（0-10 整数）"
+    )
+    purchase_date = Column(
+        String(50),
+        nullable=True,
+        comment="购买日期"
+    )
+    purchase_price = Column(
+        String(50),
+        nullable=True,
+        comment="购买价格"
+    )
+    purchase_channel = Column(
+        String(100),
+        nullable=True,
+        comment="购买渠道"
+    )
+    reading_status = Column(
+        String(50),
+        nullable=True,
+        comment="阅读状态：unread/reading/finished"
+    )
+    tags = Column(
+        String(500),
+        nullable=True,
+        comment="标签，逗号分隔"
+    )
+    author_intro = Column(
+        Text,
+        nullable=True,
+        comment="作者简介"
+    )
+    nedb_extra = Column(
+        FlexJSON,
+        nullable=True,
+        comment="NeDB 导入的额外字段（bookProducer, CLC, readTime 等）"
+    )
     source = Column(
         String(20),
         default=BookSource.MANUAL.value,

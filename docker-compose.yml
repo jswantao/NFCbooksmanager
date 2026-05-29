@@ -1,0 +1,25 @@
+# 书房管理系统 — PostgreSQL 数据库
+# 启动: docker compose up -d
+# 停止: docker compose down
+# 数据目录: ./pgdata/
+
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bookshelf-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bookshelf
+      POSTGRES_PASSWORD: bookshelf
+      POSTGRES_DB: bookshelf
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bookshelf -d bookshelf"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

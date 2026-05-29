@@ -10,7 +10,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, type FC } from 'react';
 import {
     Card, Form, Input, InputNumber, Button, Select, Skeleton, Result,
-    Breadcrumb, Typography, Space, message, Divider, Upload, Image,
+    Breadcrumb, Typography, Space, message, Divider, Upload,
 } from 'antd';
 import {
     ArrowLeftOutlined, HomeOutlined, SaveOutlined, UndoOutlined,
@@ -24,7 +24,7 @@ import { uploadBookCover, deleteBookCover } from '../services/api';
 import { extractErrorMessage } from '../services/api';
 import type { BookReference } from '../types/bookRef';
 import { resolveBookRef, isGlobalBookId } from '../types/bookRef';
-import { getBestCoverUrl, getPlaceholderCover } from '../utils/image';
+import UnifiedCover from '../components/UnifiedCover';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -59,12 +59,7 @@ const BookEditor: FC = () => {
     const currentTitle = Form.useWatch('title', form);
     const currentAuthor = Form.useWatch('author', form);
 
-    // 当前最佳封面
     const doubanUrlValue = Form.useWatch('douban_url', form);
-    const displayCover = useMemo(
-        () => getBestCoverUrl(coverUrlValue, localCoverPath, doubanUrlValue) || getPlaceholderCover(currentTitle, currentAuthor),
-        [coverUrlValue, localCoverPath, doubanUrlValue, currentTitle, currentAuthor]
-    );
 
     // ---- 构建 BookReference ----
     const bookRef = useMemo((): BookReference | null => {
@@ -232,15 +227,14 @@ const BookEditor: FC = () => {
                                 boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
                                 flexShrink: 0,
                             }}>
-                                <Image
-                                    src={displayCover}
-                                    alt="封面预览"
-                                    style={{ width: 140, height: 196, objectFit: 'cover', display: 'block' }}
-                                    fallback={getPlaceholderCover(currentTitle, currentAuthor)}
+                                <UnifiedCover
+                                    book={{ cover_url: coverUrlValue, local_cover_path: localCoverPath, douban_url: doubanUrlValue, title: currentTitle, author: currentAuthor }}
+                                    mode="image"
+                                    width={140}
+                                    aspectRatio="140/196"
+                                    borderRadius={0}
+                                    shadow={false}
                                     preview={{ mask: '查看大图' }}
-                                    onError={(e) => {
-                                        (e.currentTarget as HTMLImageElement).src = getPlaceholderCover(currentTitle, currentAuthor);
-                                    }}
                                 />
                             </div>
                             <div style={{ flex: 1, minWidth: 200 }}>

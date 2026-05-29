@@ -1,0 +1,332 @@
+{
+  "name": "智能录入助手 — n8n Workflow",
+  "description": "替代 Dify Chatflow 的智能录入助手工作流。接收前端 Webhook 调用，根据用户意图编排后端 API，实现单本录入、信息补全、批量导入三大场景。",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "book-entry",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-receive",
+      "name": "接收前端请求",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [400, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 解析前端发来的请求\nconst query = $input.item.json.query || '';\nconst imageUrl = $input.item.json.image_url || '';\n\nreturn {\n  query: query,\n  imageUrl: imageUrl,\n  hasImage: imageUrl && imageUrl.length > 0\n};"
+      },
+      "id": "code-parse-input",
+      "name": "解析输入",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 意图分类：基于规则快速判断，避免 LLM 调用延迟\nconst query = $input.item.json.query || '';\nconst q = query.toLowerCase();\n\nlet intent = 'help';\nlet isbn = '';\nlet bookTitle = '';\n\n// 场景1: 直接输入 ISBN (10或13位数字)\nconst isbnMatch = query.match(/(?:97[89])?\\d{9}[\\dXx]/i);\nif (isbnMatch) {\n  intent = 'single_entry';\n  isbn = isbnMatch[0].replace(/[^\\dXx]/gi, '');\n}\n// 场景2: 信息补全关键词\nelse if (/补全|缺失|不全|完善|补充/.test(q)) {\n  intent = 'enrich';\n  // 提取书名\n  const titleMatch = query.match(/《(.+?)》/);\n  if (titleMatch) bookTitle = titleMatch[1];\n}\n// 场景3: 查询不完整图书\nelse if (/哪些.*不全|列出.*不全|扫描.*不全|不完整/.test(q)) {\n  intent = 'enrich';\n}\n// 场景4: 批量导入\nelse if (/批量|导入|Excel|文件|多本/.test(q)) {\n  intent = 'batch_import';\n}\n// 场景5: 录入/添加\nelse if (/录入|添加|新书|录入这|帮我.*录入/.test(q)) {\n  intent = 'single_entry';\n}\n// 场景6: 查询\nelse if (/查询|搜索|找/.test(q)) {\n  intent = 'single_entry';\n}\n\nreturn {\n  intent: intent,\n  isbn: isbn,\n  bookTitle: bookTitle,\n  originalQuery: query,\n  hasImage: $input.item.json.hasImage || false\n};"
+      },
+      "id": "code-classify-intent",
+      "name": "意图分类 (规则引擎)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 200]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "single_entry",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "enrich",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "batch_import",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        }
+      },
+      "id": "switch-intent",
+      "name": "路由到场景",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1000, 200]
+    },
+
+    "==========================================": "BRANCH 1: 单本录入",
+    {
+      "parameters": {
+        "jsCode": "// 构建 ISBN 查询请求\nconst isbn = $input.item.json.isbn;\nconst query = $input.item.json.originalQuery;\n\n// 如果有 ISBN，直接查询\nif (isbn) {\n  return {\n    url: 'http://localhost:8000/api/smart-entry/isbn-lookup',\n    method: 'POST',\n    body: { isbn: isbn },\n    isbn: isbn\n  };\n}\n\n// 没有 ISBN：引导用户提供\nreturn {\n  noIsbn: true,\n  reply: '请提供图书的 ISBN 编号（10位或13位数字），或上传封面照片以便我识别 ISBN。\\n\\n例如：\\n- 直接输入 ISBN：9787549021680\\n- 上传封面/条形码图片'\n};"
+      },
+      "id": "code-prepare-lookup",
+      "name": "准备 ISBN 查询",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 检查是否有 ISBN\nif ($input.item.json.noIsbn) {\n  return { skip: true, reply: $input.item.json.reply };\n}\nreturn $input.item.json;"
+      },
+      "id": "code-check-isbn",
+      "name": "检查 ISBN 是否存在",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 100]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "isbn", "value": "={{ $json.body.isbn }}" }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "http-isbn-lookup",
+      "name": "调用 ISBN 查询 API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1600, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 格式化查询结果\nconst resp = $input.item.json;\n\nif (!resp.success) {\n  return {\n    reply: `📚 未找到 ISBN 信息\\n\\n${resp.message || '该 ISBN 在豆瓣、Google Books、OpenLibrary 均未找到匹配的图书。'}\\n\\n建议：\\n1. 确认 ISBN 是否正确\\n2. 手动录入图书信息\\n3. 重新拍摄封面照片`\n  };\n}\n\nconst book = resp.data || {};\nconst source = resp.source === 'douban' ? '豆瓣' : resp.source === 'google_books' ? 'Google Books' : 'OpenLibrary';\n\nlet reply = `📚 找到以下图书信息（来源：${source}）\\n\\n`;\nreply += `**《${book.title || '未知书名'}》**\\n`;\nif (book.author) reply += `- 作者：${book.author}\\n`;\nif (book.publisher) reply += `- 出版社：${book.publisher}\\n`;\nif (book.publish_date) reply += `- 出版日期：${book.publish_date}\\n`;\nif (book.pages) reply += `- 页数：${book.pages}\\n`;\nif (book.price) reply += `- 定价：${book.price}\\n`;\nif (book.binding) reply += `- 装帧：${book.binding}\\n`;\nif (book.rating) reply += `- 评分：${book.rating}/10\\n`;\nif (book.series) reply += `- 丛书：${book.series}\\n`;\nif (book.translator) reply += `- 译者：${book.translator}\\n`;\nif (book.summary) reply += `- 简介：${book.summary.substring(0, 200)}${book.summary.length > 200 ? '...' : ''}\\n`;\n\nreply += `\\n✅ 系统已自动填充录入表单，你可以去前端页面点击「确认录入」保存。`;\n\nreturn { reply: reply };"
+      },
+      "id": "code-format-result",
+      "name": "格式化查询结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 100]
+    },
+
+    "=========================================": "BRANCH 2: 信息补全",
+    {
+      "parameters": {
+        "jsCode": "// 检查用户是想列出不完整的书还是补全特定书\nconst query = $input.item.json.originalQuery || '';\nconst bookTitle = $input.item.json.bookTitle || '';\n\n// 有具体书名 → 先搜索找到 book_id，再补全\nif (bookTitle) {\n  return {\n    action: 'enrich_specific',\n    bookTitle: bookTitle,\n    url: 'http://localhost:8000/api/smart-entry/missing-books',\n    method: 'GET'\n  };\n}\n\n// 列出不完整的书\nreturn {\n  action: 'list_missing',\n  url: 'http://localhost:8000/api/smart-entry/missing-books',\n  method: 'GET'\n};"
+      },
+      "id": "code-prepare-enrich",
+      "name": "准备补全请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "method": "GET",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "http-list-missing",
+      "name": "列出不完整图书",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.item.json;\nconst action = $('code-prepare-enrich').item.json.action;\nconst bookTitle = $('code-prepare-enrich').item.json.bookTitle || '';\n\n// 列出缺失列表\nif (action === 'list_missing') {\n  const books = resp.books || [];\n  if (books.length === 0) {\n    return { reply: '✅ 所有馆藏图书信息已完整，无需补全！' };\n  }\n  \n  let reply = `📊 找到 **${resp.total || books.length}** 本信息不完整的图书：\\n\\n`;\n  const top10 = books.slice(0, 10);\n  for (const b of top10) {\n    const missing = (b.missing_fields || []).map(f => {\n      const names = { title:'书名', author:'作者', publisher:'出版社', publish_date:'出版日期', pages:'页数', price:'定价', binding:'装帧', rating:'评分', summary:'简介', cover_url:'封面', original_title:'原作名', series:'丛书', translator:'译者' };\n      return names[f] || f;\n    }).join('、');\n    reply += `- **《${b.title || '(无书名)'}》** 完整度 ${b.completeness}% | 缺失: ${missing}\\n`;\n  }\n  if (books.length > 10) reply += `\\n... 还有 ${books.length - 10} 本\\n`;\n  reply += `\\n💡 告诉我你想补全哪本书，例如：\"帮我把《${top10[0]?.title || 'XXX'}》补全\" 或 \"全部补全\"`;\n  return { reply: reply };\n}\n\n// 指定书名 → 找到 book_id\nif (action === 'enrich_specific') {\n  const books = resp.books || [];\n  const matched = books.find(b => (b.title || '').includes(bookTitle) || bookTitle.includes(b.title || ''));\n  if (!matched) {\n    return { \n      reply: `未找到匹配的图书 \"${bookTitle}\"，请确认书名是否准确。\\n\\n你可以说\"列出不完整的书\"查看所有需要补全的图书。`,\n      action: 'not_found'\n    };\n  }\n  return {\n    action: 'enrich',\n    bookId: matched.book_id,\n    bookTitle: matched.title,\n    url: `http://localhost:8000/api/smart-entry/enrich/${matched.book_id}`,\n    method: 'POST'\n  };\n}\n\nreturn { reply: '请告诉我想做什么：列出不完整的书，或指定书名进行补全。' };"
+      },
+      "id": "code-format-missing",
+      "name": "格式化缺失列表 / 准备补全",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 检查是否需要继续调用 enrich API\nif ($input.item.json.action === 'not_found' || !$input.item.json.url) {\n  return { skip: true, reply: $input.item.json.reply || '' };\n}\nif ($input.item.json.action !== 'enrich') {\n  return { skip: true, reply: $input.item.json.reply || '' };\n}\nreturn $input.item.json;"
+      },
+      "id": "code-check-enrich-need",
+      "name": "检查是否需要补全",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "method": "POST",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "http-enrich-book",
+      "name": "补全单本图书",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.item.json;\nconst bookTitle = $('code-format-missing').item.json.bookTitle || '';\n\nif (!resp.success) {\n  return {\n    reply: `❌ 补全失败\\n\\n${resp.message || '无法补全该书的信息。'}\\n\\n可能原因：\\n- 该书无 ISBN，无法自动查询\\n- 外部数据源未收录此 ISBN`\n  };\n}\n\nlet reply = `✅ 《${bookTitle}》信息已补全！\\n\\n`;\nif (resp.filled_fields && resp.filled_fields.length > 0) {\n  reply += `已填充字段：${resp.filled_fields.join('、')}\\n`;\n}\nif (resp.skipped_fields && resp.skipped_fields.length > 0) {\n  reply += `跳过字段：${resp.skipped_fields.join('、')}\\n`;\n}\nreply += `完整度：${resp.completeness}%\\n`;\nif (resp.lookup_source) {\n  reply += `数据来源：${resp.lookup_source}`;\n}\nreturn { reply: reply };"
+      },
+      "id": "code-format-enrich-result",
+      "name": "格式化补全结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 300]
+    },
+
+    "==========================================": "BRANCH 3: 批量导入",
+    {
+      "parameters": {
+        "jsCode": "return {\n  reply: `📋 **批量导入流程**\\n\\n1. 📥 访问前端的「批量导入」页面（/import）\\n2. 📋 下载导入模板（Excel 格式）\\n3. ✍️ 在模板中填写 ISBN 列表\\n4. 📤 上传文件，系统自动解析并同步豆瓣数据\\n5. ✨ 导入完成后，回到这里说\"帮我补全\"，自动补充缺失信息\\n\\n💡 **提示**：系统支持 .xlsx / .xls / .csv / .txt 格式，文件需包含 ISBN 列。`\n};"
+      },
+      "id": "code-batch-guide",
+      "name": "批量导入引导",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 500]
+    },
+
+    "==========================================": "BRANCH 4: 帮助",
+    {
+      "parameters": {
+        "jsCode": "const query = $input.item.json.originalQuery || '';\n\nlet reply = `👋 你好！我是智能录入助手，可以帮你：\\n\\n`;\nreply += `📷 **单本录入** — 输入 ISBN 直接查询图书信息并自动填充录入表单\\n`;\nreply += `✨ **信息补全** — 检测馆藏中不完整的图书并自动补全缺失信息\\n`;\nreply += `📋 **批量导入** — 通过 Excel 批量导入 ISBN 列表\\n\\n`;\nreply += `试试这些：\\n- 输入 ISBN：9787549021680\\n- \"有哪些书信息不全？\"\\n- \"我要批量导入\"`;\n\nreturn { reply: reply };"
+      },
+      "id": "code-help",
+      "name": "帮助信息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 650]
+    },
+
+    "==========================================": "汇总响应",
+    {
+      "parameters": {
+        "jsCode": "// 从所有分支收集回复\nconst items = $input.all();\nfor (const item of items) {\n  if (item.json && item.json.reply && !item.json.skip) {\n    return { reply: item.json.reply };\n  }\n}\n// Fallback\nreturn { reply: '收到你的消息，但我暂时无法处理。请尝试：\\n- 输入 ISBN 编号查询图书\\n- \"有哪些书信息不全？\" 查看补全列表\\n- \"帮我录入\" 开始录入' };"
+      },
+      "id": "code-collect-reply",
+      "name": "汇总并返回响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2600, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { reply: $json.reply } }}"
+      },
+      "id": "respond-webhook",
+      "name": "返回给前端",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2800, 400]
+    }
+  ],
+  "connections": {
+    "接收前端请求": {
+      "main": [[ { "node": "解析输入", "type": "main", "index": 0 } ]]
+    },
+    "解析输入": {
+      "main": [[ { "node": "意图分类 (规则引擎)", "type": "main", "index": 0 } ]]
+    },
+    "意图分类 (规则引擎)": {
+      "main": [[ { "node": "路由到场景", "type": "main", "index": 0 } ]]
+    },
+    "路由到场景": {
+      "main": [
+        [{ "node": "准备 ISBN 查询", "type": "main", "index": 0 }],
+        [{ "node": "准备补全请求", "type": "main", "index": 0 }],
+        [{ "node": "批量导入引导", "type": "main", "index": 0 }],
+        [{ "node": "帮助信息", "type": "main", "index": 0 }]
+      ]
+    },
+    "准备 ISBN 查询": { "main": [[ { "node": "检查 ISBN 是否存在", "type": "main", "index": 0 } ]] },
+    "检查 ISBN 是否存在": { "main": [
+      [{ "node": "调用 ISBN 查询 API", "type": "main", "index": 0 }],
+      [{ "node": "汇总并返回响应", "type": "main", "index": 0 }]
+    ]},
+    "调用 ISBN 查询 API": { "main": [[ { "node": "格式化查询结果", "type": "main", "index": 0 } ]] },
+    "格式化查询结果": { "main": [[ { "node": "汇总并返回响应", "type": "main", "index": 0 } ]] },
+
+    "准备补全请求": { "main": [[ { "node": "列出不完整图书", "type": "main", "index": 0 } ]] },
+    "列出不完整图书": { "main": [[ { "node": "格式化缺失列表 / 准备补全", "type": "main", "index": 0 } ]] },
+    "格式化缺失列表 / 准备补全": { "main": [[ { "node": "检查是否需要补全", "type": "main", "index": 0 } ]] },
+    "检查是否需要补全": { "main": [
+      [{ "node": "补全单本图书", "type": "main", "index": 0 }],
+      [{ "node": "汇总并返回响应", "type": "main", "index": 0 }]
+    ]},
+    "补全单本图书": { "main": [[ { "node": "格式化补全结果", "type": "main", "index": 0 } ]] },
+    "格式化补全结果": { "main": [[ { "node": "汇总并返回响应", "type": "main", "index": 0 } ]] },
+
+    "批量导入引导": { "main": [[ { "node": "汇总并返回响应", "type": "main", "index": 0 } ]] },
+    "帮助信息": { "main": [[ { "node": "汇总并返回响应", "type": "main", "index": 0 } ]] },
+
+    "汇总并返回响应": { "main": [[ { "node": "返回给前端", "type": "main", "index": 0 } ]] }
+  },
+  "settings": {
+    "saveExecutionProgress": false,
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {},
+  "versionId": "1.0.0",
+  "active": true
+}

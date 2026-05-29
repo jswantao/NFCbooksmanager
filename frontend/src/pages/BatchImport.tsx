@@ -26,7 +26,7 @@ import {
     Button,
     Space,
     Typography,
-    message,
+    App,
     Steps,
     Table,
     Tag,
@@ -52,26 +52,12 @@ import {
     type TableColumnsType,
 } from 'antd';
 import {
-    UploadOutlined,
-    FileExcelOutlined,
-    InboxOutlined,
-    CheckCircleOutlined,
-    SyncOutlined,
-    DownloadOutlined,
-    EyeOutlined,
-    DeleteOutlined,
-    PlayCircleOutlined,
-    FileTextOutlined,
-    DatabaseOutlined,
-    LoadingOutlined,
-    ThunderboltOutlined,
-    BookOutlined,
-    StopOutlined,
-    HomeOutlined,
-    ReloadOutlined,
-    ExclamationCircleOutlined,
-    InfoCircleOutlined,
-    QuestionCircleOutlined,
+    UploadOutlined, FileExcelOutlined, InboxOutlined, CheckCircleOutlined,
+    SyncOutlined, DownloadOutlined, EyeOutlined, DeleteOutlined, PlayCircleOutlined,
+    FileTextOutlined, DatabaseOutlined, LoadingOutlined, ThunderboltOutlined,
+    BookOutlined, StopOutlined, HomeOutlined, ReloadOutlined,
+    ExclamationCircleOutlined, InfoCircleOutlined, QuestionCircleOutlined,
+    BulbOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -140,6 +126,9 @@ const StatusTag: FC<{ status: string; synced?: boolean }> = React.memo(
                 color: 'success',
                 text: synced ? '成功(已同步)' : '成功',
             },
+            updated: { color: 'processing', text: synced ? '已更新(已同步)' : '已更新' },
+            merged: { color: 'processing', text: '已合并' },
+            kept: { color: 'default', text: '保留' },
             failed: { color: 'error', text: '失败' },
             skipped: { color: 'warning', text: '跳过' },
             pending: { color: 'processing', text: '待处理' },
@@ -190,6 +179,7 @@ const StatCard: FC<{
 const BatchImport: FC = () => {
     const navigate = useNavigate();
     const { token } = theme.useToken();
+    const { message } = App.useApp();
     const { startPoll, stopPoll } = useImportPoll();
 
     // ==================== 状态 ====================
@@ -208,10 +198,12 @@ const BatchImport: FC = () => {
     const [showErrors, setShowErrors] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [shelfLoading, setShelfLoading] = useState(false);
+    // 重复处理方案（非 NeDB 导入）
+    const [duplicateResolution, setDuplicateResolution] = useState<'skip' | 'update' | 'keep'>('skip');
 
     // NeDB 特有状态
     const [coverPath, setCoverPath] = useState('');
-    const [duplicateResolutions, setDuplicateResolutions] = useState<Record<string, 'merge' | 'skip'>>({});
+    const [duplicateResolutions, setDuplicateResolutions] = useState<Record<string, 'merge' | 'keep' | 'skip'>>({});
     const [nedbPreview, setNedbPreview] = useState<any>(null);
 
     const isMounted = useRef(true);
@@ -263,8 +255,12 @@ const BatchImport: FC = () => {
             setStep('complete');
 
             if (completedTask.status === 'completed') {
+                const parts: string[] = [];
+                if (completedTask.success > 0) parts.push(`成功 ${completedTask.success} 本`);
+                if (completedTask.skipped && completedTask.skipped > 0) parts.push(`跳过 ${completedTask.skipped} 本`);
+                if (completedTask.failed > 0) parts.push(`失败 ${completedTask.failed} 本`);
                 message.success({
-                    content: `导入完成！成功 ${completedTask.success} 本`,
+                    content: `导入完成！${parts.join('，')}`,
                     key: 'import-complete',
                 });
             } else if (completedTask.status === 'cancelled') {
@@ -372,8 +368,8 @@ const BatchImport: FC = () => {
                         duplicate_count: data.duplicate_count || 0,
                     } as any);
                     setNedbPreview(data);
-                    // 默认所有重复项选择"合并"
-                    const resolutions: Record<string, 'merge' | 'skip'> = {};
+                    // 默认所有重复项选择
+                    const resolutions: Record<string, 'merge' | 'keep' | 'skip'> = {};
                     (data.duplicate_items || []).forEach((item: any) => {
                         resolutions[item.isbn] = 'merge';
                     });
@@ -414,7 +410,13 @@ const BatchImport: FC = () => {
 
     /** 开始导入 */
     const handleStart = useCallback(async () => {
-        if (!file || !preview || preview.new_count === 0) return;
+        // 检查是否有有效 ISBN（新增+重复 > 0）
+        if (!file || !preview) return;
+        const totalValid = (preview.new_count || 0) + (preview.existing_count || 0);
+        if (totalValid === 0) {
+            message.warning('文件中没有有效的 ISBN 数据');
+            return;
+        }
 
         setImporting(true);
         setStep('importing');
@@ -433,6 +435,7 @@ const BatchImport: FC = () => {
                     auto_sync: autoSync,
                     sync_delay: syncDelay,
                     shelf_id: targetShelfId && targetShelfId > 0 ? targetShelfId : undefined,
+                    duplicate_resolution: duplicateResolution,
                 });
 
             if (result.task_id) {
@@ -442,8 +445,11 @@ const BatchImport: FC = () => {
                     handlePollComplete,
                     handlePollTimeout
                 );
+                const resText = duplicateResolution === 'skip' ? '（将跳过重复）'
+                    : duplicateResolution === 'update' ? '（将更新重复）'
+                    : '（将为重复创建副本）';
                 message.info({
-                    content: `导入任务已启动，共 ${result.total} 本图书`,
+                    content: `导入任务已启动，共 ${result.total} 本图书${resText}`,
                     key: 'import-start',
                 });
             }
@@ -464,6 +470,7 @@ const BatchImport: FC = () => {
         targetShelfId,
         coverPath,
         duplicateResolutions,
+        duplicateResolution,
         startPoll,
         handlePollUpdate,
         handlePollComplete,
@@ -644,8 +651,16 @@ const BatchImport: FC = () => {
                     点击或拖拽文件到此区域
                 </p>
                 <p style={{ color: token.colorTextSecondary, fontSize: 13 }}>
-                    支持 {VALID_EXTENSIONS.map((ext) => `.${ext}`).join(' / ')} 格式
+                    支持 {VALID_EXTENSIONS.map((ext) => `.${ext}`).join(' / ')} 格式 · 也支持 Ctrl+V 粘贴
                 </p>
+                <div style={{ marginTop: 10 }}>
+                    <Space wrap size={4}>
+                        <Tag color="green">Excel (.xlsx/.xls)</Tag>
+                        <Tag color="blue">CSV (.csv)</Tag>
+                        <Tag color="purple">TXT (.txt)</Tag>
+                        <Tag color="cyan">NeDB (.db)</Tag>
+                    </Space>
+                </div>
             </Dragger>
 
             {/* 文件信息 */}
@@ -669,14 +684,14 @@ const BatchImport: FC = () => {
                                 width: 40,
                                 height: 40,
                                 borderRadius: 8,
-                                background: '#eff6ff',
+                                background: 'var(--color-accent-blue-bg)',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
                             }}
                         >
                             <FileExcelOutlined
-                                style={{ color: '#3b82f6', fontSize: 20 }}
+                                style={{ color: 'var(--color-accent-blue)', fontSize: 20 }}
                             />
                         </div>
                         <div>
@@ -748,6 +763,27 @@ const BatchImport: FC = () => {
         </Card>
     );
 
+    // 快速提示卡片
+    const renderQuickTips = () => (
+        <Card size="small" title={<Space><BulbOutlined style={{ color: 'var(--color-accent-amber)' }} />导入提示</Space>}
+            style={{ marginBottom: 24, borderRadius: 12, border: `1px solid ${token.colorBorderSecondary}` }}>
+            <Row gutter={[24, 8]}>
+                <Col xs={24} md={8}>
+                    <Text strong style={{ fontSize: 13 }}>📋 准备文件</Text>
+                    <br /><Text type="secondary" style={{ fontSize: 12 }}>下载模板 → 填入ISBN和书名 → 保存为 .xlsx/.csv</Text>
+                </Col>
+                <Col xs={24} md={8}>
+                    <Text strong style={{ fontSize: 13 }}>✅ 数据校验</Text>
+                    <br /><Text type="secondary" style={{ fontSize: 12 }}>系统自动校验ISBN格式，无效行标红提示，可在预览中修正</Text>
+                </Col>
+                <Col xs={24} md={8}>
+                    <Text strong style={{ fontSize: 13 }}>🔄 自动同步</Text>
+                    <br /><Text type="secondary" style={{ fontSize: 12 }}>导入后可选自动从豆瓣获取封面、评分等完整信息</Text>
+                </Col>
+            </Row>
+        </Card>
+    );
+
     /** 渲染预览步骤 */
     const renderPreviewStep = () => {
         if (!preview) return null;
@@ -762,20 +798,20 @@ const BatchImport: FC = () => {
             {
                 title: '新图书',
                 value: preview.new_count,
-                color: '#3b82f6',
-                icon: <BookOutlined style={{ color: '#3b82f6' }} />,
+                color: 'var(--color-accent-blue)',
+                icon: <BookOutlined style={{ color: 'var(--color-accent-blue)' }} />,
             },
             {
                 title: '已存在',
                 value: preview.existing_count,
-                color: '#f59e0b',
-                icon: <ExclamationCircleOutlined style={{ color: '#f59e0b' }} />,
+                color: 'var(--color-accent-amber)',
+                icon: <ExclamationCircleOutlined style={{ color: 'var(--color-accent-amber)' }} />,
             },
             {
                 title: '无效行',
                 value: preview.invalid_count,
-                color: '#ef4444',
-                icon: <StopOutlined style={{ color: '#ef4444' }} />,
+                color: 'var(--color-danger)',
+                icon: <StopOutlined style={{ color: 'var(--color-danger)' }} />,
             },
         ];
 
@@ -804,9 +840,23 @@ const BatchImport: FC = () => {
                             />
                         ))}
                     </Row>
-                    {preview.existing_count > 0 && (
+                    {preview.existing_count > 0 && preview.new_count === 0 && (
                         <Alert
-                            title={`${preview.existing_count} 本图书已存在，导入时将自动跳过`}
+                            title={`所有 ${preview.existing_count} 本图书均已存在，请选择处理方案后继续导入`}
+                            type="warning"
+                            showIcon
+                            style={{ borderRadius: 8 }}
+                        />
+                    )}
+                    {preview.existing_count > 0 && preview.new_count > 0 && (
+                        <Alert
+                            title={
+                                `检测到 ${preview.existing_count} 本重复图书（共 ${preview.total_rows} 本），` +
+                                `将按选定方案处理：` +
+                                (duplicateResolution === 'skip' ? '跳过重复，仅导入新书' :
+                                 duplicateResolution === 'update' ? '更新已存在的图书信息' :
+                                 '为重复图书创建副本')
+                            }
                             type="warning"
                             showIcon
                             style={{ borderRadius: 8 }}
@@ -847,7 +897,7 @@ const BatchImport: FC = () => {
                                 }}
                             >
                                 <Space size={8}>
-                                    <ThunderboltOutlined style={{ color: '#3b82f6', fontSize: 16 }} />
+                                    <ThunderboltOutlined style={{ color: 'var(--color-accent-blue)', fontSize: 16 }} />
                                     <div>
                                         <Text strong>自动同步豆瓣数据</Text>
                                         <br />
@@ -890,6 +940,50 @@ const BatchImport: FC = () => {
                             </div>
                         )}
 
+                        {/* 重复 ISBN 处理方案 (非 NeDB + 有重复时显示) */}
+                        {!file?.name?.toLowerCase().endsWith('.db') && preview.existing_count > 0 && (
+                            <div
+                                style={{
+                                    flexDirection: 'column',
+                                    padding: '14px 16px',
+                                    background: token.colorBgLayout,
+                                    borderRadius: 10,
+                                    gap: 8,
+                                    display: 'flex',
+                                }}
+                            >
+                                <Space size={8}>
+                                    <ExclamationCircleOutlined style={{ color: 'var(--color-accent-amber)', fontSize: 16 }} />
+                                    <div>
+                                        <Text strong>重复 ISBN 处理方案</Text>
+                                        <br />
+                                        <Text type="secondary" style={{ fontSize: 12 }}>
+                                            检测到 {preview.existing_count} 本已存在的图书，请选择处理方式
+                                        </Text>
+                                    </div>
+                                </Space>
+                                <Select
+                                    value={duplicateResolution}
+                                    onChange={(v) => setDuplicateResolution(v)}
+                                    style={{ width: '100%' }}
+                                    options={[
+                                        {
+                                            value: 'skip',
+                                            label: '跳过重复 — 仅导入新书，已存在的跳过',
+                                        },
+                                        {
+                                            value: 'update',
+                                            label: '覆盖更新 — 用豆瓣数据更新已存在图书的信息',
+                                        },
+                                        {
+                                            value: 'keep',
+                                            label: '保留两者 — 为重复图书创建副本（标题加"（副本）"后缀）',
+                                        },
+                                    ]}
+                                />
+                            </div>
+                        )}
+
                         {/* 目标书架 */}
                         <div
                             style={{
@@ -902,7 +996,7 @@ const BatchImport: FC = () => {
                             }}
                         >
                             <Space size={8}>
-                                <BookOutlined style={{ color: '#22c55e', fontSize: 16 }} />
+                                <BookOutlined style={{ color: 'var(--color-accent-green)', fontSize: 16 }} />
                                 <div>
                                     <Text strong>添加到书架</Text>
                                     <br />
@@ -965,7 +1059,7 @@ const BatchImport: FC = () => {
                             重复 ISBN 处理 ({nedbPreview.duplicate_items.length} 条)
                         </Title>
                         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
-                            以下 ISBN 已存在于馆藏中，请逐条选择处理方式：<strong>合并</strong>（填充空缺字段）或<strong>跳过</strong>
+                            以下 ISBN 已存在于馆藏中，请逐条选择：<strong>合并</strong>（填充空缺字段）、<strong>保留</strong>（保持馆藏不动）或<strong>跳过</strong>（不导入）
                         </Text>
                         <div style={{ maxHeight: 300, overflow: 'auto' }}>
                             <Table
@@ -997,16 +1091,17 @@ const BatchImport: FC = () => {
                                         width: 120,
                                         render: (_: any, record: any) => (
                                             <Select
-                                                value={duplicateResolutions[record.isbn] || 'merge'}
+                                                value={duplicateResolutions[record.isbn] || 'keep'}
                                                 onChange={(v) =>
                                                     setDuplicateResolutions((prev) => ({
                                                         ...prev,
-                                                        [record.isbn]: v as 'merge' | 'skip',
+                                                        [record.isbn]: v as 'merge' | 'keep' | 'skip',
                                                     }))
                                                 }
                                                 style={{ width: 100 }}
                                                 options={[
                                                     { value: 'merge', label: '合并' },
+                                                    { value: 'keep', label: '保留' },
                                                     { value: 'skip', label: '跳过' },
                                                 ]}
                                             />
@@ -1031,12 +1126,21 @@ const BatchImport: FC = () => {
                             size="large"
                             icon={<PlayCircleOutlined />}
                             onClick={handleStart}
-                            disabled={preview.new_count === 0}
+                            disabled={
+                                importing ||
+                                ((preview.new_count || 0) + (preview.existing_count || 0) === 0)
+                            }
                             loading={importing}
                         >
-                            {preview.new_count > 0
-                                ? `开始导入 (${preview.new_count} 本)`
-                                : '无新书可导入'}
+                            {(() => {
+                                const n = preview.new_count || 0;
+                                const e = preview.existing_count || 0;
+                                const total = n + e;
+                                if (total === 0) return '无有效数据可导入';
+                                if (n === 0 && e > 0) return `处理 ${e} 本重复图书`;
+                                if (e > 0) return `开始导入 (${n} 本新 + ${e} 本重复)`;
+                                return `开始导入 (${n} 本)`;
+                            })()}
                         </Button>
                         <Button
                             size="large"
@@ -1074,11 +1178,11 @@ const BatchImport: FC = () => {
                 <div style={{ marginBottom: 16 }}>
                     {isCancelled ? (
                         <StopOutlined
-                            style={{ fontSize: 72, color: '#f59e0b' }}
+                            style={{ fontSize: 72, color: 'var(--color-accent-amber)' }}
                         />
                     ) : (
                         <LoadingOutlined
-                            style={{ fontSize: 72, color: '#3b82f6' }}
+                            style={{ fontSize: 72, color: 'var(--color-accent-blue)' }}
                             spin
                         />
                     )}
@@ -1096,10 +1200,10 @@ const BatchImport: FC = () => {
                         status={isCancelled ? 'exception' : isActive ? 'active' : 'normal'}
                         strokeColor={
                             isCancelled
-                                ? '#f59e0b'
+                                ? 'var(--color-accent-amber)'
                                 : {
                                       '0%': token.colorPrimary,
-                                      '100%': '#22c55e',
+                                      '100%': 'var(--color-accent-green)',
                                   }
                         }
                     />
@@ -1114,21 +1218,21 @@ const BatchImport: FC = () => {
                         <Statistic
                             title="成功"
                             value={task.success}
-                            styles={{ content: { color: '#22c55e' } }}
+                            styles={{ content: { color: 'var(--color-accent-green)' } }}
                         />
                     </Col>
                     <Col span={6}>
                         <Statistic
                             title="跳过"
                             value={task.skipped || 0}
-                            styles={{ content: { color: '#f59e0b' } }}
+                            styles={{ content: { color: 'var(--color-accent-amber)' } }}
                         />
                     </Col>
                     <Col span={6}>
                         <Statistic
                             title="失败"
                             value={task.failed}
-                            styles={{ content: { color: '#ef4444' } }}
+                            styles={{ content: { color: 'var(--color-danger)' } }}
                         />
                     </Col>
                 </Row>
@@ -1181,29 +1285,55 @@ const BatchImport: FC = () => {
     const renderCompleteStep = () => {
         if (!task) return null;
 
-        const statusConfig = {
+        const statusConfig: Record<string, { status: 'success' | 'warning' | 'error'; title: string; color: string }> = {
             completed: {
                 status: 'success' as const,
                 title: '导入完成！',
-                color: '#22c55e',
+                color: 'var(--color-accent-green)',
             },
             cancelled: {
                 status: 'warning' as const,
                 title: '已取消',
-                color: '#f59e0b',
+                color: 'var(--color-accent-amber)',
             },
             failed: {
                 status: 'error' as const,
                 title: '导入失败',
-                color: '#ef4444',
+                color: 'var(--color-danger)',
+            },
+            pending: {
+                status: 'warning' as const,
+                title: '等待中',
+                color: 'var(--color-accent-amber)',
+            },
+            running: {
+                status: 'warning' as const,
+                title: '运行中',
+                color: 'var(--color-accent-blue)',
             },
         };
 
         const config = statusConfig[task.status] || statusConfig.failed;
 
+        // 从 options.summary 读取 NeDB 汇总，回退到 success/skipped/failed 统计
+        let optionsSummary: Record<string, number> | undefined;
+        try {
+            const opts = typeof (task as any).options === 'string'
+                ? JSON.parse((task as any).options)
+                : (task as any).options;
+            optionsSummary = opts?.summary;
+        } catch { /* ignore */ }
+
         const subTitle =
             task.status === 'completed'
-                ? `成功导入 ${task.success} 本，跳过 ${task.skipped || 0} 本，失败 ${task.failed} 本`
+                ? optionsSummary
+                    ? [
+                        optionsSummary.inserted > 0 && `新增 ${optionsSummary.inserted}`,
+                        optionsSummary.merged > 0 && `合并 ${optionsSummary.merged}`,
+                        optionsSummary.kept > 0 && `保留 ${optionsSummary.kept}`,
+                        optionsSummary.skipped > 0 && `跳过 ${optionsSummary.skipped}`,
+                    ].filter(Boolean).join(' / ')
+                    : `成功 ${task.success} 本，跳过 ${task.skipped || 0} 本，失败 ${task.failed} 本`
                 : task.error || '发生未知错误';
 
         const extraButtons = [
@@ -1285,7 +1415,7 @@ const BatchImport: FC = () => {
                     <Table<ImportTaskResult>
                         dataSource={task.results || []}
                         columns={resultsColumns}
-                        rowKey="index"
+                        rowKey={(r) => `${r.index}-${r.isbn}`}
                         size="small"
                         pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
                         scroll={{ y: 400 }}
@@ -1311,7 +1441,7 @@ const BatchImport: FC = () => {
                     <Table<ImportTaskError>
                         dataSource={task.errors || []}
                         columns={errorsColumns}
-                        rowKey="index"
+                        rowKey={(r) => `${r.index}-${r.isbn}`}
                         size="small"
                         pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
                         scroll={{ y: 400 }}
@@ -1324,7 +1454,7 @@ const BatchImport: FC = () => {
     // ==================== 渲染页面 ====================
 
     const stepContentMap: Record<StepType, () => React.ReactNode> = {
-        upload: renderUploadStep,
+        upload: () => <>{renderUploadStep()}{renderQuickTips()}</>,
         preview: () =>
             preview ? renderPreviewStep() : renderUploadStep(),
         importing: () =>

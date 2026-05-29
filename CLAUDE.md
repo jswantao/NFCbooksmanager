@@ -10,7 +10,7 @@
   | 层级   | 技术                                                               | 约束                                  |
   | ------ | ------------------------------------------------------------------ | ------------------------------------- |
   | 前端   | React + TS + Vite + Ant Design + React Router 6                    | 严格模式、自动 JSX 运行时、类型安全   |
-  | 后端   | Python 3.11+ + FastAPI + SQLAlchemy 2.0 + SQLite                   | 异步优先、Pydantic 校验、禁用 Alembic |
+  | 后端   | Python 3.11+ + FastAPI + SQLAlchemy 2.0 + SQLite + Alembic          | 异步优先、Pydantic 校验、Alembic 迁移 |
   | 工具链 | Axios(前端) / httpx(后端) + ruff + mypy + ESLint + Vitest + pytest | 统一拦截、指数退避重试、WAL 模式      |
 - **安全红线**: 
   - 禁止 `eval()`, `exec()`, `pickle.loads()`, 字符串拼接 SQL
@@ -69,7 +69,7 @@
   - 路由结构: `app/api/` 按功能拆分，使用 `APIRouter`
   - 数据源: `httpx + BeautifulSoup4 + Pandas` 清洗去重，带 UA/间隔/重试
   - 配置: `pydantic-settings` 加载 `.env` 与 `app_settings.json`
-  - 建表: **禁用 Alembic**，使用 `Base.metadata.create_all()`
+  - 建表: 使用 **Alembic** 迁移管理，`alembic upgrade head` 自动执行，失败时回退 `create_all()`
   - 验证: `ruff check . && mypy app/ && pytest` 全绿方可交付
 
 ### `@frontend-developer` (前端工程师)

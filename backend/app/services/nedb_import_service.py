@@ -1,35 +1,75 @@
 # backend/app/services/nedb_import_service.py
 """
-NeDB 数据库导入服务
+NeDB 数据导入服务
 
-从 ManageBooksMac (旧版 Electron 应用) 的 NeDB 文件中读取图书元数据，
-映射字段后导入当前系统 BookMetadata 表。
+从 ManageBooksMac (旧版 Electron 应用) 的 NeDB 文件中读取完整图书元数据，
+映射字段后导入 BookMetadata 表。
 
-NeDB 文件格式: 换行分隔的 JSON（NDJSON），每行一个 JSON 文档，无需外部依赖。
+NeDB 文件格式: 换行分隔的 JSON（NDJSON），每行一个 JSON 文档，零外部依赖。
+
+与标准模板导入（import_api.py）完全分离，互不耦合：
+- 标准导入：提取 ISBN → 逐条同步豆瓣 → 创建 BookMetadata
+- NeDB 导入：读取完整元数据 → 字段映射 → 直接写入 BookMetadata（不走豆瓣同步）
 
 流程:
-    上传 .db → 预览(含重复ISBN详情) → 用户逐条决定合并/跳过 → 执行导入
+    上传 .db → 预览(含重复ISBN详情) → 用户逐条决定合并/保留/跳过 → 执行导入
 """
 
 import os
 import re
 import shutil
+import hashlib
 from typing import Optional, Dict, Any, List
 from loguru import logger
 
 from app.utils.helpers import clean_isbn
 
 
+# ==================== 字段映射总表 ====================
+#
+# NeDB 字段              → BookMetadata 列      转换规则
+# ───────────────────────────────────────────────────────────
+# bookName               → title               直接（subBookName 拼接为副标题）
+# subBookName            → (拼入 title)        "title: subBookName"
+# bookRawName            → original_title      直接
+# isbn                   → isbn                clean_isbn() + trim + 14→13
+# author                 → author              直接
+# authorCountry          → (拼入 author)       "[国别] author"（非中国时）
+# translator             → translator          直接
+# publisher              → publisher           直接
+# bookProducer           → nedb_extra          忽略（存 extra）
+# bookPages              → pages               int()
+# paperType              → nedb_extra          忽略
+# binding                → binding             直接
+# bookSeries             → series              直接
+# publishDate            → publish_date        标准化 YYYY-MM-DD
+# purchaseDate           → purchase_date       标准化 YYYY-MM-DD
+# price                  → price               去"元"等单位
+# purchasePrice          → purchase_price      去"元"等单位
+# purchaseChannel        → purchase_channel    直接
+# readCondition          → reading_status      值映射
+# scoreDouban            → rating              str(round(float,1))
+# scoreDouban            → douban_rating       float()
+# scoreSelf              → personal_rating     int()
+# bookTags               → tags                逗号拼接
+# authorIntro            → author_intro        直接
+# bookSummary            → summary             截断 2000 字
+# publishVersion         → nedb_extra          忽略
+# volumeNumbers          → nedb_extra          忽略
+# storageAddress         → nedb_extra          忽略
+# CLC / CLCRaw           → nedb_extra          忽略
+# sortIndex / readTime   → nedb_extra          忽略
+# isPurchased            → nedb_extra          忽略（存标记）
+# doubanUrl              → douban_url          直接
+# doubanID               → douban_id           直接
+# coverSrc               → cover_url           封面匹配+复制
+
+
 # ==================== NeDB 文件解析 ====================
 
 
 def parse_nedb_file(file_content: Any) -> List[Dict[str, Any]]:
-    """
-    解析 NeDB 数据库文件，返回全部文档列表
-
-    NeDB 文件格式：换行分隔的 JSON（每行一个 JSON 文档）。
-    无需任何外部依赖即可解析。
-    """
+    """解析 NeDB 数据库文件，返回全部文档列表"""
     import json as _json
 
     if isinstance(file_content, bytes):
@@ -58,29 +98,18 @@ def parse_nedb_file(file_content: Any) -> List[Dict[str, Any]]:
 
 def map_nedb_to_book(doc: Dict[str, Any]) -> Dict[str, Any]:
     """
-    将 NeDB 文档映射为 BookMetadata 创建参数字典
+    将 NeDB 文档完整映射为 BookMetadata 创建参数字典。
 
-    映射规则：
-    - 直接映射: isbn, author, translator, publisher, price, binding, doubanUrl
-    - 重命名: bookName→title, bookSeries→series, bookRawName→original_title
-    - 类型转换: bookPages (Number→str), scoreDouban (Number→str)
-    - 拼接: subBookName 拼入 title, authorCountry 拼入 author
-    - 日期标准化: publishDate → YYYY-MM
+    覆盖 30+ 个字段，按上表规则转换。
     """
+
+    # ── 工具函数 ──
     def _str(val, default=""):
         if val is None:
             return default
         return str(val).strip()
 
-    def _num_str(val, default=""):
-        if val is None:
-            return default
-        if isinstance(val, (int, float)):
-            return str(int(val)) if val == int(val) else str(val)
-        return str(val).strip()
-
     def _to_int(val):
-        """转换为整数，用于 pages 等字段"""
         if val is None:
             return None
         if isinstance(val, (int, float)):
@@ -90,46 +119,79 @@ def map_nedb_to_book(doc: Dict[str, Any]) -> Dict[str, Any]:
         except (ValueError, TypeError):
             return None
 
-    # 书名
+    def _to_float(val):
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+
+    # ── 书名 ──
     title = _str(doc.get("bookName") or doc.get("title"))
     sub = _str(doc.get("subBookName") or doc.get("subTitle"))
-    if sub:
+    if sub and sub not in title:
         title = f"{title}: {sub}"
 
-    # 作者
+    # ── 作者 ──
     author = _str(doc.get("author"))
     country = _str(doc.get("authorCountry"))
     if country and country != "中国" and not author.startswith("["):
         author = f"[{country}] {author}"
 
-    # ISBN 清洗（含 14 位截断：97875507132246 → 9787550713224）
+    # ── ISBN ──
     isbn = clean_isbn(_str(doc.get("isbn")))
     if not isbn:
         isbn = _str(doc.get("isbn"))
-    # 14 位 ISBN（978/979 前缀 + 额外重复校验位）→ 截取前 13 位
+    # 14 位 ISBN → 截取前 13 位
     if len(isbn) == 14 and isbn[:3] in ("978", "979"):
         isbn = isbn[:13]
-        logger.debug(f"ISBN 截断: 14位 → 13位 ({isbn})")
+        logger.debug(f"ISBN 14→13: {isbn}")
+    raw_isbn = _str(doc.get("isbn"))
 
-    # 出版日期标准化
-    pub_date = _str(doc.get("publishDate") or doc.get("publish_date"))
-    pub_date = _normalize_date(pub_date)
+    # ── 日期标准化 ──
+    publish_date = _normalize_date(_str(doc.get("publishDate") or doc.get("publish_date")))
+    purchase_date = _normalize_date(_str(doc.get("purchaseDate")))
 
-    # 评分
+    # ── 价格（去单位） ──
+    price = _clean_price(_str(doc.get("price")))
+    purchase_price = _clean_price(_str(doc.get("purchasePrice")))
+
+    # ── 评分 ──
     rating = _str(doc.get("scoreDouban") or doc.get("rating"))
     if rating:
         try:
             rating = str(round(float(rating), 1))
         except (ValueError, TypeError):
             pass
+    douban_rating = _to_float(doc.get("scoreDouban"))
+    personal_rating = _to_int(doc.get("scoreSelf"))
 
-    # 简介截断
+    # ── 阅读状态映射 ──
+    reading_status = _map_reading_status(_str(doc.get("readCondition")))
+
+    # ── 标签 ──
+    tags_val = doc.get("bookTags")
+    if isinstance(tags_val, list):
+        tags = ", ".join(str(t) for t in tags_val if t)
+    else:
+        tags = _str(tags_val) if tags_val else ""
+
+    # ── 简介截断 ──
     summary = _str(doc.get("bookSummary") or doc.get("summary"))
     if len(summary) > 2000:
-        summary = summary[:2000] + "..."
+        summary = summary[:2000]
 
-    # 保留原始 ISBN（含连字符），用于封面文件名匹配
-    raw_isbn = _str(doc.get("isbn"))
+    # ── NeDB 额外数据（未映射到独立列的字段） ──
+    extra_fields = {}
+    for key in ("bookProducer", "paperType", "publishVersion", "volumeNumbers",
+                "storageAddress", "CLC", "CLCRaw", "sortIndex", "readTime"):
+        val = doc.get(key)
+        if val is not None and val != "":
+            extra_fields[key] = val
+    is_purchased = doc.get("isPurchased")
+    if is_purchased is not None:
+        extra_fields["isPurchased"] = bool(is_purchased) if is_purchased in (0, 1, True, False) else is_purchased
 
     return {
         "isbn": isbn,
@@ -138,33 +200,181 @@ def map_nedb_to_book(doc: Dict[str, Any]) -> Dict[str, Any]:
         "author": author,
         "translator": _str(doc.get("translator")),
         "publisher": _str(doc.get("publisher")),
-        "publish_date": pub_date,
+        "publish_date": publish_date,
         "pages": _to_int(doc.get("bookPages") or doc.get("pages")),
-        "price": _str(doc.get("price")),
+        "price": price,
         "binding": _str(doc.get("binding")),
         "original_title": _str(doc.get("bookRawName") or doc.get("original_title")),
         "series": _str(doc.get("bookSeries") or doc.get("series")),
         "rating": rating,
         "summary": summary,
         "douban_url": _str(doc.get("doubanUrl") or doc.get("douban_url")),
+        "douban_id": _str(doc.get("doubanID") or doc.get("douban_id")),
+        "douban_rating": douban_rating,
+        "personal_rating": personal_rating,
+        "purchase_date": purchase_date,
+        "purchase_price": purchase_price,
+        "purchase_channel": _str(doc.get("purchaseChannel")),
+        "reading_status": reading_status,
+        "tags": tags,
+        "author_intro": _str(doc.get("authorIntro")),
         "cover_url": _str(doc.get("coverSrc") or doc.get("cover_url")) or None,
+        "nedb_extra": extra_fields if extra_fields else None,
         "source": "nedb_import",
     }
 
 
 def _normalize_date(date_str: str) -> str:
-    """日期标准化: 2021-1 → 2021-01, 2021 → 2021-01"""
+    """日期标准化: 2021-1 → 2021-01, 2021/1 → 2021-01, 2021.1 → 2021-01"""
     if not date_str:
         return ""
-    m = re.match(r"^(\d{4})-(\d{1,2})$", date_str)
+    date_str = date_str.strip()
+    # YYYY-MM-DD (already good)
+    m = re.match(r"^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$", date_str)
     if m:
-        return f"{m.group(1)}-{int(m.group(2)):02d}"
-    m = re.match(r"^(\d{4})[/.](\d{1,2})$", date_str)
+        y, mo = m.group(1), int(m.group(2))
+        d = m.group(3)
+        if d:
+            return f"{y}-{mo:02d}-{int(d):02d}"
+        return f"{y}-{mo:02d}"
+    # YYYY/MM/DD
+    m = re.match(r"^(\d{4})[/.](\d{1,2})(?:[/.](\d{1,2}))?$", date_str)
     if m:
-        return f"{m.group(1)}-{int(m.group(2)):02d}"
+        y, mo = m.group(1), int(m.group(2))
+        d = m.group(3)
+        if d:
+            return f"{y}-{mo:02d}-{int(d):02d}"
+        return f"{y}-{mo:02d}"
+    # YYYY only
     if re.match(r"^\d{4}$", date_str):
         return date_str
     return date_str
+
+
+def _clean_price(price_str: str) -> str:
+    """去除价格中的货币单位"""
+    if not price_str:
+        return ""
+    return price_str.replace("元", "").replace("¥", "").replace("￥", "").strip()
+
+
+def _map_reading_status(condition: str) -> str:
+    """readCondition 值映射 → reading_status"""
+    if not condition:
+        return ""
+    c = condition.strip().lower()
+    mapping = {
+        "unread": "unread", "未读": "unread", "0": "unread",
+        "reading": "reading", "在读": "reading", "1": "reading",
+        "finished": "finished", "已读": "finished", "读完": "finished", "2": "finished",
+    }
+    return mapping.get(c, c)
+
+
+# ==================== 封面匹配与复制 ====================
+
+
+def _find_and_copy_cover(
+    cover_src: str,
+    cover_path: str,
+    isbn: str,
+    raw_isbn: str = "",
+) -> str:
+    """
+    从用户指定的封面目录匹配封面文件，复制到 cache/images/。
+
+    匹配策略（按优先级）:
+    1. cover_src 精确路径（绝对路径或相对路径）
+    2. cover_src 文件名在 cover_path 下查找
+    3. ISBN 模式匹配:
+       - book_{raw_isbn}.{jpg|png|jpeg|webp}
+       - book_{isbn}.{jpg|png|jpeg|webp}
+       - {raw_isbn}.{jpg|png|jpeg|webp}
+       - {isbn}.{jpg|png|jpeg|webp}
+
+    返回: cache/images/{hash}.jpg 相对路径，供前端通过 /api/images/cache/ 访问
+    """
+    if not cover_path or not os.path.isdir(cover_path):
+        if cover_src:
+            return _normalize_cover_url(cover_src)
+        return ""
+
+    # HTTP URL 直接返回
+    if cover_src and (cover_src.startswith("http://") or cover_src.startswith("https://")):
+        return cover_src
+
+    candidates = []
+
+    # 1. cover_src 精确匹配
+    if cover_src:
+        candidates.append(cover_src)
+        # 如果是文件名，在 cover_path 下查找
+        if not os.path.isabs(cover_src):
+            candidates.append(os.path.join(cover_path, cover_src))
+        # 提取文件名后在 cover_path 下查找
+        basename = os.path.basename(cover_src)
+        if basename:
+            candidates.append(os.path.join(cover_path, basename))
+
+    # 2. ISBN 文件名模式
+    search_isbns = list(dict.fromkeys(
+        [isbn for isbn in (raw_isbn, isbn) if isbn]  # 去重保序
+    ))
+    for ext in (".jpg", ".png", ".jpeg", ".webp"):
+        for sid in search_isbns:
+            candidates.append(os.path.join(cover_path, f"book_{sid}{ext}"))
+            candidates.append(os.path.join(cover_path, f"{sid}{ext}"))
+
+    # 查找第一个存在的文件
+    for src in candidates:
+        src = os.path.normpath(src)
+        if os.path.isfile(src):
+            try:
+                ext = os.path.splitext(src)[1] or ".jpg"
+                hash_name = hashlib.sha256(f"nedb_{isbn}".encode()).hexdigest()[:32]
+
+                # 复制到 cache/images/
+                cache_dir = _get_cache_images_dir()
+                dst = os.path.join(cache_dir, f"{hash_name}{ext}")
+                shutil.copy2(src, dst)
+
+                relative_url = f"cache/images/{hash_name}{ext}"
+                logger.info(f"封面已匹配: {os.path.basename(src)} → {relative_url}")
+                return relative_url
+            except Exception as e:
+                logger.warning(f"封面复制失败 [{src}]: {e}")
+
+    if cover_src:
+        logger.debug(f"封面未找到: {cover_src} (已尝试 {len(candidates)} 个候选)")
+    return _normalize_cover_url(cover_src or "")
+
+
+def _get_cache_images_dir() -> str:
+    """获取 backend/cache/images/ 绝对路径"""
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cache_dir = os.path.join(backend_dir, "cache", "images")
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def _normalize_cover_url(url: str) -> str:
+    """
+    规范化封面路径：绝对路径 → 文件名，HTTP/相对路径 → 保持原样。
+    不对不存在的文件做任何假设。
+    """
+    if not url:
+        return url
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    if url.startswith("/uploads/") or url.startswith("/api/") or url.startswith("cache/"):
+        return url
+    # Windows 绝对路径 → 仅提取文件名
+    if re.match(r"^[A-Za-z]:[/\\]", url):
+        basename = os.path.basename(url)
+        if basename and re.search(r"\.(jpg|png|jpeg|webp)$", basename, re.IGNORECASE):
+            return basename
+        return ""
+    return url
 
 
 # ==================== 预览 ====================
@@ -175,21 +385,23 @@ def preview_nedb_import(
     db_session,
 ) -> Dict[str, Any]:
     """
-    预览 NeDB 导入：统计新增/已存在/无效数量，返回重复ISBN详情
-
-    返回值新增 duplicate_items 列表，供前端展示去重决策界面:
-        [{isbn, title, author, existing_book_id, existing_title}]
+    预览 NeDB 导入：统计数量、返回重复 ISBN 详情供用户决策。
 
     Returns:
-        {total, new_count, existing_count, invalid_count,
-         samples: [...], duplicate_items: [...]}
+        {
+            total, new_count, existing_count, invalid_count,
+            internal_dup_count,
+            samples: [{title, author, isbn, publisher, status}],
+            duplicate_items: [{isbn, nedb_title, nedb_author,
+                               existing_book_id, existing_title}]
+        }
     """
     from app.models.models import BookMetadata
 
     mapped = []
-    existing_isbns = {}
+    existing_isbns: Dict[str, Dict] = {}
     invalid = []
-    seen_isbns: dict = {}  # 追踪 NeDB 文件内重复的 ISBN
+    seen_isbns: Dict[str, int] = {}
 
     for doc in docs:
         book_data = map_nedb_to_book(doc)
@@ -197,61 +409,55 @@ def preview_nedb_import(
         if not isbn or len(isbn) < 10:
             invalid.append({"title": book_data["title"][:50], "reason": "ISBN 无效"})
             continue
-        if isbn in seen_isbns:
-            seen_isbns[isbn] += 1
-        else:
-            seen_isbns[isbn] = 1
+        seen_isbns[isbn] = seen_isbns.get(isbn, 0) + 1
         mapped.append(book_data)
 
-    # 查询已存在的 ISBN
-    unique_isbns = list(set(b["isbn"] for b in mapped))
+    # 查询数据库中已存在的 ISBN
+    unique_isbns = list({b["isbn"] for b in mapped})
     if unique_isbns:
-        existing_rows = (
+        rows = (
             db_session.query(BookMetadata.isbn, BookMetadata.book_id, BookMetadata.title)
             .filter(BookMetadata.isbn.in_(unique_isbns))
             .all()
         )
-        existing_isbns = {
-            row[0]: {"book_id": row[1], "title": row[2]}
-            for row in existing_rows
-        }
+        existing_isbns = {row[0]: {"book_id": row[1], "title": row[2]} for row in rows}
 
-    # 内部重复（同 ISBN 在 NeDB 文件中出现多次）
+    # NeDB 文件内部重复
     internal_dup_isbns = {k: v for k, v in seen_isbns.items() if v > 1}
     internal_dup_count = sum(v - 1 for v in internal_dup_isbns.values())
 
-    # 统计（按唯一 ISBN）
+    # 统计
     new_unique = sum(1 for isbn in unique_isbns if isbn not in existing_isbns)
     existing_unique = len(existing_isbns)
 
-    # 重复 ISBN 详情（与已存在馆藏冲突的）
+    # 重复 ISBN 详情
     duplicate_items = []
-    for isbn in set(b["isbn"] for b in mapped):
-        if isbn in existing_isbns:
-            # 找第一个使用此 ISBN 的 doc
-            for b in mapped:
-                if b["isbn"] == isbn:
-                    duplicate_items.append({
-                        "isbn": isbn,
-                        "nedb_title": b["title"][:80],
-                        "nedb_author": b["author"][:40],
-                        "existing_book_id": existing_isbns[isbn]["book_id"],
-                        "existing_title": existing_isbns[isbn]["title"][:80] or "(无书名)",
-                    })
-                    break
-
-    # 前 10 条样本（去重）
-    seen_sample_isbns = set()
-    samples = []
+    seen_dup = set()
     for b in mapped:
-        if b["isbn"] in seen_sample_isbns:
+        isbn = b["isbn"]
+        if isbn in existing_isbns and isbn not in seen_dup:
+            seen_dup.add(isbn)
+            duplicate_items.append({
+                "isbn": isbn,
+                "nedb_title": b["title"][:80],
+                "nedb_author": b["author"][:40],
+                "existing_book_id": existing_isbns[isbn]["book_id"],
+                "existing_title": (existing_isbns[isbn]["title"] or "(无书名)")[:80],
+            })
+
+    # 样本（按唯一 ISBN 取前 10）
+    samples = []
+    seen_sample = set()
+    for b in mapped:
+        if b["isbn"] in seen_sample:
             continue
-        seen_sample_isbns.add(b["isbn"])
+        seen_sample.add(b["isbn"])
         samples.append({
             "title": b["title"][:60],
             "author": b["author"][:30],
             "isbn": b["isbn"],
             "publisher": b["publisher"][:30],
+            "cover_url": b.get("cover_url") or "",
             "status": "已存在" if b["isbn"] in existing_isbns else "新录入",
         })
         if len(samples) >= 10:
@@ -280,27 +486,30 @@ def execute_nedb_import(
     progress_callback=None,
 ) -> Dict[str, Any]:
     """
-    执行 NeDB 数据导入
+    执行 NeDB 数据导入。
 
     Args:
         docs: NeDB 文档列表
         db_session: SQLAlchemy Session
-        cover_path: 用户指定的封面文件目录（如 D:/ManageBooks/covers）
+        cover_path: 用户指定的封面目录（如 D:/ManageBooks/covers）
         shelf_id: 可选，导入后添加到指定书架
-        duplicate_resolution: ISBN → action 映射 {"978xxx": "merge", "978yyy": "skip"}
-                              "merge" = 更新已有记录, "skip" = 跳过
-        progress_callback: 可选，每处理一条调用 callback(current, total)
+        duplicate_resolution: ISBN → action 映射:
+            {"978xxx": "merge", "978yyy": "keep", "978zzz": "skip"}
+            merge = 合并更新，keep = 保留已有，skip = 跳过不导入
+        progress_callback: callback(current, total)
 
     Returns:
-        {total, inserted, merged, skipped, errors: [...]}
+        {total, inserted, merged, kept, skipped, errors: [...]}
     """
     from app.models.models import BookMetadata, LogicalShelfBook, BookStatus
 
     total = len(docs)
     inserted = 0
     merged = 0
+    kept = 0
     skipped = 0
     errors: List[Dict] = []
+    results: List[Dict] = []   # 逐条结果，供前端表格展示
     resolution = duplicate_resolution or {}
 
     for i, doc in enumerate(docs):
@@ -310,11 +519,16 @@ def execute_nedb_import(
 
             if not isbn or len(isbn) < 10:
                 skipped += 1
+                results.append({
+                    "index": i + 1, "isbn": isbn or "无效",
+                    "status": "skipped", "title": book_data.get("title", "?")[:40],
+                    "message": "ISBN 无效或长度不足",
+                })
                 if progress_callback:
                     progress_callback(i + 1, total)
                 continue
 
-            # ISBN 去重判断
+            # ISBN 去重
             existing = (
                 db_session.query(BookMetadata)
                 .filter(BookMetadata.isbn == isbn)
@@ -322,24 +536,43 @@ def execute_nedb_import(
             )
 
             if existing:
-                action = resolution.get(isbn, "skip")  # 默认跳过
+                action = resolution.get(isbn, "merge")
                 if action == "merge":
                     _merge_book_fields(existing, book_data)
                     merged += 1
-                else:
+                    results.append({
+                        "index": i + 1, "isbn": isbn,
+                        "status": "merged", "title": existing.title[:60] if existing.title else book_data.get("title", "")[:60],
+                        "message": "已存在，字段已合并更新",
+                    })
+                elif action == "skip":
                     skipped += 1
+                    results.append({
+                        "index": i + 1, "isbn": isbn,
+                        "status": "skipped", "title": existing.title[:60] if existing.title else "?",
+                        "message": "已存在，用户选择跳过",
+                    })
+                else:  # keep
+                    kept += 1
+                    results.append({
+                        "index": i + 1, "isbn": isbn,
+                        "status": "kept", "title": existing.title[:60] if existing.title else "?",
+                        "message": "已存在，用户选择保留原记录",
+                    })
                 if progress_callback:
                     progress_callback(i + 1, total)
                 continue
 
-            # 复制封面（传递原始 ISBN 以支持连字符文件名匹配）
+            # 封面匹配与复制
             cover_url = book_data.get("cover_url", "")
             raw_isbn = book_data.get("raw_isbn", isbn)
-            if cover_path:
-                cover_url = _try_copy_cover(cover_url, cover_path, isbn, raw_isbn)
-                book_data["cover_url"] = cover_url
+            if cover_url and cover_path and os.path.isdir(cover_path):
+                cover_url = _find_and_copy_cover(cover_url, cover_path, isbn, raw_isbn)
+            else:
+                cover_url = _normalize_cover_url(cover_url or "")
+            book_data["cover_url"] = cover_url
 
-            # 创建新记录
+            # 创建记录
             book = BookMetadata(
                 isbn=isbn,
                 title=book_data["title"] or "未知书名",
@@ -356,6 +589,16 @@ def execute_nedb_import(
                 summary=book_data["summary"],
                 cover_url=book_data["cover_url"],
                 douban_url=book_data["douban_url"],
+                douban_id=book_data["douban_id"],
+                douban_rating=book_data["douban_rating"],
+                personal_rating=book_data["personal_rating"],
+                purchase_date=book_data["purchase_date"],
+                purchase_price=book_data["purchase_price"],
+                purchase_channel=book_data["purchase_channel"],
+                reading_status=book_data["reading_status"],
+                tags=book_data["tags"],
+                author_intro=book_data["author_intro"],
+                nedb_extra=book_data["nedb_extra"],
                 source="nedb_import",
             )
             db_session.add(book)
@@ -370,10 +613,20 @@ def execute_nedb_import(
                 db_session.add(shelf_book)
 
             inserted += 1
+            results.append({
+                "index": i + 1, "isbn": isbn,
+                "status": "success", "title": book_data.get("title", "")[:60],
+                "message": "新录入",
+            })
 
         except Exception as e:
             title = doc.get("bookName") or doc.get("title", "?")
             errors.append({"title": str(title)[:50], "error": str(e)[:200]})
+            results.append({
+                "index": i + 1, "isbn": book_data.get("isbn", "?") if 'book_data' in dir() else "?",
+                "status": "failed", "title": str(title)[:40],
+                "message": str(e)[:100],
+            })
             logger.warning(f"NeDB 导入失败 [{title}]: {e}")
 
         if progress_callback:
@@ -383,21 +636,25 @@ def execute_nedb_import(
 
     logger.info(
         f"NeDB 导入完成: {total} 条, "
-        f"新增 {inserted}, 合并 {merged}, 跳过 {skipped}, 错误 {len(errors)}"
+        f"新增 {inserted}, 合并 {merged}, 保留 {kept}, 跳过 {skipped}, 错误 {len(errors)}"
     )
 
     return {
         "total": total,
         "inserted": inserted,
         "merged": merged,
+        "kept": kept,
         "skipped": skipped,
         "errors": errors,
+        "results": results,
     }
 
 
 def _merge_book_fields(existing, book_data: Dict[str, Any]) -> None:
     """
-    用 NeDB 数据更新已有记录的空缺字段（仅填充空值，不覆盖已有数据）
+    合并 NeDB 数据到已有记录。
+
+    规则：新字段非空则覆盖旧值，空值保留旧值。
     """
     field_map = {
         "title": "title",
@@ -413,91 +670,34 @@ def _merge_book_fields(existing, book_data: Dict[str, Any]) -> None:
         "rating": "rating",
         "summary": "summary",
         "douban_url": "douban_url",
+        "douban_id": "douban_id",
+        "douban_rating": "douban_rating",
+        "personal_rating": "personal_rating",
+        "purchase_date": "purchase_date",
+        "purchase_price": "purchase_price",
+        "purchase_channel": "purchase_channel",
+        "reading_status": "reading_status",
+        "tags": "tags",
+        "author_intro": "author_intro",
     }
     for src_key, dst_attr in field_map.items():
-        existing_val = getattr(existing, dst_attr, None)
-        new_val = book_data.get(src_key, "")
-        if (existing_val is None or str(existing_val).strip() == "") and new_val:
-            setattr(existing, dst_attr, new_val)
+        new_val = book_data.get(src_key)
+        if new_val is not None and str(new_val).strip() != "":
+            existing_val = getattr(existing, dst_attr, None)
+            if existing_val is None or str(existing_val).strip() == "":
+                setattr(existing, dst_attr, new_val)
 
-    # 封面 URL 同样仅填充空值
-    if (not existing.cover_url) and book_data.get("cover_url"):
-        existing.cover_url = book_data["cover_url"]
+    # 封面: 新值非空且旧值为空时覆盖
+    new_cover = book_data.get("cover_url")
+    if new_cover and not existing.cover_url:
+        existing.cover_url = new_cover
 
-
-def _try_copy_cover(cover_src: str, cover_path: str, isbn: str, raw_isbn: str = "") -> str:
-    """
-    从用户指定的封面目录复制封面到 backend/cache/images/
-
-    匹配策略（按优先级）:
-    1. cover_src 精确匹配（HTTP URL 保持原样，本地路径直接查找）
-    2. ISBN 文件名模式匹配（处理连字符格式差异）:
-       - book_{raw_isbn}.{jpg|png}  — 含连字符 (如 978-626-024-823-9)
-       - book_{isbn}.{jpg|png}       — 无连字符 (如 9786260248239)
-       - {raw_isbn}.{jpg|png}
-       - {isbn}.{jpg|png}
-
-    Args:
-        cover_src: 封面文件名或路径 (可为空字符串)
-        cover_path: 用户指定的封面目录 (如 D:/ManageBooks/covers)
-        isbn: 清洗后的 ISBN (无连字符)
-        raw_isbn: 原始 ISBN (含连字符，用于文件名回退匹配)
-
-    Returns:
-        复制后的缓存路径，或原始值
-    """
-    if not cover_path:
-        return cover_src
-
-    # HTTP URL 保持原样
-    if cover_src.startswith("http"):
-        return cover_src
-
-    # 收集候选路径
-    candidates = []
-
-    # 1. cover_src 精确匹配
-    if cover_src:
-        candidates.append(cover_src)  # 可能是绝对路径
-        candidates.append(os.path.join(cover_path, cover_src))
-        candidates.append(os.path.join(cover_path, os.path.basename(cover_src)))
-
-    # 2. ISBN 文件名模式匹配
-    search_isbns = []
-    if raw_isbn:
-        search_isbns.append(raw_isbn)  # 含连字符: 978-626-024-823-9
-    if isbn:
-        search_isbns.append(isbn)  # 无连字符: 9786260248239
-    # 去重
-    search_isbns = list(dict.fromkeys(search_isbns))
-
-    for ext in (".jpg", ".png", ".jpeg", ".webp"):
-        for search_isbn in search_isbns:
-            candidates.append(os.path.join(cover_path, f"book_{search_isbn}{ext}"))
-            candidates.append(os.path.join(cover_path, f"{search_isbn}{ext}"))
-
-    # 查找第一个存在的文件
-    for src in candidates:
-        if os.path.exists(src) and os.path.isfile(src):
-            try:
-                import hashlib
-                ext = os.path.splitext(src)[1] or ".jpg"
-                hash_name = hashlib.sha256(f"nedb_{isbn}".encode()).hexdigest()[:32]
-                # 复制到 uploads/nedb/ 目录（已挂载为静态文件 /uploads）
-                # __file__ = app/services/nedb_import_service.py
-                # 上溯 3 级: services → app → backend
-                backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                uploads_dir = os.path.join(backend_dir, "uploads", "nedb")
-                os.makedirs(uploads_dir, exist_ok=True)
-                dst = os.path.join(uploads_dir, f"{hash_name}{ext}")
-                shutil.copy2(src, dst)
-                # 返回前端可直接访问的 URL
-                relative_url = f"/uploads/nedb/{hash_name}{ext}"
-                logger.info(f"封面已复制: {os.path.basename(src)} → {relative_url}")
-                return relative_url
-            except Exception as e:
-                logger.warning(f"封面复制失败 [{src}]: {e}")
-
-    if cover_src:
-        logger.debug(f"封面未找到: {cover_src} (已尝试 {len(candidates)} 个候选路径)")
-    return cover_src
+    # NeDB 额外字段：合并而非覆盖
+    new_extra = book_data.get("nedb_extra")
+    if new_extra:
+        old_extra = existing.nedb_extra or {}
+        if isinstance(old_extra, dict):
+            old_extra.update(new_extra)
+            existing.nedb_extra = old_extra
+        else:
+            existing.nedb_extra = new_extra

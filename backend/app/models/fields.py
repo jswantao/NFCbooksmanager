@@ -7,6 +7,8 @@
 
 - FlexJSON:  SQLite → Text (JSON 字符串), PostgreSQL → JSONB
 """
+import json
+
 from sqlalchemy import Text
 from sqlalchemy.types import TypeDecorator
 
@@ -17,6 +19,8 @@ class FlexJSON(TypeDecorator):
 
     SQLite:     Text — JSON 序列化为字符串存储
     PostgreSQL: JSONB — 原生二进制 JSON，支持索引和高效查询
+
+    自动处理 dict/JSON 字符串的双向转换。
 
     用法:
         from app.models.fields import FlexJSON
@@ -37,3 +41,22 @@ class FlexJSON(TypeDecorator):
             from sqlalchemy.dialects.postgresql import JSONB
             return dialect.type_descriptor(JSONB())
         return dialect.type_descriptor(Text())
+
+    def process_bind_param(self, value, dialect):
+        """写入 DB 前：dict/list → JSON 字符串"""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    def process_result_value(self, value, dialect):
+        """从 DB 读取后：JSON 字符串 → dict/list"""
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            return value
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value

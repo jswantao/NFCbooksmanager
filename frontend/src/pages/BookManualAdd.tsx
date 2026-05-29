@@ -33,7 +33,6 @@ import {
     Row,
     Col,
     Divider,
-    Image,
     Select,
     Alert,
     Tag,
@@ -76,8 +75,8 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { createBookManual, listShelves, extractErrorMessage } from '../services/api';
-import { getPlaceholderCover } from '../utils/image';
 import { useFormDraft } from '../hooks/useFormDraft';
+import UnifiedCover from '../components/UnifiedCover';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -245,7 +244,7 @@ const BookManualAdd: FC = () => {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [shelfOptions, setShelfOptions] = useState<ShelfOption[]>([]);
     const [shelfLoading, setShelfLoading] = useState(false);
-    const [coverPreviewError, setCoverPreviewError] = useState(false);
+
 
     // ==================== 生命周期 ====================
 
@@ -302,15 +301,6 @@ const BookManualAdd: FC = () => {
         [form]
     );
 
-    /** 封面 URL 预览错误 */
-    const handleCoverPreviewError = useCallback(() => {
-        setCoverPreviewError(true);
-    }, []);
-
-    const handleCoverPreviewLoad = useCallback(() => {
-        setCoverPreviewError(false);
-    }, []);
-
     /** 预览信息 */
     const handlePreview = useCallback(async () => {
         try {
@@ -337,7 +327,6 @@ const BookManualAdd: FC = () => {
                 shelf_id: values.shelf_id ? Number(values.shelf_id) : undefined,
             };
 
-            setCoverPreviewError(false);
             goToPreview(snapshot);
 
             // 保存草稿
@@ -425,7 +414,6 @@ const BookManualAdd: FC = () => {
         form.resetFields();
         clearDraft();
         resetSteps();
-        setCoverPreviewError(false);
     }, [form, clearDraft, resetSteps]);
 
     // ==================== 渲染完成步骤 ====================
@@ -775,7 +763,6 @@ const BookManualAdd: FC = () => {
                                     <Input
                                         placeholder="https://img.example.com/cover.jpg"
                                         allowClear
-                                        onChange={() => setCoverPreviewError(false)}
                                     />
                                 </Form.Item>
                             </Col>
@@ -808,22 +795,15 @@ const BookManualAdd: FC = () => {
                                 >
                                     封面预览
                                 </Text>
-                                <Image
-                                    src={previewCoverUrl}
-                                    alt="封面预览"
-                                    style={{
-                                        width: 140,
-                                        height: 196,
-                                        objectFit: 'cover',
-                                        borderRadius: 8,
-                                        boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                                    }}
-                                    fallback={getPlaceholderCover(
-                                        form.getFieldValue('title'),
-                                        form.getFieldValue('author')
-                                    )}
-                                    onError={handleCoverPreviewError}
-                                    onLoad={handleCoverPreviewLoad}
+                                <UnifiedCover
+                                    coverUrl={previewCoverUrl}
+                                    title={form.getFieldValue('title')}
+                                    author={form.getFieldValue('author')}
+                                    mode="image"
+                                    width={140}
+                                    aspectRatio="140/196"
+                                    borderRadius={8}
+                                    shadow
                                     preview={{ mask: '查看大图' }}
                                 />
                             </div>
@@ -969,41 +949,15 @@ const BookManualAdd: FC = () => {
                         <Row gutter={[36, 24]}>
                             {/* 封面 */}
                             <Col xs={24} md={8} style={{ textAlign: 'center' }}>
-                                {formSnapshot.cover_url ? (
-                                    <Image
-                                        src={formSnapshot.cover_url}
-                                        alt="封面预览"
-                                        style={{
-                                            width: '100%',
-                                            maxWidth: 240,
-                                            aspectRatio: '3/4',
-                                            objectFit: 'cover',
-                                            borderRadius: 10,
-                                            boxShadow:
-                                                '0 6px 20px rgba(0,0,0,0.1)',
-                                        }}
-                                        fallback={getPlaceholderCover(
-                                            formSnapshot.title,
-                                            formSnapshot.author
-                                        )}
-                                        preview={{ mask: '查看大图' }}
-                                    />
-                                ) : (
-                                    <img
-                                        src={getPlaceholderCover(
-                                            formSnapshot.title,
-                                            formSnapshot.author
-                                        )}
-                                        alt="封面占位"
-                                        style={{
-                                            width: '100%',
-                                            maxWidth: 240,
-                                            aspectRatio: '3/4',
-                                            objectFit: 'cover',
-                                            borderRadius: 10,
-                                        }}
-                                    />
-                                )}
+                                <UnifiedCover
+                                    book={{ cover_url: formSnapshot.cover_url, title: formSnapshot.title, author: formSnapshot.author }}
+                                    mode="image"
+                                    aspectRatio="3/4"
+                                    borderRadius={10}
+                                    shadow
+                                    style={{ width: '100%', maxWidth: 240 }}
+                                    preview={{ mask: '查看大图' }}
+                                />
                             </Col>
 
                             {/* 信息 */}

@@ -41,7 +41,6 @@ import {
     Divider,
     theme,
     Tooltip,
-    Image,
     Descriptions,
     type FormInstance,
 } from 'antd';
@@ -74,8 +73,8 @@ import {
     extractErrorMessage,
 } from '../services/api';
 import { useAsyncData } from '../hooks/useAsyncData';
-import { getCoverUrl, getPlaceholderCover } from '../utils/image';
 import { formatAuthors } from '../utils/format';
+import UnifiedCover from '../components/UnifiedCover';
 import type { BookDetail } from '../types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -191,55 +190,6 @@ const useUnsavedChanges = (
     }, [isDirty]);
 
     return { showUnsavedAlert };
-};
-
-// ==================== 子组件 ====================
-
-/** 封面预览组件 */
-const CoverPreview: FC<{
-    coverUrl: string;
-    title: string;
-    author?: string;
-}> = ({ coverUrl, title, author }) => {
-    const [previewError, setPreviewError] = useState(false);
-
-    const displayUrl = useMemo(() => {
-        if (!coverUrl || previewError) {
-            return getPlaceholderCover(title, author);
-        }
-        return getCoverUrl(coverUrl);
-    }, [coverUrl, title, author, previewError]);
-
-    const handleError = useCallback(() => {
-        setPreviewError(true);
-    }, []);
-
-    // 当 coverUrl 变化时重置错误状态
-    useEffect(() => {
-        setPreviewError(false);
-    }, [coverUrl]);
-
-    return (
-        <div style={{ textAlign: 'center', marginTop: 12 }}>
-            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-                封面预览
-            </Text>
-            <Image
-                src={displayUrl}
-                alt="封面预览"
-                style={{
-                    width: 140,
-                    height: 196,
-                    objectFit: 'cover',
-                    borderRadius: 8,
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                }}
-                fallback={getPlaceholderCover(title, author)}
-                onError={handleError}
-                preview={{ mask: '查看大图' }}
-            />
-        </div>
-    );
 };
 
 // ==================== 主组件 ====================
@@ -818,11 +768,22 @@ const BookManualEdit: FC = () => {
                         </Col>
                     </Row>
                     {/* 封面预览 */}
-                    <CoverPreview
-                        coverUrl={currentCoverUrl || bookData.cover_url || ''}
-                        title={currentTitle || bookData.title}
-                        author={currentAuthor || bookData.author}
-                    />
+                    <div style={{ textAlign: 'center', marginTop: 12 }}>
+                        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                            封面预览
+                        </Text>
+                        <UnifiedCover
+                            coverUrl={currentCoverUrl || bookData.cover_url || ''}
+                            title={currentTitle || bookData.title}
+                            author={currentAuthor || bookData.author}
+                            mode="image"
+                            width={140}
+                            aspectRatio="140/196"
+                            borderRadius={8}
+                            shadow
+                            preview={{ mask: '查看大图' }}
+                        />
+                    </div>
                 </Card>
 
                 {/* 内容简介 */}

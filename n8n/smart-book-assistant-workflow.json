@@ -1,0 +1,319 @@
+{
+  "name": "书房智能助手 — n8n Workflow",
+  "description": "替代 Dify Agent/Chatflow 的书房智能助手。接收前端 Webhook 调用，基于规则引擎分类意图，调用后端搜索/推荐/详情 API 并格式化 Markdown 回复。",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "smart-book-assistant",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-receive",
+      "name": "接收前端请求",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [400, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const query = ($input.item.json.query || '').trim();\nconst sessionId = $input.item.json.sessionId || '';\n\nreturn {\n  query: query,\n  sessionId: sessionId,\n  queryLower: query.toLowerCase()\n};"
+      },
+      "id": "code-parse",
+      "name": "解析输入",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 规则引擎意图分类\nconst q = $input.item.json.queryLower;\nconst query = $input.item.json.query;\n\nlet intent = 'search';\nlet params = {};\n\n// 1. 推荐类: \"推荐\" + 书名\nconst recommendMatch = query.match(/(?:推荐|类似|相似|像).*?[《](.+?)[》]/);\nif (recommendMatch || /(?:推荐|类似|相似).*?(?:的书|小说|作品|图书)/.test(q)) {\n  intent = 'recommend';\n  if (recommendMatch) params.bookName = recommendMatch[1];\n}\n// 2. 详情查询: \"《XXX》\" 的书架/评分/信息\nelse if (/[《](.+?)[》]/.test(query) && /(?:在哪|书架|详情|信息|评分|简介)/.test(q)) {\n  intent = 'detail';\n  const m = query.match(/[《](.+?)[》]/);\n  if (m) params.bookName = m[1];\n}\n// 3. 帮助类\nelse if (/^(?:你好|hi|hello|帮助|help|你能|功能)/i.test(q) || q.length < 2) {\n  intent = 'help';\n}\n// 4. 最近/新书\nelse if (/(?:最近|新书|刚.*(?:买|加|添)).*(?:书|哪些|什么)/.test(q)) {\n  intent = 'search';\n  params.timeFilter = 'recent';\n}\n// 5. 评分相关\nelse if (/(?:评分|高分|好评|几星).*(?:书|最高|推荐)/.test(q)) {\n  intent = 'search';\n  params.ratingFilter = true;\n}\n// 6. 默认搜索\nelse {\n  intent = 'search';\n}\n\nreturn {\n  intent: intent,\n  query: query,\n  params: params,\n  sessionId: $input.item.json.sessionId\n};"
+      },
+      "id": "code-classify",
+      "name": "意图分类",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 200]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  { "leftValue": "={{ $json.intent }}", "rightValue": "search", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  { "leftValue": "={{ $json.intent }}", "rightValue": "recommend", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  { "leftValue": "={{ $json.intent }}", "rightValue": "detail", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        }
+      },
+      "id": "switch-intent",
+      "name": "路由到场景",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1000, 200]
+    },
+
+    "==============================": "BRANCH 1: 搜索图书",
+    {
+      "parameters": {
+        "jsCode": "return {\n  url: 'http://localhost:8000/api/chat/search',\n  method: 'POST',\n  body: { query: $input.item.json.query, limit: 10 }\n};"
+      },
+      "id": "code-prep-search",
+      "name": "准备搜索请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 100]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "query", "value": "={{ $json.body.query }}" },
+            { "name": "limit", "value": "={{ $json.body.limit }}" }
+          ]
+        },
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-search",
+      "name": "调用搜索 API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1400, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.item.json;\nconst results = resp.results || [];\nconst total = resp.total || results.length;\nconst understanding = resp.query_understanding || '';\n\nif (results.length === 0) {\n  return {\n    reply: `🔍 未找到匹配的图书\\n\\n我在馆藏 102 本书中没有找到与\"${$('code-classify').item.json.query}\"匹配的结果。\\n\\n建议：\\n• 尝试用不同的关键词描述（如作者名、出版社、主题等）\\n• 用 ISBN 精确查找\\n• 在\"智能录入\"页面同步新书信息`\n  };\n}\n\nlet reply = `📚 找到 **${total}** 本相关图书\\n`;\nif (understanding) reply += `> ${understanding}\\n`;\nreply += '\\n';\n\nconst top5 = results.slice(0, 5);\nfor (let i = 0; i < top5.length; i++) {\n  const b = top5[i];\n  reply += `**${i + 1}. 《${b.title || '未知书名'}》**\\n`;\n  if (b.author) reply += `   ✍️ ${b.author}`;\n  if (b.publisher) reply += ` | ${b.publisher}`;\n  if (b.rating) reply += ` | ⭐ ${b.rating}`;\n  reply += '\\n';\n  if (b.shelf_names && b.shelf_names.length > 0) reply += `   📍 书架：${b.shelf_names.join('、')}\\n`;\n  if (b.summary) reply += `   📖 ${b.summary.substring(0, 100)}${b.summary.length > 100 ? '...' : ''}\\n`;\n  reply += '\\n';\n}\n\nif (results.length > 5) {\n  reply += `... 还有 ${results.length - 5} 本相关图书`;\n}\n\nreturn { reply: reply };"
+      },
+      "id": "code-format-search",
+      "name": "格式化搜索结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 100]
+    },
+
+    "===============================": "BRANCH 2: 相似推荐",
+    {
+      "parameters": {
+        "jsCode": "// 先搜索找到书名匹配的 book_id\nconst bookName = $input.item.json.params.bookName || '';\nconst query = $input.item.json.query;\n\n// 提取书名关键词用于搜索\nlet searchQuery = bookName;\nif (!searchQuery) {\n  // 从查询中提取可用于搜索的关键词\n  const m = query.match(/(?:推荐|类似|相似|像)(.+?)(?:的书|小说|作品|图书|$)/);\n  searchQuery = m ? m[1].trim() : query;\n}\n\nreturn {\n  step: 'find_book',\n  url: 'http://localhost:8000/api/chat/search',\n  method: 'POST',\n  body: { query: searchQuery, limit: 3 },\n  originalQuery: query\n};"
+      },
+      "id": "code-prep-recommend",
+      "name": "搜索目标图书",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "query", "value": "={{ $json.body.query }}" },
+            { "name": "limit", "value": "={{ $json.body.limit }}" }
+          ]
+        },
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-find-book",
+      "name": "查找目标图书",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.item.json;\nconst results = resp.results || [];\n\nif (results.length === 0) {\n  return {\n    reply: `🔍 未在馆藏中找到匹配的图书\\n\\n建议：\\n• 确认书名是否正确\\n• 尝试用作者名或其他关键词描述`,\n    skip: true\n  };\n}\n\nconst first = results[0];\nreturn {\n  step: 'get_similar',\n  url: `http://localhost:8000/api/chat/book/${first.book_id}/similar`,\n  method: 'GET',\n  bookName: first.title,\n  bookId: first.book_id\n};"
+      },
+      "id": "code-get-book-id",
+      "name": "获取 book_id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "method": "GET",
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-similar",
+      "name": "获取相似推荐",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1800, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.item.json;\nconst similar = resp.similar_books || resp.results || [];\nconst bookName = $('code-get-book-id').item.json.bookName || '';\n\nif (similar.length === 0) {\n  return {\n    reply: `📚 《${bookName}》是馆藏中独一无二的一本！\\n\\n虽然没有找到相似的图书，但你可以尝试：\\n• 用作者名搜索：\"${bookName} 的作者\"\\n• 浏览封面墙发现更多好书`\n  };\n}\n\nlet reply = `📚 基于《${bookName}》的推荐\\n\\n`;\n\nfor (let i = 0; i < Math.min(similar.length, 5); i++) {\n  const b = similar[i];\n  const reasons = [];\n  if (b.match_reason) reasons.push(b.match_reason);\n  const reasonText = reasons.length > 0 ? `（${reasons.join('、')}）` : '';\n  \n  reply += `**${i + 1}. 《${b.title || '未知书名'}》** ${reasonText}\\n`;\n  if (b.author) reply += `   ✍️ ${b.author}`;\n  if (b.publisher) reply += ` | ${b.publisher}`;\n  if (b.rating) reply += ` | ⭐ ${b.rating}`;\n  reply += '\\n';\n  if (b.shelf_names && b.shelf_names.length > 0) reply += `   📍 ${b.shelf_names.join('、')}\\n`;\n  reply += '\\n';\n}\n\nreturn { reply: reply };"
+      },
+      "id": "code-format-recommend",
+      "name": "格式化推荐结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 300]
+    },
+
+    "============================": "BRANCH 3: 图书详情",
+    {
+      "parameters": {
+        "jsCode": "const bookName = $input.item.json.params.bookName || '';\n\nif (!bookName) {\n  return { reply: '请告诉我你想查看哪本书的详情，例如：\"《三体》在哪个书架？\"', skip: true };\n}\n\nreturn {\n  step: 'find_book',\n  url: 'http://localhost:8000/api/chat/search',\n  method: 'POST',\n  body: { query: bookName, limit: 1 },\n  bookName: bookName\n};"
+      },
+      "id": "code-prep-detail",
+      "name": "搜索图书",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 500]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "query", "value": "={{ $json.body.query }}" },
+            { "name": "limit", "value": "={{ $json.body.limit }}" }
+          ]
+        },
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-search-detail",
+      "name": "查找图书",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1400, 500]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "method": "GET",
+        "options": { "timeout": 30000 }
+      },
+      "id": "http-get-detail",
+      "name": "获取详情",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1600, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.item.json;\nconst results = $('http-search-detail').item.json.results || [];\n\nif (results.length === 0) {\n  return {\n    reply: `🔍 未在馆藏中找到该书\\n\\n建议确认书名是否正确，或尝试用作者名搜索。`\n  };\n}\n\nconst first = results[0];\n// 如果 get_detail 返回了更详细的信息则使用\nconst detail = (resp && resp.book_id) ? resp : first;\n\nlet reply = `📖 **《${detail.title || first.title}》**\\n\\n`;\nif (detail.author) reply += `✍️ 作者：${detail.author}\\n`;\nif (detail.isbn) reply += `🔢 ISBN：${detail.isbn}\\n`;\nif (detail.publisher) reply += `🏢 出版社：${detail.publisher}\\n`;\nif (detail.publish_date) reply += `📅 出版日期：${detail.publish_date}\\n`;\nif (detail.pages) reply += `📄 页数：${detail.pages}\\n`;\nif (detail.price) reply += `💰 定价：${detail.price}\\n`;\nif (detail.binding) reply += `📚 装帧：${detail.binding}\\n`;\nif (detail.series) reply += `📂 丛书：${detail.series}\\n`;\nif (detail.translator) reply += `🖊 译者：${detail.translator}\\n`;\nif (detail.original_title) reply += `🌐 原作名：${detail.original_title}\\n`;\nif (detail.rating) reply += `⭐ 豆瓣评分：${detail.rating}/10\\n`;\n\n// 书架信息\nconst shelves = detail.shelves || [];\nif (shelves.length > 0) {\n  reply += '\\n📍 **所在书架**\\n';\n  for (const s of shelves) {\n    reply += `• ${s.shelf_name}`;\n    if (s.physical_location) reply += ` (${s.physical_location})`;\n    reply += '\\n';\n  }\n}\n\nif (detail.summary) {\n  reply += `\\n📖 **内容简介**\\n${detail.summary.substring(0, 300)}${detail.summary.length > 300 ? '...' : ''}\\n`;\n}\n\nif (detail.source) reply += `\\n📡 数据来源：${detail.source}`;\n\nreturn { reply: reply };"
+      },
+      "id": "code-format-detail",
+      "name": "格式化详情",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 500]
+    },
+
+    "==============================": "BRANCH 4: 帮助",
+    {
+      "parameters": {
+        "jsCode": "return {\n  reply: `👋 你好！我是**书房智能助手** 📚\\n\\n我可以帮你：\\n\\n🔍 **智能搜索** — 用自然语言描述你想找的书\\n   \"有没有关于科幻的小说？\"\\n   \"白色封面的日本文学\"\\n   \"去年买的书\"\\n\\n🔗 **相似推荐** — 基于作者、出版社、系列推荐好书\\n   \"推荐类似《三体》的书\"\\n   \"还有没有东野圭吾的其他书？\"\\n\\n📖 **馆藏查询** — 快速了解图书信息和所在书架\\n   \"《活着》在哪个书架？\"\\n   \"评分最高的书有哪些？\"\\n\\n有什么可以帮你的？`\n};"
+      },
+      "id": "code-help",
+      "name": "帮助信息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 700]
+    },
+
+    "==============================": "汇总 + 无匹配回退搜索",
+    {
+      "parameters": {
+        "jsCode": "// 检查推荐分支是否已跳过（未找到目标书）\nconst recommendResult = $items('代码-格式化推荐结果');\nif (recommendResult && recommendResult.length > 0) {\n  const item = recommendResult[0];\n  if (item.json && item.json.skip) {\n    // 推荐失败 → 回退为普通搜索\n    return {\n      fallbackSearch: true,\n      url: 'http://localhost:8000/api/chat/search',\n      method: 'POST',\n      body: { query: $('代码-准备推荐请求').item.json.originalQuery || $('代码-准备推荐请求').item.json.query, limit: 5 }\n    };\n  }\n}\nreturn { fallbackSearch: false };"
+      },
+      "id": "code-check-fallback",
+      "name": "检查是否需要回退搜索",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 450]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 汇总所有分支的 reply\nconst items = $input.all();\nfor (const item of items) {\n  if (item.json && item.json.reply && !item.json.skip) {\n    return { reply: item.json.reply };\n  }\n}\nreturn { reply: '收到你的消息。请尝试：\\n• 用书名、作者或主题描述搜索\\n• \"推荐类似《XXX》的书\" 获取推荐\\n• 输入书名查看详情和所在书架' };"
+      },
+      "id": "code-collect",
+      "name": "汇总并返回响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 450]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { reply: $json.reply } }}"
+      },
+      "id": "respond-webhook",
+      "name": "返回给前端",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2600, 450]
+    }
+  ],
+  "connections": {
+    "接收前端请求": { "main": [[ { "node": "解析输入", "type": "main", "index": 0 } ]] },
+    "解析输入": { "main": [[ { "node": "意图分类", "type": "main", "index": 0 } ]] },
+    "意图分类": { "main": [[ { "node": "路由到场景", "type": "main", "index": 0 } ]] },
+    "路由到场景": {
+      "main": [
+        [{ "node": "准备搜索请求", "type": "main", "index": 0 }],
+        [{ "node": "搜索目标图书", "type": "main", "index": 0 }],
+        [{ "node": "搜索图书", "type": "main", "index": 0 }],
+        [{ "node": "帮助信息", "type": "main", "index": 0 }]
+      ]
+    },
+    "准备搜索请求": { "main": [[ { "node": "调用搜索 API", "type": "main", "index": 0 } ]] },
+    "调用搜索 API": { "main": [[ { "node": "格式化搜索结果", "type": "main", "index": 0 } ]] },
+    "格式化搜索结果": { "main": [[ { "node": "汇总并返回响应", "type": "main", "index": 0 } ]] },
+
+    "搜索目标图书": { "main": [[ { "node": "查找目标图书", "type": "main", "index": 0 } ]] },
+    "查找目标图书": { "main": [[ { "node": "获取 book_id", "type": "main", "index": 0 } ]] },
+    "获取 book_id": { "main": [[ { "node": "获取相似推荐", "type": "main", "index": 0 } ]] },
+    "获取相似推荐": { "main": [[ { "node": "格式化推荐结果", "type": "main", "index": 0 } ]] },
+    "格式化推荐结果": { "main": [[ { "node": "汇总并返回响应", "type": "main", "index": 0 } ]] },
+
+    "搜索图书": { "main": [[ { "node": "查找图书", "type": "main", "index": 0 } ]] },
+    "查找图书": { "main": [[ { "node": "获取详情", "type": "main", "index": 0 } ]] },
+    "获取详情": { "main": [[ { "node": "格式化详情", "type": "main", "index": 0 } ]] },
+    "格式化详情": { "main": [[ { "node": "汇总并返回响应", "type": "main", "index": 0 } ]] },
+
+    "帮助信息": { "main": [[ { "node": "汇总并返回响应", "type": "main", "index": 0 } ]] },
+
+    "汇总并返回响应": { "main": [[ { "node": "返回给前端", "type": "main", "index": 0 } ]] }
+  },
+  "settings": {
+    "saveExecutionProgress": false,
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {},
+  "versionId": "1.0.0",
+  "active": true
+}

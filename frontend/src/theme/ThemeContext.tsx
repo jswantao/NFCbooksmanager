@@ -326,13 +326,7 @@ export const ThemeProvider: FC<{ children: React.ReactNode }> = ({ children }) =
     return (
         <ThemeContext.Provider value={contextValue}>
             <ConfigProvider theme={currentTheme.antdTheme}>
-                <div
-                    className={`theme-wrapper theme-${currentTheme.key}`}
-                    style={{
-                        transition: `background-color ${THEME_TRANSITION_DURATION}ms ease, color ${THEME_TRANSITION_DURATION}ms ease`,
-                        minHeight: '100vh',
-                    }}
-                >
+                <div className={`theme-wrapper theme-${currentTheme.key}`}>
                     {children}
                 </div>
             </ConfigProvider>

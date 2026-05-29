@@ -679,8 +679,8 @@ async def get_database_info(db: Session = Depends(get_db)) -> Dict[str, Any]:
     # 查询所有用户表
     table_rows = db.execute(
         text(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            "SELECT tablename AS name FROM pg_catalog.pg_tables "
+            "WHERE schemaname = 'public'"
         )
     ).fetchall()
     
@@ -716,8 +716,8 @@ def _table_exists(db: Session, table_name: str) -> bool:
     try:
         result = db.execute(
             text(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name=:name"
+                "SELECT tablename AS name FROM pg_catalog.pg_tables "
+                "WHERE schemaname='public' AND tablename=:name"
             ),
             {"name": table_name},
         ).fetchone()

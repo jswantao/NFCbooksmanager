@@ -419,6 +419,9 @@ export const startImport = (
     if (options.sync_delay) {
         formData.append('sync_delay', String(options.sync_delay));
     }
+    if (options.duplicate_resolution) {
+        formData.append('duplicate_resolution', options.duplicate_resolution);
+    }
 
     return apiClient
         .post('/import/start', formData, {

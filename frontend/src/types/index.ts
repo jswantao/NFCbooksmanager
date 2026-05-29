@@ -349,7 +349,7 @@ export interface ImportTask {
 export interface ImportTaskResult {
     index: number;
     isbn: string;
-    status: 'success' | 'failed' | 'skipped';
+    status: 'success' | 'updated' | 'failed' | 'skipped';
     title?: string;
     synced?: boolean;
     message?: string;
@@ -367,12 +367,14 @@ export interface NedbImportPreview {
     new_count: number;
     existing_count: number;
     invalid_count: number;
+    duplicate_count?: number;
     internal_dup_count?: number;
     samples: Array<{
         title: string;
         author: string;
         isbn: string;
         publisher: string;
+        cover_url?: string;
         status: string;
     }>;
     duplicate_items: Array<{
@@ -390,6 +392,7 @@ export interface ImportStartParams {
     shelf_id?: number;
     auto_sync?: boolean;
     sync_delay?: number;
+    duplicate_resolution?: 'skip' | 'update' | 'keep';
 }
 
 // ==================== 仪表盘/统计 ====================

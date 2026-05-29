@@ -32,7 +32,6 @@ import {
     Button,
     Space,
     Typography,
-    Image,
     Divider,
     Skeleton,
     message,
@@ -83,9 +82,9 @@ import {
     extractErrorMessage,
 } from '../services/api';
 import { useAsyncData } from '../hooks/useAsyncData';
-import { getBestCoverUrl, getPlaceholderCover } from '../utils/image';
 import { formatRating, formatDate, formatCurrency, formatAuthors } from '../utils/format';
 import ShelfSelector from '../components/ShelfSelector';
+import UnifiedCover from '../components/UnifiedCover';
 import type { BookDetail as BookDetailData } from '../types';
 
 const { Title, Paragraph, Text } = Typography;
@@ -113,40 +112,6 @@ const SOURCE_CONFIG: Record<string, { color: string; label: string }> = {
     nfc: { color: 'purple', label: 'NFC 录入' },
 };
 
-/**
- * 图片加载状态 Hook
- */
-const useImageState = () => {
-    const [imageLoading, setImageLoading] = useState(true);
-    const [imageError, setImageError] = useState(false);
-    const [imagePreviewVisible, setImagePreviewVisible] = useState(false);
-
-    const handleImageLoad = useCallback(() => {
-        setImageLoading(false);
-        setImageError(false);
-    }, []);
-
-    const handleImageError = useCallback(() => {
-        setImageError(true);
-        setImageLoading(false);
-    }, []);
-
-    const resetImage = useCallback(() => {
-        setImageLoading(true);
-        setImageError(false);
-    }, []);
-
-    return {
-        imageLoading,
-        imageError,
-        imagePreviewVisible,
-        setImagePreviewVisible,
-        handleImageLoad,
-        handleImageError,
-        resetImage,
-    };
-};
-
 // ==================== 主组件 ====================
 
 const BookDetail: FC = () => {
@@ -160,41 +125,15 @@ const BookDetail: FC = () => {
         [bookId]
     );
 
-    // 图片状态
-    const {
-        imageLoading,
-        imageError,
-        imagePreviewVisible,
-        setImagePreviewVisible,
-        handleImageLoad,
-        handleImageError,
-        resetImage,
-    } = useImageState();
+    // 图片预览状态
+    const [imagePreviewVisible, setImagePreviewVisible] = useState(false);
 
     // 操作状态
     const [syncing, setSyncing] = useState(false);
     const [removing, setRemoving] = useState(false);
     const [showShelfSelector, setShowShelfSelector] = useState(false);
 
-    // ==================== 图片加载重置 ====================
-
-    useEffect(() => {
-        if (book) {
-            resetImage();
-        }
-    }, [book?.cover_url, resetImage]);
-
     // ==================== 派生数据 ====================
-
-    const coverUrl = useMemo(
-        () => getBestCoverUrl(book?.cover_url, book?.local_cover_path, book?.douban_url) || '',
-        [book?.cover_url, book?.local_cover_path, book?.douban_url]
-    );
-
-    const placeholderUrl = useMemo(
-        () => getPlaceholderCover(book?.title, book?.author),
-        [book?.title, book?.author]
-    );
 
     const ratingValue = useMemo(() => {
         if (!book?.rating) return 0;
@@ -815,67 +754,24 @@ const BookDetail: FC = () => {
                                 margin: '0 auto',
                             }}
                         >
-                            {/* 加载占位 */}
-                            {imageLoading && !imageError && (
-                                <Skeleton.Image
-                                    active
-                                    style={{
-                                        width: '100%',
-                                        aspectRatio: '3/4',
-                                        borderRadius: 12,
-                                    }}
-                                />
-                            )}
-
-                            {/* 封面图片 */}
-                            {coverUrl && !imageError ? (
-                                <Image
-                                    src={coverUrl}
-                                    alt={`《${book.title}》封面`}
-                                    style={{
-                                        borderRadius: 12,
-                                        width: '100%',
-                                        aspectRatio: '3/4',
-                                        objectFit: 'cover',
-                                        display: imageLoading ? 'none' : 'block',
-                                        boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
-                                    }}
-                                    fallback={placeholderUrl}
-                                    onLoad={handleImageLoad}
-                                    onError={handleImageError}
-                                    preview={{
-                                        open: imagePreviewVisible,
-                                        onOpenChange: setImagePreviewVisible,
-                                        cover: (
-                                            <div
-                                                style={{
-                                                    display: 'flex',
-                                                    flexDirection: 'column',
-                                                    alignItems: 'center',
-                                                    gap: 8,
-                                                }}
-                                            >
-                                                <SearchOutlined
-                                                    style={{ fontSize: 28 }}
-                                                />
-                                                <span>查看大图</span>
-                                            </div>
-                                        ),
-                                    }}
-                                />
-                            ) : (
-                                <img
-                                    src={placeholderUrl}
-                                    alt={`《${book.title}》占位封面`}
-                                    style={{
-                                        width: '100%',
-                                        aspectRatio: '3/4',
-                                        objectFit: 'cover',
-                                        borderRadius: 12,
-                                        boxShadow: '0 8px 24px rgba(0,0,0,0.08)',
-                                    }}
-                                />
-                            )}
+                            <UnifiedCover
+                                book={book}
+                                mode="image"
+                                aspectRatio="3/4"
+                                borderRadius={12}
+                                shadow
+                                style={{ width: '100%' }}
+                                preview={{
+                                    open: imagePreviewVisible,
+                                    onOpenChange: setImagePreviewVisible,
+                                    mask: (
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                                            <SearchOutlined style={{ fontSize: 28 }} />
+                                            <span>查看大图</span>
+                                        </div>
+                                    ),
+                                }}
+                            />
 
                             {/* 评分角标 */}
                             {ratingValue > 0 && (

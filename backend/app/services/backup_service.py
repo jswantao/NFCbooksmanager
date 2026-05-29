@@ -41,25 +41,15 @@ from app.models.models import ActivityLog
 BACKUP_VERSION = "1.0.0"
 
 # 恢复时需要排除的表（SQLite 系统表、Alembic 迁移表等）
-EXCLUDED_TABLES = {"sqlite_sequence", "alembic_version"}
+EXCLUDED_TABLES = {"alembic_version"}
 
 
 def _disable_fk_constraints(db) -> None:
-    """跨数据库禁用外键约束"""
-    from app.core.database import is_postgresql
-    if is_postgresql:
-        db.execute(text("SET session_replication_role = 'replica'"))
-    else:
-        db.execute(text("PRAGMA foreign_keys=OFF"))
+    db.execute(text("SET session_replication_role = 'replica'"))
 
 
 def _enable_fk_constraints(db) -> None:
-    """跨数据库恢复外键约束"""
-    from app.core.database import is_postgresql
-    if is_postgresql:
-        db.execute(text("SET session_replication_role = 'origin'"))
-    else:
-        db.execute(text("PRAGMA foreign_keys=ON"))
+    db.execute(text("SET session_replication_role = 'origin'"))
 
 # 序列化时需要转换的列类型后缀
 DATETIME_TYPE_SUFFIXES = ("DATETIME", "TIMESTAMP")

@@ -74,8 +74,7 @@ frontend/storybook-static/
 tmp/
 temp/
 
-# ---------- 项目配置 (本地) ----------
-CLAUDE.md
+# ---------- 项目配置 (仅本地) ----------
 .claude/
 .backups
 ManageBooksMac/
