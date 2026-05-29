@@ -731,4 +731,25 @@ export interface ImageUploadISBNResult {
     barcode_detected: boolean;
     message: string;
     file_path: string;
+// ==================== AI 对话相关 ====================
+
+/** 聊天搜索单条结果 */
+export interface ChatSearchResult {
+    books: Array<{
+        book_id: number;
+        title: string;
+        author?: string;
+        cover_url?: string;
+    }>;
+}
+
+/** 聊天获取图书详情结果 */
+export interface ChatBookDetailResult {
+    book_id: number;
+    title: string;
+    author?: string;
+    summary?: string;
+    cover_url?: string;
+}
+
 }
