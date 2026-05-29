@@ -189,6 +189,7 @@ async def _run_nedb_import(
             from app.core.database import SyncSessionLocal
             db_sync = SyncSessionLocal()
             try:
+                # execute_nedb_import 内部已按批次提交，无需额外 commit
                 outcome = execute_nedb_import(
                     docs=docs,
                     db_session=db_sync,
@@ -196,7 +197,6 @@ async def _run_nedb_import(
                     shelf_id=shelf_id,
                     duplicate_resolution=duplicate_resolution,
                 )
-                db_sync.commit()
                 return outcome
             except Exception as e:
                 db_sync.rollback()
@@ -212,16 +212,17 @@ async def _run_nedb_import(
             )
             task = result.scalar_one_or_none()
             if task:
+                error_count = len(outcome.get("errors", []))
                 task.status = ImportStatus.COMPLETED.value
                 task.completed = (
                     outcome["inserted"]
                     + outcome["merged"]
                     + outcome["kept"]
                     + outcome["skipped"]
-                    + len(outcome.get("errors", []))
+                    + error_count
                 )
                 task.success = outcome["inserted"] + outcome["merged"]
-                task.failed = len(outcome.get("errors", []))
+                task.failed = error_count
                 task.skipped = outcome["skipped"] + outcome["kept"]
                 # 存储逐条结果（兼容前端 ImportTaskResult 表格）
                 task.results = json.dumps(
@@ -241,6 +242,13 @@ async def _run_nedb_import(
                 }, ensure_ascii=False)
                 task.finished_at = datetime.now(timezone.utc)
                 await db.commit()
+
+                logger.info(
+                    f"NeDB 导入任务完成: {task_id[:8]}... | "
+                    f"新增: {outcome['inserted']} | 合并: {outcome['merged']} | "
+                    f"保留: {outcome['kept']} | 跳过: {outcome['skipped']} | "
+                    f"错误: {error_count}"
+                )
 
     except Exception as e:
         logger.error(f"NeDB 导入任务异常 [{task_id[:8]}]: {e}")

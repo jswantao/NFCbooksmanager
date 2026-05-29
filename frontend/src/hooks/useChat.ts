@@ -3,7 +3,7 @@
  * 聊天消息管理 Hook
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { message } from 'antd';
 import { chatSearch } from '../services/api';
 import type { ChatMessage, ChatSearchResultItem } from '../types';
@@ -31,6 +31,13 @@ export function useChat() {
     const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
     const [loading, setLoading] = useState(false);
     const abortRef = useRef<AbortController | null>(null);
+
+    // 组件卸载时取消进行中的请求，避免内存泄漏和 setState 警告
+    useEffect(() => {
+        return () => {
+            abortRef.current?.abort();
+        };
+    }, []);
 
     const sendMessage = useCallback(async (text: string) => {
         const trimmed = text.trim();

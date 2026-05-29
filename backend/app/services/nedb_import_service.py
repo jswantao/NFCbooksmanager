@@ -512,6 +512,13 @@ def execute_nedb_import(
     results: List[Dict] = []   # 逐条结果，供前端表格展示
     resolution = duplicate_resolution or {}
 
+    # 批量提交尺寸：每 BATCH_SIZE 条记录提交一次事务，避免单次提交丢失所有数据
+    BATCH_SIZE = 50
+    batch_count = 0  # 当前批次中新增+变更的计数
+
+    # 记录导入开始前的图书总数，用于事后校验
+    initial_count = db_session.query(BookMetadata).count()
+
     for i, doc in enumerate(docs):
         try:
             book_data = map_nedb_to_book(doc)
@@ -540,6 +547,7 @@ def execute_nedb_import(
                 if action == "merge":
                     _merge_book_fields(existing, book_data)
                     merged += 1
+                    batch_count += 1
                     results.append({
                         "index": i + 1, "isbn": isbn,
                         "status": "merged", "title": existing.title[:60] if existing.title else book_data.get("title", "")[:60],
@@ -613,6 +621,7 @@ def execute_nedb_import(
                 db_session.add(shelf_book)
 
             inserted += 1
+            batch_count += 1
             results.append({
                 "index": i + 1, "isbn": isbn,
                 "status": "success", "title": book_data.get("title", "")[:60],
@@ -628,11 +637,45 @@ def execute_nedb_import(
                 "message": str(e)[:100],
             })
             logger.warning(f"NeDB 导入失败 [{title}]: {e}")
+            # 单条失败时回滚当前事务，避免污染后续记录
+            try:
+                db_session.rollback()
+            except Exception:
+                pass
 
         if progress_callback:
             progress_callback(i + 1, total)
 
-    db_session.commit()
+        # 批量提交：每 BATCH_SIZE 条记录提交一次事务，防止单次提交失败丢失全部数据
+        if batch_count >= BATCH_SIZE:
+            try:
+                db_session.commit()
+                logger.debug(f"NeDB 批量提交: {batch_count} 条变更已持久化 (进度 {i+1}/{total})")
+            except Exception as commit_err:
+                logger.error(f"NeDB 批量提交失败 (进度 {i+1}/{total}): {commit_err}")
+                db_session.rollback()
+                raise
+            batch_count = 0
+
+    # 提交剩余未提交的记录
+    if batch_count > 0:
+        try:
+            db_session.commit()
+            logger.debug(f"NeDB 最终提交: {batch_count} 条变更已持久化")
+        except Exception as commit_err:
+            logger.error(f"NeDB 最终提交失败: {commit_err}")
+            db_session.rollback()
+            raise
+
+    # 提交后校验：对比导入前后的图书数量，检测静默丢失
+    final_count = db_session.query(BookMetadata).count()
+    expected_new = initial_count + inserted
+    if final_count < expected_new:
+        lost = expected_new - final_count
+        logger.error(
+            f"NeDB 导入数据丢失！预期新增 {inserted} 本，实际新增 {final_count - initial_count} 本，"
+            f"丢失 {lost} 本 — 可能有唯一索引冲突或触发器回滚"
+        )
 
     logger.info(
         f"NeDB 导入完成: {total} 条, "

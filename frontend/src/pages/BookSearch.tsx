@@ -160,7 +160,7 @@ const BookSearch: FC = () => {
 
     const { history, add: addHistory, remove: removeHistory, clear: clearHistory } = useSearchHistory();
 
-    useEffect(() => { setTimeout(() => inputRef.current?.focus(), 300); }, []);
+    useEffect(() => { const id = setTimeout(() => inputRef.current?.focus(), 300); return () => clearTimeout(id); }, []);
 
     // ── 智能粘贴处理 ──
     const handlePaste = useCallback((e: React.ClipboardEvent) => {

@@ -985,10 +985,11 @@ async def _run_import_task(
                     })
                     await db.rollback()
 
-                # 更新进度
+                # 更新进度（每 50 条或最后一条序列化一次，避免 O(n²) 开销）
                 task.completed = i + 1
-                task.results = json.dumps(results, ensure_ascii=False)
-                task.errors = json.dumps(errors, ensure_ascii=False)
+                if (i + 1) % 50 == 0 or (i + 1) == len(isbns):
+                    task.results = json.dumps(results, ensure_ascii=False)
+                    task.errors = json.dumps(errors, ensure_ascii=False)
                 await db.commit()
 
                 # 请求间隔（避免豆瓣限流）

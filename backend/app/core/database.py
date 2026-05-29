@@ -87,6 +87,8 @@ def _engine_kwargs() -> dict:
         return {
             "connect_args": {"check_same_thread": False},
             "poolclass": StaticPool,
+            "pool_pre_ping": True,
+            "pool_recycle": 1800,  # SQLite WAL 模式下定期回收连接
         }
 
     if is_postgresql:
@@ -123,10 +125,15 @@ sync_engine = create_engine(
 )
 
 # 异步引擎（用于 FastAPI 异步请求处理）
+# SQLite 异步引擎使用 NullPool 避免跨协程连接共享问题
+_async_kwargs = _engine_kwargs()
+if is_sqlite:
+    from sqlalchemy.pool import NullPool
+    _async_kwargs["poolclass"] = NullPool
 async_engine = create_async_engine(
     _async_url(),
     echo=settings.DATABASE_ECHO,
-    **_engine_kwargs(),
+    **_async_kwargs,
 )
 
 # 同步会话工厂

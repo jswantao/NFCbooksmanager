@@ -19,6 +19,7 @@ import React, {
     useState,
     useCallback,
     useMemo,
+    useRef,
     type FC,
 } from 'react';
 import {
@@ -118,6 +119,8 @@ const BookDetail: FC = () => {
     const { shelfId, bookId } = useParams<{ shelfId: string; bookId: string }>();
     const navigate = useNavigate();
     const { token } = theme.useToken();
+    const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(() => () => { if (navTimerRef.current) clearTimeout(navTimerRef.current); }, []);
 
     // 数据加载
     const { data: book, loading, error, refresh: load } = useAsyncData(
@@ -189,10 +192,11 @@ const BookDetail: FC = () => {
                 content: `《${book.title}》已从书架移除`,
                 key: 'remove-success',
             });
-            // 跳转回书架
-            setTimeout(() => {
+            // 跳转回书架（组件卸载时取消导航）
+            const navTimer = setTimeout(() => {
                 navigate(book.shelf_id ? `/shelf/${book.shelf_id}` : '/');
             }, 800);
+            navTimerRef.current = navTimer;
         } catch (err: unknown) {
             const errorMsg = extractErrorMessage(err) || '移除失败';
             message.error({

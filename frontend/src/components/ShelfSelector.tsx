@@ -157,11 +157,12 @@ const ShelfSelector: FC<ShelfSelectorProps> = ({
             setError(null);
             setRetryCount(0);
             loadShelves();
-            
+
             // 自动聚焦搜索框
-            setTimeout(() => {
+            const id = setTimeout(() => {
                 searchInputRef.current?.focus();
             }, 300);
+            return () => clearTimeout(id);
         }
     }, [visible, loadShelves]);
 

@@ -115,6 +115,10 @@ async def lifespan(app: FastAPI):
     logger.info(f"[Startup] [OK] http://{s.HOST}:{s.PORT} | /docs | /health")
     logger.info(f"{'='*60}")
 
+    # 启动内存监控任务（每 30 分钟记录一次内存使用基线）
+    _memory_monitor_task = asyncio.create_task(_memory_monitor_loop())
+    logger.info("[Startup] 内存监控任务已启动")
+
     # 启动封面缓存定时清理任务
     cache_cleanup_task = None
     if s.IMAGE_CACHE_ENABLED:
@@ -136,6 +140,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # 停止清理任务
+    if _memory_monitor_task:
+        _memory_monitor_task.cancel()
+        try:
+            await _memory_monitor_task
+        except asyncio.CancelledError:
+            pass
     if cache_cleanup_task:
         cache_cleanup_task.cancel()
         try:
@@ -169,6 +179,35 @@ async def lifespan(app: FastAPI):
         await async_engine.dispose()
     logger.info("[Shutdown] [OK] 已安全关闭")
     logger.info(f"{'='*60}")
+
+
+async def _memory_monitor_loop() -> None:
+    """后台内存监控：每 30 分钟记录进程内存使用基线"""
+    import os as _os
+    try:
+        import psutil
+        _has_psutil = True
+    except ImportError:
+        _has_psutil = False
+        logger.info("psutil 未安装，内存监控使用基础模式")
+
+    while True:
+        try:
+            await asyncio.sleep(1800)  # 30 分钟
+            if _has_psutil:
+                proc = psutil.Process(_os.getpid())
+                mem = proc.memory_info()
+                logger.info(
+                    f"[Memory] RSS={mem.rss / 1024 / 1024:.1f}MB "
+                    f"VMS={mem.vms / 1024 / 1024:.1f}MB "
+                    f"CPU={proc.cpu_percent(interval=0.1):.1f}%"
+                )
+            else:
+                logger.info("[Memory] psutil 未安装，跳过详细监控")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[Memory] 监控异常: {e}")
 
 
 async def _image_cache_cleanup_loop() -> None:
