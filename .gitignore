@@ -180,6 +180,53 @@ frontend/coverage/
 .clinerules/
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 六-2、AI 智能体定义文件(项目级 + 用户级)
+# ═══════════════════════════════════════════════════════════════════════════
+# 总则:智能体配置(角色、提示词、工作流、Skills)通常是个人/团队私有,
+#       不应进入公共仓库。本仓库的 CLAUDE.md 是个例外(项目协作总规则,
+#       已加白名单保留)。
+
+# 顶层智能体角色 / 总规则文件
+AGENTS.md
+GEMINI.md
+OPENCODE.md
+CRUSH.md
+.roomodes
+
+# 项目级智能体目录(Claude Code / Codex CLI / Cursor / Windsurf / Roo Code / OpenCode / Crush 等)
+.claude/agents/
+.claude/commands/
+.claude/skills/
+.claude/output-styles/
+.claude/hooks/
+.claude/memories/
+.claude/sandbox/
+.codex/agents/
+.codex/prompts/
+.codex/skills/
+.cursor/rules/
+.cursor/agents/
+.cursor/commands/
+.windsurf/
+.gemini/
+.crush/
+.opencode/
+.roo/
+
+# AI 编辑历史 / 缓存 / 调试日志
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v*/
+.aider.llm.history
+.gpt-engineer/
+.continue/
+.copilot/
+.chatgpt/
+
+# 白名单:本仓库刻意保留的协作总规则文件
+!CLAUDE.md
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 七、操作系统垃圾
 # ═══════════════════════════════════════════════════════════════════════════
 .DS_Store
