@@ -98,7 +98,15 @@ def get_shelf_books(db, shelf_id, sort_by="sort_order", order="asc"):
             shelf_name=shelf.shelf_name,
             
         ))
-    return ShelfBooksResponse(shelf_id=shelf_id, shelf_name=shelf.shelf_name, books=books, total_count=len(books))
+    # ★ Bug 修复 (pre-existing): Schema 字段名为 logical_shelf_id, 而非 shelf_id
+    # 旧代码传 shelf_id= 会触发 pydantic ValidationError (缺少 logical_shelf_id 必填字段)
+    return ShelfBooksResponse(
+        logical_shelf_id=shelf_id,
+        shelf_name=shelf.shelf_name,
+        description=shelf.description,
+        books=books,
+        total_count=len(books),
+    )
 
 
 def add_book_to_shelf(db, shelf_id, book_id, sort_order=0, note=None):

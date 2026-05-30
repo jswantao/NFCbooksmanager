@@ -390,11 +390,19 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    """兜底：未预料的异常 → 500 + 日志"""
-    logger.error(
-        f"[UNHANDLED] {type(exc).__name__}: {exc} | "
-        f"{request.method} {request.url.path}",
-        exc_info=True,
+    """兜底：未预料的异常 → 500 + 日志
+
+    ★ Bug 修复 (pre-existing): 不能用 f-string 拼好消息再传给 loguru。
+    loguru 总会对消息做 ``str.format()`` (即使没传 args), 当 ``str(exc)``
+    含字面量 ``{shelf_id}`` 等花括号时会被当成占位符 → KeyError。
+    改用 loguru 占位符模式 + 命名参数, 内容里的 ``{}`` 会被原样保留。
+    """
+    logger.opt(exception=True).error(
+        "[UNHANDLED] {exc_type}: {exc_msg} | {method} {path}",
+        exc_type=type(exc).__name__,
+        exc_msg=str(exc),
+        method=request.method,
+        path=request.url.path,
     )
     return JSONResponse(
         status_code=500,
