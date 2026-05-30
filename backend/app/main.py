@@ -185,8 +185,13 @@ async def lifespan(app: FastAPI):
 
 
 async def _memory_monitor_loop() -> None:
-    """后台内存监控：每 30 分钟记录进程内存使用基线"""
-    import os as _os
+    """后台内存监控：每 30 分钟记录 RSS + tracemalloc Top 分配 + 阈值告警 + 自动 GC"""
+    import os as _os, gc, tracemalloc
+
+    # RSS 告警阈值 (MB)
+    RSS_WARN_THRESHOLD = 600
+    RSS_CRITICAL_THRESHOLD = 800
+
     try:
         import psutil
         _has_psutil = True
@@ -194,19 +199,54 @@ async def _memory_monitor_loop() -> None:
         _has_psutil = False
         logger.info("psutil 未安装，内存监控使用基础模式")
 
+    tracemalloc.start(25)  # 保留最近 25 帧
+    _prev_snapshot = None
+
     while True:
         try:
             await asyncio.sleep(1800)  # 30 分钟
-            if _has_psutil:
-                proc = psutil.Process(_os.getpid())
-                mem = proc.memory_info()
-                logger.info(
-                    f"[Memory] RSS={mem.rss / 1024 / 1024:.1f}MB "
-                    f"VMS={mem.vms / 1024 / 1024:.1f}MB "
-                    f"CPU={proc.cpu_percent(interval=0.1):.1f}%"
+
+            if not _has_psutil:
+                continue
+
+            proc = psutil.Process(_os.getpid())
+            mem = proc.memory_info()
+            rss_mb = mem.rss / 1024 / 1024
+
+            # 基础指标
+            logger.info(
+                f"[Memory] RSS={rss_mb:.1f}MB VMS={mem.vms / 1024 / 1024:.1f}MB "
+                f"CPU={proc.cpu_percent(interval=0.1):.1f}% "
+                f"Threads={proc.num_threads()}"
+            )
+
+            # RSS 阈值告警 + 自动 GC
+            if rss_mb > RSS_CRITICAL_THRESHOLD:
+                logger.error(
+                    f"[Memory] CRITICAL: RSS={rss_mb:.0f}MB > {RSS_CRITICAL_THRESHOLD}MB, "
+                    f"触发强制 GC + 告警"
                 )
-            else:
-                logger.info("[Memory] psutil 未安装，跳过详细监控")
+                collected = gc.collect()
+                logger.warning(f"[Memory] GC 回收 {collected} 个对象")
+            elif rss_mb > RSS_WARN_THRESHOLD:
+                logger.warning(
+                    f"[Memory] WARNING: RSS={rss_mb:.0f}MB > {RSS_WARN_THRESHOLD}MB"
+                )
+
+            # tracemalloc 快照与增量对比
+            snapshot = tracemalloc.take_snapshot()
+            top_stats = snapshot.statistics("lineno")[:5]
+            logger.info(f"[Memory] tracemalloc Top 5 分配（当前快照）:")
+            for stat in top_stats:
+                logger.info(f"  {stat}")
+
+            if _prev_snapshot:
+                diff_stats = snapshot.compare_to(_prev_snapshot, "lineno")[:3]
+                logger.info(f"[Memory] tracemalloc Top 3 增量（vs 30min前）:")
+                for stat in diff_stats:
+                    logger.info(f"  {stat}")
+            _prev_snapshot = snapshot
+
         except asyncio.CancelledError:
             break
         except Exception as e:

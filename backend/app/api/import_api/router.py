@@ -4,7 +4,7 @@ import io, json, uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
-import pandas as pd
+# pandas 按需导入（~50MB），避免每个进程启动时加载
 from fastapi import (
     APIRouter, Depends, HTTPException, UploadFile, File, Query,
     BackgroundTasks, Form,
@@ -139,6 +139,7 @@ async def cancel_import(task_id: str, db: Session = Depends(get_db)) -> ApiRespo
 
 @router.get("/template", summary="下载导入模板")
 async def download_template() -> StreamingResponse:
+    import pandas as pd  # 按需导入（~50MB，仅下载模板时加载）
     df = pd.DataFrame({
         "isbn": ["9787544270878", "9787020002207", "9787532768998"],
         "备注": ["解忧杂货店", "红楼梦", "百年孤独"],

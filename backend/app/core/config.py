@@ -732,7 +732,7 @@ class Settings(BaseSettings):
 
 # ==================== 全局单例 ====================
 
-@lru_cache()
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """
     获取 Settings 单例实例

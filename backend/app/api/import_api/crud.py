@@ -1,11 +1,11 @@
 """批量导入 — 工具函数层（ISBN 清洗、文件解析、列识别）
 
 纯函数，无数据库依赖，无副作用。
+pandas 仅在文件解析函数内部按需导入（~50MB）。
 """
 
 import io, re
 from typing import Optional, List
-import pandas as pd
 
 
 # ═══════════════════════════════════════════
@@ -53,8 +53,9 @@ def clean_and_validate_isbn(raw: str) -> Optional[str]:
 SUPPORTED_EXTENSIONS = {"csv", "xlsx", "xls", "txt"}
 
 
-def parse_file_content(content: bytes, extension: str) -> pd.DataFrame:
-    """根据扩展名解析文件内容为 DataFrame"""
+def parse_file_content(content: bytes, extension: str):
+    """根据扩展名解析文件内容为 DataFrame（按需导入 pandas）"""
+    import pandas as pd  # noqa: F811 — 延迟导入避免启动时加载 50MB
     if extension == "csv":
         return pd.read_csv(io.BytesIO(content), dtype=str, encoding="utf-8-sig")
     if extension in ("xlsx", "xls"):
@@ -79,7 +80,7 @@ def parse_file_content(content: bytes, extension: str) -> pd.DataFrame:
     raise ValueError(f"不支持的文件格式: .{extension}")
 
 
-def find_isbn_column(df: pd.DataFrame) -> str:
+def find_isbn_column(df: "pd.DataFrame") -> str:
     """自动识别 DataFrame 中的 ISBN 列"""
     isbn_keywords = ("isbn", "书号", "isbn13", "isbn10")
     for col in df.columns:

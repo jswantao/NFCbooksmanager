@@ -1147,9 +1147,9 @@ def _log_activity(
     try:
         with get_db_context() as log_db:
             log = ActivityLog(
-                action=action,
+                action_type=action,
                 entity_type=entity_type,
-                detail=json.dumps(detail_data, ensure_ascii=False, default=str)
+                details=json.dumps(detail_data, ensure_ascii=False, default=str)
                 if detail_data
                 else None,
             )

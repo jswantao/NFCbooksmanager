@@ -269,12 +269,19 @@ def init_db() -> None:
     if is_postgresql:
         _setup_postgresql_extensions()
 
-    # 创建所有表
-    Base.metadata.create_all(bind=sync_engine)
-
-    table_count = len(Base.metadata.tables)
-    db_label = "PostgreSQL" if is_postgresql else "SQLite"
-    logger.info(f"数据库初始化完成 ({db_label}, {table_count} 张表)")
+    # 生产环境优先 Alembic 迁移；pytest 中直接 create_all（避免迁移超时）
+    if __import__("os").environ.get("PYTEST_CURRENT_TEST"):
+        Base.metadata.create_all(bind=sync_engine)
+        logger.info(f"数据库表已创建 (create_all, {len(Base.metadata.tables)} 张表)")
+    else:
+        try:
+            from alembic.config import main as alembic_main
+            alembic_main(argv=["upgrade", "head"])
+            logger.info("数据库迁移完成 (Alembic upgrade head)")
+        except (ImportError, Exception) as e:
+            logger.info(f"Alembic 跳过（{type(e).__name__}），回退 create_all")
+            Base.metadata.create_all(bind=sync_engine)
+            logger.info(f"数据库表已创建 (create_all, {len(Base.metadata.tables)} 张表)")
 
 
 def _setup_postgresql_extensions() -> None:

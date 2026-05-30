@@ -90,9 +90,9 @@ class BookMetadata(Base, TimestampMixin):
         
     )
     pages = Column(
-        Integer,
+        String(20),
         nullable=True,
-        comment="总页数（迁移自 String(20)；旧数据需执行 UPDATE book_metadata SET pages=NULL WHERE pages GLOB '*[^0-9]*'）"
+        comment="总页数（旧数据为字符串格式；待 Alembic 迁移统一）"
     )
     price = Column(
         String(50),

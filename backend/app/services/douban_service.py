@@ -158,7 +158,7 @@ class DoubanService:
 
     def __init__(self):
         self.base = "https://book.douban.com"
-        self.cache = SimpleCache()
+        self.cache = SimpleCache(ttl=600, maxsize=500)  # 10min TTL, 500 entries max
 
         self._last_req: float = 0.0
 
