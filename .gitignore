@@ -78,3 +78,10 @@ temp/
 .claude/
 .backups
 ManageBooksMac/
+
+# ---------- 凭证/令牌 (本地仅用, 切勿提交) ----------
+git令牌.txt
+*token*.txt
+*credential*
+.git-credentials
+.netrc
