@@ -2,7 +2,10 @@
 """Pydantic 数据模型（按业务域拆分）"""
 
 from app.schemas.common import AppSchema, ApiResponse, PaginatedResponse
-from app.schemas.nfc import NFCWriteRequest, NFCWriteResponse, NFCReadResponse
+# NFC 相关 schemas 已重构:
+# - "任务化写入" 模型迁移至 app.api.nfc_bridge.schemas (NfcTask*)
+# - app/schemas/nfc.py 中原有的 NFCWriteRequest/NFCWriteResponse/NFCReadResponse
+#   是僵尸定义, 已清理 (无业务引用)。
 from app.schemas.mapping import MappingResolveRequest, MappingResolveResponse, MappingCreateRequest
 from app.schemas.shelf import ShelfCreateRequest, ShelfUpdateRequest, ShelfInfoResponse, ShelfBooksResponse
 from app.schemas.book import BookBase, BookCreateManualRequest, BookUpdateManualRequest, BookInShelf, BookDetailResponse, BookWallItem
