@@ -497,7 +497,7 @@ async def run_sync_db_block(func) -> any:
                 db.add(record)
                 db.commit()
                 return record.id
-            except:
+            except Exception:
                 db.rollback()
                 raise
             finally:

@@ -1,5 +1,10 @@
 // services/api/client.ts
-// 核心 Axios 实例、拦截器、通用工具函数
+/**
+ * 核心 Axios 实例、拦截器、通用工具函数
+ *
+ * P2 优化：移除 inFlightRequests Map 手动去重，
+ * 请求去重与缓存由 hooks/useQueryCache.ts 统一管理。
+ */
 
 import axios, {
     type AxiosResponse,
@@ -7,73 +12,31 @@ import axios, {
     type AxiosRequestConfig,
 } from "axios";
 
-// ==================== 类型定义 ====================
-
 const ERROR_MESSAGES: Record<number, string> = {
-    400: "请求参数错误",
-    401: "未授权访问",
-    403: "禁止访问",
-    404: "请求的资源不存在",
-    409: "资源冲突",
-    422: "请求参数格式错误",
-    429: "请求过于频繁，请稍后再试",
-    500: "服务器内部错误",
-    502: "网关错误",
-    503: "服务暂时不可用",
-    504: "网关超时",
+    400: "请求参数错误", 401: "未授权访问", 403: "禁止访问",
+    404: "请求的资源不存在", 409: "资源冲突", 422: "请求参数格式错误",
+    429: "请求过于频繁，请稍后再试", 500: "服务器内部错误",
+    502: "网关错误", 503: "服务暂时不可用", 504: "网关超时",
 };
 
 interface EnhancedAxiosError extends AxiosError {
     userMessage?: string;
 }
 
-// ==================== 常量配置 ====================
-
 const API_BASE_URL = "/api";
 const DEFAULT_TIMEOUT = 30000;
 const MAX_RETRIES = 2;
 
-// ==================== Axios 实例 ====================
-
 const apiClient = axios.create({
     baseURL: API_BASE_URL,
     timeout: DEFAULT_TIMEOUT,
-    headers: {
-        "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
 });
 
-// ==================== 请求去重 ====================
-
-const inFlightRequests = new Map<string, Promise<AxiosResponse>>();
-
-const getRequestKey = (config: AxiosRequestConfig): string => {
-    const { method, url, params, data } = config;
-    return [method, url, JSON.stringify(params), JSON.stringify(data)].join("&");
-};
-
-// ==================== 请求拦截器 ====================
+// ==================== 请求拦截器 (轻量化) ====================
 
 apiClient.interceptors.request.use(
     (config) => {
-        if (config.method?.toLowerCase() === "get") {
-            const key = getRequestKey(config);
-            const inFlight = inFlightRequests.get(key);
-            if (inFlight) {
-                config.adapter = () => inFlight;
-            } else {
-                let resolveFn!: (value: AxiosResponse) => void;
-                let rejectFn!: (reason: unknown) => void;
-                const deferred = new Promise<AxiosResponse>((resolve, reject) => {
-                    resolveFn = resolve;
-                    rejectFn = reject;
-                });
-                inFlightRequests.set(key, deferred);
-                (config as Record<string, unknown>)._dedupResolve = resolveFn;
-                (config as Record<string, unknown>)._dedupReject = rejectFn;
-            }
-        }
-
         if (import.meta.env.DEV) {
             console.debug(
                 `[API] ${config.method?.toUpperCase()} ${config.url}`,
@@ -88,34 +51,12 @@ apiClient.interceptors.request.use(
 // ==================== 响应拦截器 ====================
 
 apiClient.interceptors.response.use(
-    (response: AxiosResponse) => {
-        const config = response.config;
-        if (config.method?.toLowerCase() === "get") {
-            const key = getRequestKey(config);
-            const resolveFn = (config as Record<string, unknown>)._dedupResolve as ((v: AxiosResponse) => void) | undefined;
-            if (resolveFn) {
-                resolveFn(response);
-            }
-            inFlightRequests.delete(key);
-        }
-        return response;
-    },
+    (response: AxiosResponse) => response,
     async (error: EnhancedAxiosError) => {
-        if (axios.isCancel(error)) {
-            return Promise.reject(error);
-        }
+        if (axios.isCancel(error)) return Promise.reject(error);
 
         const config = error.config as AxiosRequestConfig & { _retry?: number };
         const retryCount = config?._retry || 0;
-
-        if (config?.method?.toLowerCase() === "get") {
-            const key = getRequestKey(config);
-            const rejectFn = (config as Record<string, unknown>)._dedupReject as ((reason: unknown) => void) | undefined;
-            if (rejectFn) {
-                rejectFn(error);
-            }
-            inFlightRequests.delete(key);
-        }
 
         if (
             retryCount < MAX_RETRIES &&
@@ -155,24 +96,14 @@ export function extractErrorMessage(error: unknown): string {
         }
         if (axios.isAxiosError(error)) {
             const status = error.response?.status;
-            if (status && ERROR_MESSAGES[status]) {
-                return ERROR_MESSAGES[status];
-            }
-            if (error.response?.data?.message) {
-                return error.response.data.message;
-            }
-            if (error.message === "Network Error") {
-                return "网络连接异常，请检查网络";
-            }
+            if (status && ERROR_MESSAGES[status]) return ERROR_MESSAGES[status];
+            if (error.response?.data?.message) return error.response.data.message;
+            if (error.message === "Network Error") return "网络连接异常，请检查网络";
         }
-        if ("code" in error && typeof error.code === "number") {
-            return error.message || "操作失败";
-        }
+        if ("code" in error && typeof error.code === "number") return error.message || "操作失败";
         return error.message || "未知错误";
     }
-    if (typeof error === "string") {
-        return error;
-    }
+    if (typeof error === "string") return error;
     return "未知错误";
 }
 

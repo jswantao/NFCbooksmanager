@@ -19,6 +19,8 @@ def _rating_case():
 # 图书全列表排序
 BOOK_LIST_SORT = {
     "created_at": BookMetadata.created_at,
+    "added_at": BookMetadata.created_at,     # 别名：映射到 created_at
+    "updated_at": BookMetadata.updated_at,
     "title": BookMetadata.title,
     "author": BookMetadata.author,
     "rating": _rating_case(),
@@ -27,7 +29,9 @@ BOOK_LIST_SORT = {
 # 书架内图书排序
 SHELF_BOOK_SORT = {
     "sort_order": LogicalShelfBook.sort_order,
-    "added_at": LogicalShelfBook.added_at,
+    "added_at": LogicalShelfBook.created_at,  # LogicalShelfBook 无 added_at 列，使用 created_at
+    "created_at": BookMetadata.created_at,
+    "updated_at": BookMetadata.updated_at,
     "title": BookMetadata.title,
     "author": BookMetadata.author,
     "rating": _rating_case(),

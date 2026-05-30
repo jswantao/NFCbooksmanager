@@ -1,4 +1,10 @@
 {
+  "experimental": {
+    "agentTeams": true
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
   "permissions": {
     "allow": [
       "Bash(python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000)",

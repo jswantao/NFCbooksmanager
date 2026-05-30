@@ -1,0 +1,157 @@
+/* components/virtual/VirtualTable.module.css */
+/* 虚拟滚动表格样式 - CSS Modules */
+
+/* ===== 容器 ===== */
+.container {
+    border: 1px solid #f0e4d8;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #fff;
+}
+
+.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* ===== 头部 ===== */
+.header {
+    display: flex;
+    border-bottom: 2px solid #f0e4d8;
+    background: #fefcf9;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.selectAll {
+    width: 48px;
+    min-width: 48px;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.headerCell {
+    padding: 12px 16px;
+    font-weight: 600;
+    font-size: 13px;
+    color: #8c7b72;
+    display: flex;
+    align-items: center;
+    user-select: none;
+}
+
+.headerCellSortable {
+    cursor: pointer;
+}
+
+.headerCellSortable:hover {
+    color: #8B4513;
+}
+
+.sortIcon {
+    margin-left: 4px;
+    font-size: 10px;
+    opacity: 0.3;
+}
+
+.sortIconActive {
+    opacity: 1;
+    color: #8B4513;
+}
+
+/* ===== 滚动容器 ===== */
+.scrollContainer {
+    position: relative;
+    overflow: auto;
+}
+
+.scrollInner {
+    position: relative;
+}
+
+/* ===== 行 ===== */
+.row {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    display: flex;
+    border-bottom: 1px solid #f0e4d8;
+    transition: background 0.15s ease;
+    cursor: default;
+}
+
+.rowClickable {
+    cursor: pointer;
+}
+
+.rowSelected {
+    background: #fdf6f0;
+}
+
+.row:hover:not(.rowSelected) {
+    background: #fafaf9;
+}
+
+/* ===== 单元格 ===== */
+.cell {
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+}
+
+.cellCheckbox {
+    width: 48px;
+    min-width: 48px;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ===== 空状态 ===== */
+.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 0;
+    color: #bfbfbf;
+    font-size: 14px;
+}
+
+/* ===== 骨架屏 ===== */
+.skeleton {
+    display: flex;
+    flex-direction: column;
+}
+
+.skeletonRow {
+    display: flex;
+    border-bottom: 1px solid #f5f5f5;
+}
+
+.skeletonCell {
+    padding: 12px 16px;
+    flex: 1;
+}
+
+.skeletonBar {
+    height: 14px;
+    background: linear-gradient(90deg, #f5f5f5 25%, #e8e8e8 50%, #f5f5f5 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: 4px;
+}
+
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}

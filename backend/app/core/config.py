@@ -488,16 +488,24 @@ class Settings(BaseSettings):
         key = hashlib.sha256(self.SECRET_KEY.encode()).digest()
         return Fernet(base64.urlsafe_b64encode(key))
 
+    # Fernet 密文前缀标记：所有 Fernet 加密输出为 base64 编码并以 'gAAAAA' 开头
+    _FERNET_PREFIX = "gAAAAA"
+
     def _encrypt_cookie(self, plaintext):
-        """加密 Cookie 字符串"""
+        """加密字符串 — 自动跳过已加密（幂等）"""
         if not plaintext:
             return ""
+        if plaintext.startswith(self._FERNET_PREFIX):
+            logger.debug("检测到已加密密文，跳过重复加密")
+            return plaintext
         return self._get_fernet().encrypt(plaintext.encode()).decode()
 
     def _decrypt_cookie(self, ciphertext):
-        """解密 Cookie 密文"""
+        """解密字符串 — 自动识别明文（幂等）"""
         if not ciphertext:
             return ""
+        if not ciphertext.startswith(self._FERNET_PREFIX):
+            return ciphertext  # 已是明文，直接返回
         return self._get_fernet().decrypt(ciphertext.encode()).decode()
 
     # ==================== 配置持久化方法 ====================
@@ -545,23 +553,10 @@ class Settings(BaseSettings):
                 save_data["douban_cookie"] = encrypted_cookie
                 save_data["douban_user_agent"] = self.DOUBAN_USER_AGENT
 
-            # Cookie 字段需加密处理
-            if "douban_cookie" in save_data and save_data["douban_cookie"]:
-                raw = save_data["douban_cookie"]
-                try:
-                    # 尝试解密 — 如果已经是密文，说明之前加密过
-                    self._decrypt_cookie(raw)
-                except Exception:
-                    # 明文 Cookie，加密后存储
-                    save_data["douban_cookie"] = self._encrypt_cookie(raw) if raw else ""
-
-            # WebDAV 密码字段需加密处理
-            if "webdav_password" in save_data and save_data["webdav_password"]:
-                raw = save_data["webdav_password"]
-                try:
-                    self._decrypt_cookie(raw)
-                except Exception:
-                    save_data["webdav_password"] = self._encrypt_cookie(raw) if raw else ""
+            # 敏感字段加密（幂等：已加密数据自动跳过，不重复加密）
+            for field in ("douban_cookie", "webdav_password"):
+                if field in save_data and save_data[field]:
+                    save_data[field] = self._encrypt_cookie(save_data[field])
 
             # 原子写入：先写临时文件，再替换
             temp_path = config_path.with_suffix('.tmp')
@@ -593,21 +588,17 @@ class Settings(BaseSettings):
             with open(config_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            # Cookie: 先尝试解密，失败则视为旧版明文（自动升级）
+            # Cookie 恢复（幂等解密：明文自动跳过，密文解密）
             raw_cookie = data.get("douban_cookie", "")
             if raw_cookie:
                 try:
                     self.DOUBAN_COOKIE = self._decrypt_cookie(raw_cookie)
                 except Exception:
-                    logger.info("检测到旧版明文 Cookie，将自动加密升级")
+                    logger.info("Cookie 解密失败，使用明文存储")
                     self.DOUBAN_COOKIE = raw_cookie
-                    self.save_to_file()
             else:
                 self.DOUBAN_COOKIE = ""
-            self.DOUBAN_USER_AGENT = data.get(
-                "douban_user_agent",
-                self.DOUBAN_USER_AGENT
-            )
+            self.DOUBAN_USER_AGENT = data.get("douban_user_agent", self.DOUBAN_USER_AGENT)
 
             # WebDAV 配置恢复
             self.WEBDAV_ENABLED = data.get("webdav_enabled", self.WEBDAV_ENABLED)
@@ -616,15 +607,13 @@ class Settings(BaseSettings):
             self.WEBDAV_REMOTE_PATH = data.get("webdav_remote_path", self.WEBDAV_REMOTE_PATH)
             self.WEBDAV_TIMEOUT = data.get("webdav_timeout", self.WEBDAV_TIMEOUT)
 
-            # WebDAV 密码解密
+            # WebDAV 密码解密（幂等）
             encrypted_pwd = data.get("webdav_password", "")
             if encrypted_pwd:
                 try:
                     self.WEBDAV_PASSWORD = self._decrypt_cookie(encrypted_pwd)
                 except Exception:
-                    # 可能是旧版明文密码（自动升级）
                     self.WEBDAV_PASSWORD = encrypted_pwd
-                    self.save_to_file()
 
             logger.info(
                 f"配置文件加载成功 | "

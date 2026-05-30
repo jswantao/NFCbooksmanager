@@ -32,11 +32,12 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, unquote, parse_qs, urlparse
 
 from loguru import logger
-from fastapi import APIRouter, HTTPException, Query, Request
+from sqlalchemy.orm import Session
+from fastapi import Depends, APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.core.database import SyncSessionLocal, run_sync_db_block
+from app.core.database import SyncSessionLocal, run_sync_db_block, get_db
 from app.utils.activity_logger import log_activity
 from app.core.jinja_setup import render_template
 from app.models.models import LogicalShelf, PhysicalShelf, PhysicalLogicalMapping, NfcWriteTask
@@ -184,11 +185,11 @@ async def write_nfc_data(req: WriteRequest) -> WriteResponse:
 
 
 @router.post("/write/unified", summary="统一 NFC 写入入口")
-async def unified_nfc_write(req: WriteReq):
+async def unified_nfc_write(req: WriteReq, db: Session = Depends(get_db)):
     """统一的 NFC 写入入口"""
     _clean_expired_tasks()
     def _do_db_op_2():
-        db = SyncSessionLocal()
+        nonlocal db
         try:
                 logical_shelf = (
                     db.query(LogicalShelf)
@@ -249,7 +250,7 @@ async def unified_nfc_write(req: WriteReq):
                     "has_physical_mapping": bool(physical_shelf),
                 }
         finally:
-            db.close()
+            pass
 
     return await run_sync_db_block(_do_db_op_2)
 

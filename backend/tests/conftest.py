@@ -143,7 +143,7 @@ def sample_physical_shelf(db_session) -> dict:
     shelf = PhysicalShelf(
         location_code="A-01",
         location_name="A柜第1层",
-        tag_uid=None,
+        nfc_tag_uid=None,
     )
     db_session.add(shelf)
     db_session.commit()

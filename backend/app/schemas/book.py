@@ -27,10 +27,51 @@ class BookBase(AppSchema):
 
     @field_validator("isbn")
     @classmethod
-    def clean_isbn(cls, v: str) -> str:
-        v = v.replace("-", "").replace(" ", "").strip()
+    def validate_isbn(cls, v: str) -> str:
+        """ISBN-10/ISBN-13 格式清洗 + 校验位验证"""
+        v = v.replace("-", "").replace(" ", "").strip().upper()
         if len(v) not in (10, 13):
-            raise ValueError(f"ISBN 应为 10 或 13 位，当前为 {len(v)} 位: {v}")
+            raise ValueError(f"ISBN 应为 10 或 13 位数字，当前 {len(v)} 位")
+        if not v[:-1].isdigit() and not (len(v) == 10 and v[-1] in '0123456789X'):
+            raise ValueError(f"ISBN 包含非法字符: {v}")
+
+        # ISBN-10 校验位验证
+        if len(v) == 10:
+            try:
+                s = sum((i + 1) * (10 if c == 'X' else int(c)) for i, c in enumerate(v))
+                if s % 11 != 0:
+                    raise ValueError(f"ISBN-10 校验位不匹配: {v}")
+            except ValueError:
+                raise ValueError(f"ISBN-10 格式无效: {v}")
+
+        # ISBN-13 校验位验证
+        if len(v) == 13:
+            try:
+                digits = [int(c) for c in v]
+                s = sum(digits[i] * (1 if i % 2 == 0 else 3) for i in range(12))
+                if (10 - s % 10) % 10 != digits[12]:
+                    raise ValueError(f"ISBN-13 校验位不匹配: {v}")
+            except ValueError:
+                raise ValueError(f"ISBN-13 格式无效: {v}")
+        return v
+
+    @field_validator("douban_url")
+    @classmethod
+    def validate_douban_url(cls, v: Optional[str]) -> Optional[str]:
+        if v and not (v.startswith("https://book.douban.com/") or v.startswith("https://douban.com/")):
+            raise ValueError(f"豆瓣 URL 格式不正确: {v[:80]}")
+        return v
+
+    @field_validator("rating")
+    @classmethod
+    def validate_rating(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v.strip():
+            try:
+                r = float(v)
+                if r < 0 or r > 10:
+                    raise ValueError(f"评分超出范围 0-10: {v}")
+            except (ValueError, TypeError):
+                raise ValueError(f"评分格式无效，应为数字: {v}")
         return v
 
 

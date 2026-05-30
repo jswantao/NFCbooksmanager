@@ -7,7 +7,7 @@ FastAPI 依赖注入模块
 
 依赖作用域说明：
 - get_settings()        → 进程级单例（@lru_cache），整个应用生命周期共享同一实例
-- get_douban_service()  → 进程级单例，共享缓存和限速状态
+- get_douban_service()  → 进程级单例（通过 services 工厂注册表），共享缓存和限速状态
 - get_db()              → 请求级作用域（generator），每个请求独立创建和销毁会话
 
 使用示例::
@@ -26,14 +26,14 @@ FastAPI 依赖注入模块
 """
 
 from app.core.config import get_settings
-from app.services.douban_service import douban_service as _douban_svc
+from app.services import get_service
 
 
 def get_douban_service():
     """
     获取豆瓣服务单例实例
 
-    返回进程级共享的 DoubanService 实例，所有请求共用同一缓存和限速状态。
-    该实例在 douban_service 模块首次导入时创建，后续调用返回同一对象。
+    通过 services 统一工厂注册表获取进程级共享的 DoubanService 实例。
+    所有请求共用同一缓存和限速状态。
     """
-    return _douban_svc
+    return get_service("douban")

@@ -1,0 +1,29 @@
+/* components/import/ImportSteps.module.css — 批量导入步骤统一样式 */
+
+.card { border-radius: 12px; margin-bottom: 24px; }
+.cardSmall { border-radius: 12px; margin-bottom: 16px; }
+.statCard {
+    text-align: center;
+    border-radius: 10px;
+    border: 1px solid var(--app-border);
+    background: var(--app-brand-light);
+}
+.alert { margin-bottom: 16px; border-radius: 8px; }
+.uploadDragger { margin-bottom: 16px; }
+.fileInfo { margin-bottom: 16px; }
+.settingRow { margin-bottom: 12px; display: flex; align-items: center; gap: 16px; }
+.settingLabel { display: block; margin-bottom: 4px; }
+.resultCard {
+    border-radius: 12px;
+    border: 1px solid var(--app-border);
+    margin-bottom: 24px;
+}
+.tipsCard {
+    border-radius: 12px;
+    background: #fffbe6;
+    border: 1px solid #ffe58f;
+    padding: 12px 16px;
+}
+.stepGrid { display: grid; gap: var(--gap, 16px); }
+.flexBetween { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.pageWrap { max-width: 900px; margin: 0 auto; padding: 24px; }

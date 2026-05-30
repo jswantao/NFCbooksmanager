@@ -8,7 +8,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -326,6 +326,81 @@ else:
     )
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
+
+
+# ═══════════════════════════════════════════
+# 全局异常处理
+# ═══════════════════════════════════════════
+
+from app.core.exceptions import BaseAppError
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError as FastAPIValidationError
+
+
+@app.exception_handler(BaseAppError)
+async def app_exception_handler(request: Request, exc: BaseAppError):
+    """统一处理所有业务异常 → 标准 JSON 响应"""
+    logger.warning(
+        f"[{exc.error_code}] {exc.message} | "
+        f"{request.method} {request.url.path} | trace={exc.trace_id}"
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=exc.to_dict(debug=_config.DEBUG),
+    )
+
+
+@app.exception_handler(FastAPIValidationError)
+async def fastapi_validation_handler(request: Request, exc: FastAPIValidationError):
+    """FastAPI 请求体校验失败 → 422 标准格式"""
+    errors = []
+    for err in exc.errors():
+        errors.append({
+            "field": " → ".join(str(loc) for loc in err.get("loc", [])),
+            "message": err.get("msg", ""),
+            "type": err.get("type", ""),
+        })
+    logger.warning(f"[VALIDATION] {request.method} {request.url.path} | {len(errors)} errors")
+    return JSONResponse(
+        status_code=422,
+        content={
+            "code": 422,
+            "message": "请求参数校验失败",
+            "detail": errors[0]["message"] if len(errors) == 1 else f"{len(errors)} 个字段校验失败",
+            "errors": errors,
+        },
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """转换 FastAPI HTTPException → 标准格式"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "code": exc.status_code,
+            "message": str(exc.detail),
+            "detail": str(exc.detail),
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """兜底：未预料的异常 → 500 + 日志"""
+    logger.error(
+        f"[UNHANDLED] {type(exc).__name__}: {exc} | "
+        f"{request.method} {request.url.path}",
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "code": 500,
+            "message": "服务器内部错误" if not _config.DEBUG else str(exc),
+            "detail": "请稍后重试或联系管理员",
+        },
+    )
 
 
 # 不需要审计日志的路径前缀

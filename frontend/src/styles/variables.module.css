@@ -1,0 +1,31 @@
+/* styles/variables.module.css — CSS 变量与设计 Token */
+:root {
+    --app-bg: #fdf8f4;
+    --app-brand: #8B4513;
+    --app-brand-light: #fdf6f0;
+    --app-border: #f0e4d8;
+    --app-text-primary: #3d322a;
+    --app-text-secondary: #8c7b72;
+    --app-text-tertiary: #bfbfbf;
+    --app-success: #52c41a;
+    --app-error: #ff4d4f;
+    --app-warning: #faad14;
+    --app-info: #1890ff;
+    --radius-sm: 8px;
+    --radius-md: 10px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+    --shadow-md: 0 2px 8px rgba(0,0,0,0.1);
+    --shadow-lg: 0 4px 16px rgba(0,0,0,0.12);
+    --transition-fast: 0.15s ease;
+    --transition-normal: 0.3s ease;
+}
+[data-theme=dark] {
+    --app-bg: #1a1a2e;
+    --app-brand: #e6a76c;
+    --app-brand-light: #2a1f14;
+    --app-border: #3a3a4a;
+    --app-text-primary: #e0d8d0;
+    --app-text-secondary: #a09890;
+    --app-text-tertiary: #5a5a6a;
+}

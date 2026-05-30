@@ -10,7 +10,7 @@ class TestBookCreate:
 
     def test_create_book_success(self, client):
         resp = client.post("/api/books/manual", json={
-            "isbn": "9787208063505",
+            "isbn": "9787208063501",
             "title": "万历十五年",
             "author": "黄仁宇",
             "publisher": "生活·读书·新知三联书店",
@@ -33,16 +33,15 @@ class TestBookCreate:
         assert resp.json()["success"] is True
 
     def test_create_book_duplicate_isbn(self, client, sample_book):
-        """同 ISBN 不可重复录入"""
+        """同 ISBN 不可重复录入 — 返回 409 冲突"""
         resp = client.post("/api/books/manual", json={
             "isbn": sample_book["isbn"],
             "title": "Duplicate",
             "source": "manual",
         })
-        assert resp.status_code in (200, 400, 409)
+        assert resp.status_code == 409
         data = resp.json()
-        # 应返回业务错误
-        assert data.get("success") is False or resp.status_code == 400
+        assert "detail" in data
 
     def test_create_book_with_shelf(self, client, sample_shelf):
         """录入时指定书架"""

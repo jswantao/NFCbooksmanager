@@ -1,0 +1,63 @@
+"""Alembic 迁移环境配置 — 书房管理系统"""
+
+import sys
+from pathlib import Path
+
+# 确保 backend 目录在 Python path 中
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from logging.config import fileConfig
+from sqlalchemy import engine_from_config, pool
+from alembic import context
+
+# Alembic Config 对象
+config = context.config
+
+# 日志配置
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# ── 导入所有模型，确保 Base.metadata 包含完整表结构 ──
+from app.core.database import Base
+from app.models.models import (  # noqa: F401 — 需要导入以注册到 Base.metadata
+    BookMetadata, PhysicalShelf, LogicalShelf,
+    PhysicalLogicalMapping, LogicalShelfBook,
+    SyncLog, ActivityLog, ImportTask,
+)
+
+target_metadata = Base.metadata
+
+# 从应用配置读取数据库 URL（优先）
+try:
+    from app.core.config import get_settings
+    s = get_settings()
+    db_url = s.DATABASE_URL
+    config.set_main_option("sqlalchemy.url", db_url)
+except Exception:
+    pass  # 回退到 alembic.ini 中的配置
+
+
+def run_migrations_offline() -> None:
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(url=url, target_metadata=target_metadata, literal_binds=True,
+                      dialect_opts={"paramstyle": "named"})
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    with connectable.connect() as connection:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()

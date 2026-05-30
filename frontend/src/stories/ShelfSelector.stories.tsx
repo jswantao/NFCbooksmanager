@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import type { Meta, StoryObj } from "@storybook/react-vite";
 import ShelfSelector from "../components/ShelfSelector";
 
 const meta: Meta<typeof ShelfSelector> = {

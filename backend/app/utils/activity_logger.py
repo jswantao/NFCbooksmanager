@@ -51,11 +51,10 @@ def log_activity(
     """
     try:
         log_entry = ActivityLog(
-            action=action,
+            action_type=action,
             entity_type=entity_type,
-            entity_id=entity_id,
-            detail=json.dumps(detail, ensure_ascii=False, default=str) if detail else None,
-            status=status,
+            entity_id=str(entity_id) if entity_id is not None else None,
+            details=json.dumps(detail, ensure_ascii=False, default=str) if detail else None,
         )
         db.add(log_entry)
         db.commit()

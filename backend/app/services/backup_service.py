@@ -16,19 +16,24 @@
 恢复顺序：
 - 导出：Base.metadata.sorted_tables 反向（先子后父）
 - 恢复：Base.metadata.sorted_tables 正向（先父后子），外键检查临时关闭
+
+数据库兼容性：
+- 外键约束控制根据方言自动选择语法（SQLite / PostgreSQL / MySQL）
+- 数据查询统一使用 SQLAlchemy Core 风格（select + mappings），兼容所有方言
 """
 
 import json
 import hashlib
 import os
-import shutil
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 import httpx
 from loguru import logger
-from sqlalchemy import inspect, text, Table
+from sqlalchemy import inspect, text, Table, select, and_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -43,75 +48,219 @@ BACKUP_VERSION = "1.0.0"
 # 恢复时需要排除的表（SQLite 系统表、Alembic 迁移表等）
 EXCLUDED_TABLES = {"alembic_version"}
 
-
-def _disable_fk_constraints(db) -> None:
-    db.execute(text("SET session_replication_role = 'replica'"))
-
-
-def _enable_fk_constraints(db) -> None:
-    db.execute(text("SET session_replication_role = 'origin'"))
-
 # 序列化时需要转换的列类型后缀
 DATETIME_TYPE_SUFFIXES = ("DATETIME", "TIMESTAMP")
+
+
+# ==================== 数据库方言工具 ====================
+
+def _get_dialect(db: Session) -> str:
+    """
+    获取当前数据库方言名称。
+
+    Returns:
+        "sqlite" / "postgresql" / "mysql" 等小写字符串。
+    """
+    return db.bind.dialect.name
+
+
+def _disable_fk_constraints(db: Session) -> None:
+    """
+    根据数据库方言临时禁用外键约束。
+
+    - SQLite    : PRAGMA foreign_keys = OFF
+    - PostgreSQL: SET session_replication_role = 'replica'
+    - MySQL     : SET FOREIGN_KEY_CHECKS = 0
+    """
+    dialect = _get_dialect(db)
+    if dialect == "sqlite":
+        db.execute(text("PRAGMA foreign_keys = OFF"))
+    elif dialect == "postgresql":
+        db.execute(text("SET session_replication_role = 'replica'"))
+    elif dialect in ("mysql", "mariadb"):
+        db.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+    else:
+        logger.warning(f"未知数据库方言 '{dialect}'，跳过外键约束禁用")
+
+
+def _enable_fk_constraints(db: Session) -> None:
+    """
+    根据数据库方言重新启用外键约束。
+
+    - SQLite    : PRAGMA foreign_keys = ON
+    - PostgreSQL: SET session_replication_role = 'origin'
+    - MySQL     : SET FOREIGN_KEY_CHECKS = 1
+    """
+    dialect = _get_dialect(db)
+    if dialect == "sqlite":
+        db.execute(text("PRAGMA foreign_keys = ON"))
+    elif dialect == "postgresql":
+        db.execute(text("SET session_replication_role = 'origin'"))
+    elif dialect in ("mysql", "mariadb"):
+        db.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+    else:
+        logger.warning(f"未知数据库方言 '{dialect}'，跳过外键约束启用")
+
+
+@contextmanager
+def _fk_constraints_disabled(db: Session):
+    """
+    上下文管理器：进入时禁用外键约束，退出时恢复（无论是否异常）。
+
+    Usage:
+        with _fk_constraints_disabled(db):
+            # 批量插入操作
+    """
+    _disable_fk_constraints(db)
+    try:
+        yield
+    finally:
+        try:
+            _enable_fk_constraints(db)
+        except Exception as e:
+            logger.warning(f"恢复外键约束失败（已忽略）: {e}")
 
 
 # ==================== 加密工具 ====================
 
 def _get_fernet():
-    """获取 Fernet 加密实例"""
+    """获取 Fernet 加密实例（由 Settings 统一管理密钥派生）"""
     return get_settings().fernet
+
+
+# ==================== 数据序列化工具 ====================
+
+def _normalize_for_compare(value: Any) -> str:
+    """
+    将任意值规范化为可比较的字符串。
+
+    统一处理 None，避免 str(None)="None" 与字符串 "None" 误判相等。
+
+    Args:
+        value: 任意数据库字段值。
+
+    Returns:
+        规范化字符串；None 统一映射为 "__NULL__"。
+    """
+    if value is None:
+        return "__NULL__"
+    return str(value)
+
+
+def _serialize_value(value: Any) -> Any:
+    """
+    将单个字段值序列化为 JSON 兼容格式。
+
+    - datetime → ISO 格式字符串
+    - 其他     → 原样返回
+
+    Args:
+        value: 原始字段值。
+
+    Returns:
+        JSON 可序列化的值。
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def _deserialize_value(value: Any, col: Any) -> Any:
+    """
+    将 JSON 字符串值还原为数据库期望的 Python 类型。
+
+    - DATETIME/TIMESTAMP 列的字符串值 → datetime 对象
+    - 其他列 → 原样返回
+
+    Args:
+        value: JSON 中读取的原始值。
+        col: SQLAlchemy Column 对象。
+
+    Returns:
+        还原后的值。
+    """
+    col_type = str(col.type).upper()
+    if any(suffix in col_type for suffix in DATETIME_TYPE_SUFFIXES):
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except (ValueError, TypeError):
+                return value
+    return value
+
+
+def _row_mapping_to_dict(row_mapping: Any, table: Table) -> Dict[str, Any]:
+    """
+    将 SQLAlchemy RowMapping 转为纯字典，datetime 序列化为 ISO 字符串。
+
+    Args:
+        row_mapping: db.execute(select(table)).mappings() 返回的单行。
+        table: 对应的 Table 对象。
+
+    Returns:
+        字段名 → 序列化值 的字典。
+    """
+    return {
+        col.name: _serialize_value(row_mapping[col.name])
+        for col in table.columns
+        if col.name in row_mapping
+    }
+
+
+def _dict_to_row_values(data: Dict[str, Any], table: Table) -> Dict[str, Any]:
+    """
+    将备份字典中的值还原为数据库插入所需的 Python 类型。
+
+    Args:
+        data: 备份文件中单行的字典。
+        table: 目标 Table 对象。
+
+    Returns:
+        字段名 → 还原值 的字典（仅包含 table 中存在的列）。
+    """
+    return {
+        col.name: _deserialize_value(data[col.name], col)
+        for col in table.columns
+        if col.name in data
+    }
+
+
+def _format_file_size(size_bytes: int) -> str:
+    """
+    将字节数转为人类可读格式。
+
+    Args:
+        size_bytes: 文件字节数。
+
+    Returns:
+        如 "1.2 MB"、"345.6 KB"、"512 B"。
+    """
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 # ==================== 数据导出 ====================
 
-def _row_to_dict(row: Any, mapper) -> Dict[str, Any]:
-    """将 ORM 对象转为纯字典，datetime 序列化为 ISO 字符串"""
-    result = {}
-    for col in mapper.column_attrs:
-        value = getattr(row, col.key)
-        if isinstance(value, datetime):
-            result[col.key] = value.isoformat()
-        else:
-            result[col.key] = value
-    return result
-
-
-def _dict_to_row_values(data: Dict[str, Any], table: Table) -> Dict[str, Any]:
-    """将字典中的 ISO 时间字符串还原为 datetime 对象"""
-    result = {}
-    for col in table.columns:
-        key = col.name
-        if key not in data:
-            continue
-        value = data[key]
-        col_type = str(col.type).upper()
-        if any(suffix in col_type for suffix in DATETIME_TYPE_SUFFIXES):
-            if isinstance(value, str):
-                try:
-                    result[key] = datetime.fromisoformat(value)
-                except (ValueError, TypeError):
-                    result[key] = value
-            else:
-                result[key] = value
-        else:
-            result[key] = value
-    return result
-
-
 def export_all_tables(db: Session) -> Dict[str, List[Dict[str, Any]]]:
     """
-    导出全部数据表
+    导出全部数据表为纯字典列表。
 
     按 Base.metadata.sorted_tables 的反向顺序导出（先子后父），
     确保恢复时父记录先于子记录插入。
 
+    使用 SQLAlchemy Core 风格查询（select + mappings），
+    兼容 SQLite / PostgreSQL / MySQL 全部方言。
+
+    Args:
+        db: SQLAlchemy Session。
+
     Returns:
         {"table_name": [{row_dict}, ...], ...}
     """
-    tables = list(Base.metadata.sorted_tables)
-    # 反向：子表优先导出
-    tables.reverse()
-
+    tables = list(reversed(Base.metadata.sorted_tables))
     result: Dict[str, List[Dict[str, Any]]] = {}
 
     for table in tables:
@@ -119,19 +268,8 @@ def export_all_tables(db: Session) -> Dict[str, List[Dict[str, Any]]]:
         if name in EXCLUDED_TABLES:
             continue
         try:
-            rows = db.query(table).all()
-            # 每个表使用自己的 mapper
-            table_result = []
-            for row in rows:
-                row_dict = {}
-                for col in table.columns:
-                    value = getattr(row, col.key)
-                    if isinstance(value, datetime):
-                        row_dict[col.key] = value.isoformat()
-                    else:
-                        row_dict[col.key] = value
-                table_result.append(row_dict)
-            result[name] = table_result
+            rows = db.execute(select(table)).mappings().all()
+            result[name] = [_row_mapping_to_dict(row, table) for row in rows]
         except Exception as e:
             logger.warning(f"导出表 {name} 时出错: {e}")
             result[name] = []
@@ -142,34 +280,38 @@ def export_all_tables(db: Session) -> Dict[str, List[Dict[str, Any]]]:
 # ==================== 备份文件操作 ====================
 
 def _compute_checksum(data: Dict[str, Any]) -> str:
-    """计算数据字典的 SHA-256 校验和"""
+    """
+    计算数据字典的 SHA-256 校验和。
+
+    使用 sort_keys=True 保证相同数据的校验和一致。
+
+    Args:
+        data: 待校验的字典（通常为导出的全部表数据）。
+
+    Returns:
+        64 位十六进制 SHA-256 字符串。
+    """
     raw = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _format_file_size(size_bytes: int) -> str:
-    """将字节数转为可读格式"""
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    else:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
-
-
 def create_backup(db: Session) -> Optional[Path]:
     """
-    创建加密全量备份
+    创建加密全量备份文件。
 
     流程：
     1. 导出全部表数据
-    2. 构建备份信封 {meta, data}
+    2. 构建备份信封 {meta, data}，meta 含 SHA-256 校验和
     3. JSON 序列化 → Fernet 加密
-    4. 写入 .backup 文件
+    4. 写入 backup_{timestamp}.backup 文件
     5. 清理超出 BACKUP_MAX_LOCAL_COPIES 的旧文件
+    6. 记录活动日志
+
+    Args:
+        db: SQLAlchemy Session。
 
     Returns:
-        备份文件路径，失败返回 None
+        备份文件 Path，失败返回 None。
     """
     s = get_settings()
     try:
@@ -199,8 +341,7 @@ def create_backup(db: Session) -> Optional[Path]:
         filename = f"backup_{timestamp}.backup"
         filepath = backup_dir / filename
 
-        with open(filepath, "wb") as f:
-            f.write(encrypted)
+        filepath.write_bytes(encrypted)
 
         file_size = filepath.stat().st_size
         total_rows = sum(table_counts.values())
@@ -211,16 +352,20 @@ def create_backup(db: Session) -> Optional[Path]:
             f"表数: {len(table_counts)} | 总行数: {total_rows}"
         )
 
-        # 6. 记录活动日志
-        _log_activity(db, "backup", "backup_file", detail_data={
-            "filename": filename,
-            "file_size": file_size,
-            "table_counts": table_counts,
-            "total_rows": total_rows,
-        })
-
-        # 5. 清理旧备份
+        # 5. 清理旧备份（先清理，再记录日志，顺序与注释一致）
         _enforce_max_backups()
+
+        # 6. 记录活动日志（使用独立 Session，不影响调用方事务）
+        _log_activity(
+            action="backup",
+            entity_type="backup_file",
+            detail_data={
+                "filename": filename,
+                "file_size": file_size,
+                "table_counts": table_counts,
+                "total_rows": total_rows,
+            },
+        )
 
         return filepath
 
@@ -230,7 +375,12 @@ def create_backup(db: Session) -> Optional[Path]:
 
 
 def _enforce_max_backups() -> None:
-    """清理超出数量限制的旧备份文件"""
+    """
+    清理超出数量限制的旧备份文件。
+
+    按文件修改时间升序排列，删除最旧的若干个，
+    保留最新的 BACKUP_MAX_LOCAL_COPIES 个。
+    """
     s = get_settings()
     backup_dir = s.backup_dir_path
     if not backup_dir.exists():
@@ -241,8 +391,9 @@ def _enforce_max_backups() -> None:
         key=lambda f: f.stat().st_mtime,
     )
     max_copies = s.BACKUP_MAX_LOCAL_COPIES
-    if len(files) > max_copies:
-        for f in files[: len(files) - max_copies]:
+    excess = len(files) - max_copies
+    if excess > 0:
+        for f in files[:excess]:
             try:
                 f.unlink()
                 logger.debug(f"已清理旧备份: {f.name}")
@@ -251,22 +402,45 @@ def _enforce_max_backups() -> None:
 
 
 def _decrypt_backup_file(filepath: Path) -> Dict[str, Any]:
-    """解密并解析备份文件，返回完整 envelope"""
-    with open(filepath, "rb") as f:
-        encrypted = f.read()
+    """
+    解密并解析备份文件，返回完整 envelope。
+
+    Args:
+        filepath: .backup 文件路径。
+
+    Returns:
+        {"meta": {...}, "data": {...}} 字典。
+
+    Raises:
+        cryptography.fernet.InvalidToken: 文件损坏或密钥不匹配。
+        json.JSONDecodeError: 解密后内容非合法 JSON。
+    """
+    encrypted = filepath.read_bytes()
     plaintext = _get_fernet().decrypt(encrypted).decode("utf-8")
     return json.loads(plaintext)
 
 
 def read_backup_metadata(filepath: Path) -> Optional[Dict[str, Any]]:
-    """解密并读取备份文件的元数据部分"""
+    """
+    解密并读取备份文件的元数据部分（不加载完整数据）。
+
+    Args:
+        filepath: .backup 文件路径。
+
+    Returns:
+        元数据字典（含 filename、file_size_bytes、file_size_display、encrypted），
+        失败返回 None。
+    """
     try:
         envelope = _decrypt_backup_file(filepath)
         meta = envelope["meta"]
-        meta["filename"] = filepath.name
-        meta["file_size_bytes"] = filepath.stat().st_size
-        meta["file_size_display"] = _format_file_size(filepath.stat().st_size)
-        meta["encrypted"] = True
+        file_size = filepath.stat().st_size
+        meta.update({
+            "filename": filepath.name,
+            "file_size_bytes": file_size,
+            "file_size_display": _format_file_size(file_size),
+            "encrypted": True,
+        })
         return meta
     except Exception as e:
         logger.error(f"读取备份元数据失败 [{filepath.name}]: {e}")
@@ -274,7 +448,15 @@ def read_backup_metadata(filepath: Path) -> Optional[Dict[str, Any]]:
 
 
 def read_backup_full(filepath: Path) -> Optional[Dict[str, Any]]:
-    """解密并读取完整备份数据"""
+    """
+    解密并读取完整备份数据（含 meta 和 data）。
+
+    Args:
+        filepath: .backup 文件路径。
+
+    Returns:
+        完整 envelope 字典，失败返回 None。
+    """
     try:
         envelope = _decrypt_backup_file(filepath)
         envelope["meta"]["filename"] = filepath.name
@@ -285,7 +467,12 @@ def read_backup_full(filepath: Path) -> Optional[Dict[str, Any]]:
 
 
 def list_backups() -> List[Dict[str, Any]]:
-    """列出所有本地备份文件的元数据"""
+    """
+    列出所有本地备份文件的元数据，按修改时间降序排列。
+
+    Returns:
+        元数据字典列表，解密失败的文件静默跳过。
+    """
     s = get_settings()
     backup_dir = s.backup_dir_path
     if not backup_dir.exists():
@@ -305,121 +492,167 @@ def list_backups() -> List[Dict[str, Any]]:
 
 
 def delete_backups(filenames: List[str]) -> int:
-    """删除指定的备份文件，返回删除数量"""
-    s = get_settings()
-    backup_dir = s.backup_dir_path
+    """
+    删除指定的本地备份文件。
+
+    安全校验：
+    - 路径穿越检查：解析后路径必须位于 backup_dir 内
+    - 扩展名检查：仅允许删除 .backup 文件
+
+    Args:
+        filenames: 文件名列表（不含路径，仅文件名）。
+
+    Returns:
+        实际删除的文件数量。
+    """
+    backup_dir = get_settings().backup_dir_path.resolve()
     deleted = 0
+
     for name in filenames:
-        filepath = backup_dir / name
+        # 路径穿越防御：解析绝对路径后校验是否在 backup_dir 内
+        filepath = (backup_dir / name).resolve()
+        if not str(filepath).startswith(str(backup_dir) + os.sep):
+            logger.warning(f"拒绝删除目录外文件（路径穿越尝试）: {name}")
+            continue
         try:
             if filepath.exists() and filepath.suffix == ".backup":
                 filepath.unlink()
                 deleted += 1
                 logger.info(f"已删除备份: {name}")
+            elif filepath.suffix != ".backup":
+                logger.warning(f"拒绝删除非备份文件: {name}")
         except OSError as e:
             logger.warning(f"删除备份失败 [{name}]: {e}")
+
     return deleted
 
 
 # ==================== 冲突检测 ====================
 
 def _get_table_pk_columns(table: Table) -> List[str]:
-    """获取表的主键列名列表"""
+    """
+    获取表的主键列名列表。
+
+    Args:
+        table: SQLAlchemy Table 对象。
+
+    Returns:
+        主键列名列表，复合主键时包含多个元素。
+    """
     return [col.name for col in table.columns if col.primary_key]
 
 
 def _rows_equal(row_a: Dict[str, Any], row_b: Dict[str, Any]) -> bool:
-    """比较两行数据是否完全相同（忽略类型差异）"""
+    """
+    比较两行数据是否完全相同。
+
+    使用 _normalize_for_compare 统一 None 处理，
+    避免 str(None)="None" 与字符串 "None" 的误判。
+
+    Args:
+        row_a: 备份中的行数据。
+        row_b: 数据库中的行数据。
+
+    Returns:
+        True 表示两行完全相同。
+    """
     if set(row_a.keys()) != set(row_b.keys()):
         return False
-    for key in row_a:
-        if str(row_a.get(key)) != str(row_b.get(key)):
-            return False
-    return True
+    return all(
+        _normalize_for_compare(row_a.get(k)) == _normalize_for_compare(row_b.get(k))
+        for k in row_a
+    )
 
 
 def _diff_fields(row_a: Dict[str, Any], row_b: Dict[str, Any]) -> List[str]:
-    """返回两个字典中值不同的字段名列表"""
-    diffs = []
-    for key in row_a:
-        if str(row_a.get(key)) != str(row_b.get(key, "")):
-            diffs.append(key)
-    return diffs
+    """
+    返回两个字典中值不同的字段名列表。
+
+    使用 _normalize_for_compare 统一 None 处理。
+
+    Args:
+        row_a: 备份中的行数据。
+        row_b: 数据库中的行数据（参照）。
+
+    Returns:
+        值不同的字段名列表。
+    """
+    return [
+        key for key in row_a
+        if _normalize_for_compare(row_a.get(key)) != _normalize_for_compare(row_b.get(key, None))
+    ]
 
 
 def detect_conflicts(
     db: Session,
-    backup_data: Dict[str, Any]
+    backup_data: Dict[str, Any],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    检测备份数据与当前数据库之间的冲突
+    检测备份数据与当前数据库之间的冲突。
 
     逐表按主键比对：
-    - "exists_different": 主键存在于双方，值不同 → 需要人工决策
-    - "exists_identical": 主键存在于双方，值相同 → 无需处理（信息性）
-    - "orphan_in_backup": 主键仅存在于备份 → 新数据，直接插入
+    - exists_different : 主键双方均有，值不同 → 需要人工决策
+    - exists_identical : 主键双方均有，值相同 → 无需处理
+    - orphan_in_backup : 主键仅存在于备份  → 新数据，恢复时直接插入
+
+    使用 Core 风格查询（select + mappings）兼容所有数据库方言。
+
+    Args:
+        db: SQLAlchemy Session（只读）。
+        backup_data: read_backup_full 返回的完整 envelope 或仅 data 部分。
 
     Returns:
         (conflicts_list, summary_dict)
+        conflicts_list: 需要人工决策的冲突行列表
+        summary_dict  : 包含 total_conflicts、by_table、conflicts 的汇总
     """
-    s = get_settings()
+    data = backup_data.get("data", backup_data)
     conflicts: List[Dict[str, Any]] = []
     by_table: Dict[str, int] = {}
 
     for table in Base.metadata.sorted_tables:
         name = table.name
-        if name in EXCLUDED_TABLES or name not in backup_data:
+        if name in EXCLUDED_TABLES or name not in data:
             continue
 
         pk_cols = _get_table_pk_columns(table)
         if not pk_cols:
             continue
 
-        backup_rows = backup_data.get(name, [])
+        backup_rows: List[Dict[str, Any]] = data.get(name, [])
         if not backup_rows:
             continue
 
-        # 收集备份中的主键值
-        backup_pks = set()
-        for row in backup_rows:
-            pk_tuple = tuple(row.get(col) for col in pk_cols)
-            backup_pks.add(pk_tuple)
-
-        # 构建当前数据库的主键值集合
-        current_pks = set()
-        current_rows = db.query(table).all()
+        # 构建当前数据库的主键 → 行数据映射（Core 风格查询）
+        current_rows = db.execute(select(table)).mappings().all()
         current_by_pk: Dict[tuple, Dict[str, Any]] = {}
         for row in current_rows:
-            row_dict = {}
-            for col in table.columns:
-                value = getattr(row, col.key)
-                row_dict[col.key] = value.isoformat() if isinstance(value, datetime) else value
+            row_dict = _row_mapping_to_dict(row, table)
             pk_tuple = tuple(row_dict.get(col) for col in pk_cols)
-            current_pks.add(pk_tuple)
             current_by_pk[pk_tuple] = row_dict
 
-        # 比对
+        table_conflict_count = 0
         for row in backup_rows:
             pk_tuple = tuple(row.get(col) for col in pk_cols)
+            if pk_tuple not in current_by_pk:
+                continue  # orphan_in_backup，恢复时直接插入，无需记录为冲突
+            current_row = current_by_pk[pk_tuple]
+            if not _rows_equal(row, current_row):
+                conflicts.append({
+                    "table": name,
+                    "pk_column": ", ".join(pk_cols),
+                    "pk_value": ", ".join(
+                        str(pk_tuple[i]) for i in range(len(pk_cols))
+                    ),
+                    "reason": "exists_different",
+                    "current_data": current_row,
+                    "backup_data": row,
+                    "diff_fields": _diff_fields(row, current_row),
+                })
+                table_conflict_count += 1
 
-            if pk_tuple in current_pks:
-                current_row = current_by_pk[pk_tuple]
-                if not _rows_equal(row, current_row):
-                    reason = "exists_different"
-                    diffs = _diff_fields(row, current_row)
-                    conflicts.append({
-                        "table": name,
-                        "pk_column": ", ".join(pk_cols),
-                        "pk_value": ", ".join(str(pk_tuple[i]) for i in range(len(pk_cols))),
-                        "reason": reason,
-                        "current_data": current_row,
-                        "backup_data": row,
-                        "diff_fields": diffs,
-                    })
-
-        table_conflicts = sum(1 for c in conflicts if c["table"] == name)
-        if table_conflicts > 0:
-            by_table[name] = table_conflicts
+        if table_conflict_count > 0:
+            by_table[name] = table_conflict_count
 
     summary = {
         "total_conflicts": len(conflicts),
@@ -438,172 +671,193 @@ def execute_restore(
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
-    执行数据恢复
+    执行数据恢复。
 
     流程：
-    1. 解析冲突解决策略（构建每行的 action map）
-    2. 按 FK 正向顺序逐表处理
-    3. 每行按策略执行：overwrite / skip / keep_both / insert
-    4. dry_run=True 时仅预览不提交
+    1. 解析冲突解决策略，构建 resolution_map
+    2. 禁用外键约束（通过上下文管理器，确保恢复）
+    3. 按 FK 正向顺序（先父后子）逐表处理每一行
+    4. 每行按策略执行：insert / overwrite / skip
+    5. dry_run=True 时回滚所有变更，仅返回预览结果
+
+    冲突解决策略：
+    - "overwrite" : 用备份数据覆盖现有记录
+    - "skip"      : 保留现有记录，跳过备份数据（默认）
+    - "keep_both" : 仅对有自增整型主键的表支持；否则回退为 skip
+
+    注意：keep_both 通过省略主键、让数据库自动分配新 ID 实现，
+    仅适用于单列自增整型主键的表。复合主键或非整型主键的表将回退为 skip。
 
     Args:
-        db: 数据库会话
-        backup_data: 解密后的完整备份数据（含 meta 和 data）
-        resolutions: 用户选择的冲突解决方案列表
-        dry_run: 是否为预览模式
+        db: SQLAlchemy Session。
+        backup_data: read_backup_full 返回的完整 envelope。
+        resolutions: 用户选择的冲突解决方案列表，每项格式：
+                     {"table": str, "pk_column": str, "pk_value": str, "action": str}
+        dry_run: True 时执行预览，不提交任何变更。
 
     Returns:
-        恢复结果汇总
+        {"dry_run": bool, "summary": {...}, "details": [...]}
     """
-    s = get_settings()
     data = backup_data.get("data", backup_data)
     meta = backup_data.get("meta", {})
 
-    # 构建 resolution map: key = "table|pk_column|pk_value"
-    resolution_map: Dict[str, str] = {}
-    for r in resolutions:
-        key = f"{r['table']}|{r['pk_column']}|{r['pk_value']}"
-        resolution_map[key] = r.get("action", "skip")
+    # 构建 resolution_map: "table|pk_column|pk_value" → action
+    resolution_map: Dict[str, str] = {
+        f"{r['table']}|{r['pk_column']}|{r['pk_value']}": r.get("action", "skip")
+        for r in resolutions
+    }
 
     summary = {"overwritten": 0, "skipped": 0, "inserted": 0, "errors": 0}
     details: List[Dict[str, Any]] = []
 
-    if not dry_run:
-        # 恢复期间禁用外键检查
-        _disable_fk_constraints(db)
-
     try:
-        for table in Base.metadata.sorted_tables:
-            name = table.name
-            if name in EXCLUDED_TABLES or name not in data:
-                continue
+        cm = _fk_constraints_disabled(db) if not dry_run else _noop_context()
+        with cm:
+            for table in Base.metadata.sorted_tables:
+                name = table.name
+                if name in EXCLUDED_TABLES or name not in data:
+                    continue
 
-            pk_cols = _get_table_pk_columns(table)
-            backup_rows = data.get(name, [])
-            if not backup_rows:
-                continue
+                pk_cols = _get_table_pk_columns(table)
+                backup_rows: List[Dict[str, Any]] = data.get(name, [])
+                if not backup_rows:
+                    continue
 
-            for row in backup_rows:
-                pk_values = [row.get(col) for col in pk_cols] if pk_cols else []
-                pk_tuple = (
-                    tuple(row.get(col) for col in pk_cols)
-                    if pk_cols
-                    else None
-                )
+                for row in backup_rows:
+                    pk_values = [row.get(col) for col in pk_cols] if pk_cols else []
+                    pk_str = (
+                        ", ".join(str(v) for v in pk_values) if pk_values else "N/A"
+                    )
 
-                try:
-                    # 查找当前数据库中是否存在该行
-                    if pk_cols:
-                        filters = [
-                            getattr(table.c, col) == row.get(col)
-                            for col in pk_cols
-                        ]
-                        from sqlalchemy import and_
-                        existing = db.query(table).filter(and_(*filters)).first()
-                    else:
+                    try:
+                        # 查询当前记录是否存在（Core 风格）
                         existing = None
+                        if pk_cols:
+                            filters = [
+                                table.c[col] == row.get(col) for col in pk_cols
+                            ]
+                            result = db.execute(
+                                select(table).where(and_(*filters))
+                            ).mappings().first()
+                            existing = result
 
-                    if existing is None:
-                        # 新数据，直接插入
-                        if not dry_run:
-                            values = _dict_to_row_values(row, table)
-                            db.execute(table.insert().values(**values))
-                        summary["inserted"] += 1
-                        details.append({
-                            "table": name,
-                            "action": "insert",
-                            "pk_value": str(pk_values) if pk_values else "N/A",
-                            "success": True,
-                        })
-                    else:
-                        # 已存在，查找 resolution
-                        pk_str = ", ".join(str(v) for v in pk_values) if pk_values else "N/A"
-                        resolution_key = (
-                            f"{name}|{', '.join(pk_cols)}|{pk_str}"
-                            if pk_cols
-                            else f"{name}||"
-                        )
-                        action = resolution_map.get(resolution_key, "skip")
-
-                        if action == "overwrite":
+                        if existing is None:
+                            # 新数据：直接插入
                             if not dry_run:
                                 values = _dict_to_row_values(row, table)
-                                db.execute(
-                                    table.update()
-                                    .where(
-                                        and_(*[
-                                            getattr(table.c, col) == row.get(col)
-                                            for col in pk_cols
-                                        ])
-                                    )
-                                    .values(**values)
-                                )
-                            summary["overwritten"] += 1
-                            details.append({
-                                "table": name,
-                                "action": "overwrite",
-                                "pk_value": pk_str,
-                                "success": True,
-                            })
-                        elif action == "skip":
-                            summary["skipped"] += 1
-                            details.append({
-                                "table": name,
-                                "action": "skip",
-                                "pk_value": pk_str,
-                                "success": True,
-                            })
-                        elif action == "keep_both":
-                            if not dry_run:
-                                # 生成新的主键值
-                                new_row = dict(row)
-                                for col in pk_cols:
-                                    orig = new_row[col]
-                                    if isinstance(orig, int):
-                                        new_row[col] = orig + 100000
-                                    elif isinstance(orig, str):
-                                        new_row[col] = orig + "_restored"
-                                values = _dict_to_row_values(new_row, table)
                                 db.execute(table.insert().values(**values))
                             summary["inserted"] += 1
                             details.append({
                                 "table": name,
-                                "action": "keep_both",
+                                "action": "insert",
                                 "pk_value": pk_str,
                                 "success": True,
                             })
-                except Exception as e:
-                    summary["errors"] += 1
-                    details.append({
-                        "table": name,
-                        "action": "error",
-                        "pk_value": str(pk_values) if pk_values else "N/A",
-                        "success": False,
-                        "message": str(e)[:200],
-                    })
-                    if not dry_run:
-                        logger.error(f"恢复行失败 [{name}]: {e}")
 
-        if not dry_run:
-            db.commit()
-            # 恢复外键检查
-            _enable_fk_constraints(db)
-            _log_activity(db, "restore", "backup_restore", detail_data={
-                "filename": meta.get("filename", ""),
-                "dry_run": dry_run,
-                "summary": {k: v for k, v in summary.items() if k != "errors"},
-            })
-        else:
+                        else:
+                            # 已存在：按 resolution 决策
+                            resolution_key = (
+                                f"{name}|{', '.join(pk_cols)}|{pk_str}"
+                                if pk_cols else f"{name}||"
+                            )
+                            action = resolution_map.get(resolution_key, "skip")
+
+                            if action == "overwrite":
+                                if not dry_run:
+                                    values = _dict_to_row_values(row, table)
+                                    db.execute(
+                                        table.update()
+                                        .where(and_(*[
+                                            table.c[col] == row.get(col)
+                                            for col in pk_cols
+                                        ]))
+                                        .values(**values)
+                                    )
+                                summary["overwritten"] += 1
+                                details.append({
+                                    "table": name,
+                                    "action": "overwrite",
+                                    "pk_value": pk_str,
+                                    "success": True,
+                                })
+
+                            elif action == "keep_both":
+                                # keep_both 仅支持单列自增整型主键
+                                # 省略主键字段，让数据库自动分配新 ID
+                                can_keep_both = (
+                                    len(pk_cols) == 1
+                                    and isinstance(row.get(pk_cols[0]), int)
+                                )
+                                if can_keep_both:
+                                    if not dry_run:
+                                        new_row = {
+                                            k: v for k, v in row.items()
+                                            if k not in pk_cols
+                                        }
+                                        values = _dict_to_row_values(new_row, table)
+                                        db.execute(table.insert().values(**values))
+                                    summary["inserted"] += 1
+                                    details.append({
+                                        "table": name,
+                                        "action": "keep_both",
+                                        "pk_value": pk_str,
+                                        "success": True,
+                                    })
+                                else:
+                                    # 不支持 keep_both，回退为 skip
+                                    logger.warning(
+                                        f"表 {name} 不支持 keep_both（复合主键或非整型主键），"
+                                        f"已回退为 skip: pk={pk_str}"
+                                    )
+                                    summary["skipped"] += 1
+                                    details.append({
+                                        "table": name,
+                                        "action": "skip",
+                                        "pk_value": pk_str,
+                                        "success": True,
+                                        "message": "keep_both 不支持，已回退为 skip",
+                                    })
+
+                            else:  # skip（默认）
+                                summary["skipped"] += 1
+                                details.append({
+                                    "table": name,
+                                    "action": "skip",
+                                    "pk_value": pk_str,
+                                    "success": True,
+                                })
+
+                    except SQLAlchemyError as row_err:
+                        summary["errors"] += 1
+                        details.append({
+                            "table": name,
+                            "action": "error",
+                            "pk_value": pk_str,
+                            "success": False,
+                            "message": str(row_err)[:200],
+                        })
+                        logger.error(f"恢复行失败 [{name}] pk={pk_str}: {row_err}")
+
+        if dry_run:
             db.rollback()
+        else:
+            db.commit()
+            _log_activity(
+                action="restore",
+                entity_type="backup_restore",
+                detail_data={
+                    "filename": meta.get("filename", ""),
+                    "dry_run": False,
+                    "summary": {k: v for k, v in summary.items() if k != "errors"},
+                },
+            )
 
     except Exception as e:
         logger.error(f"恢复执行失败: {e}")
-        if not dry_run:
+        try:
             db.rollback()
-            try:
-                _enable_fk_constraints(db)
-            except Exception:
-                pass
+        except Exception:
+            pass
         summary["errors"] += 1
         details.append({
             "table": "__global__",
@@ -620,11 +874,21 @@ def execute_restore(
     }
 
 
+@contextmanager
+def _noop_context():
+    """无操作上下文管理器，用于 dry_run 模式替代 _fk_constraints_disabled。"""
+    yield
+
+
 # ==================== WebDAV 操作 ====================
 
-
 def _get_webdav_base_url() -> Optional[str]:
-    """获取 WebDAV 基础 URL"""
+    """
+    获取 WebDAV 基础 URL（含远程路径）。
+
+    Returns:
+        完整的 WebDAV 目录 URL，未配置时返回 None。
+    """
     s = get_settings()
     if not s.WEBDAV_ENABLED or not s.WEBDAV_URL:
         return None
@@ -633,30 +897,39 @@ def _get_webdav_base_url() -> Optional[str]:
     return f"{url}/{path}"
 
 
-async def _get_webdav_client() -> Optional[httpx.AsyncClient]:
-    """创建 WebDAV HTTP 客户端（每次新建，免缓存）"""
-    s = get_settings()
-    if not s.WEBDAV_ENABLED:
-        return None
+def _build_webdav_client() -> httpx.AsyncClient:
+    """
+    构建 WebDAV HTTP 客户端。
 
+    每次调用返回新实例，调用方必须通过异步上下文管理器管理生命周期：
+        async with _build_webdav_client() as client:
+            ...
+
+    Returns:
+        httpx.AsyncClient 实例（未启动，需通过 async with 使用）。
+    """
+    s = get_settings()
     auth = None
     if s.WEBDAV_USERNAME and s.WEBDAV_PASSWORD:
         auth = httpx.BasicAuth(s.WEBDAV_USERNAME, s.WEBDAV_PASSWORD)
 
-    # 每次创建新客户端，避免凭据/代理缓存问题
-    # httpx 连接池会自动复用底层 TCP 连接
-    client = httpx.AsyncClient(
+    return httpx.AsyncClient(
         timeout=s.WEBDAV_TIMEOUT,
         auth=auth,
         follow_redirects=True,
-        proxy=None,
         trust_env=False,
     )
-    return client
 
 
 async def test_webdav_connection() -> Dict[str, Any]:
-    """测试 WebDAV 连接"""
+    """
+    测试 WebDAV 连接可用性。
+
+    发送 PROPFIND 请求到远程目录，验证认证和连通性。
+
+    Returns:
+        {"success": bool, "message": str, "url": str（成功时）}
+    """
     s = get_settings()
     if not s.WEBDAV_ENABLED:
         return {"success": False, "message": "WebDAV 未启用"}
@@ -666,15 +939,20 @@ async def test_webdav_connection() -> Dict[str, Any]:
         return {"success": False, "message": "WebDAV URL 未配置"}
 
     try:
-        client = await _get_webdav_client()
-        if client is None:
-            return {"success": False, "message": "无法创建 WebDAV 客户端"}
-
-        resp = await client.request("PROPFIND", base_url, headers={"Depth": "0"})
+        async with _build_webdav_client() as client:
+            resp = await client.request(
+                "PROPFIND", base_url, headers={"Depth": "0"}
+            )
         if resp.status_code in (207, 200, 301, 302):
-            return {"success": True, "message": f"连接成功 (HTTP {resp.status_code})", "url": base_url}
-        else:
-            return {"success": False, "message": f"服务器返回异常状态: {resp.status_code}"}
+            return {
+                "success": True,
+                "message": f"连接成功 (HTTP {resp.status_code})",
+                "url": base_url,
+            }
+        return {
+            "success": False,
+            "message": f"服务器返回异常状态: {resp.status_code}",
+        }
     except httpx.TimeoutException:
         return {"success": False, "message": "连接超时"}
     except Exception as e:
@@ -682,7 +960,15 @@ async def test_webdav_connection() -> Dict[str, Any]:
 
 
 async def sync_to_webdav(filepath: Path) -> bool:
-    """将备份文件上传到 WebDAV"""
+    """
+    将本地备份文件上传到 WebDAV 远程目录。
+
+    Args:
+        filepath: 本地 .backup 文件路径。
+
+    Returns:
+        True 表示上传成功。
+    """
     s = get_settings()
     if not s.WEBDAV_ENABLED:
         return False
@@ -692,28 +978,33 @@ async def sync_to_webdav(filepath: Path) -> bool:
         return False
 
     try:
-        client = await _get_webdav_client()
-        if client is None:
-            return False
-
+        content = filepath.read_bytes()
         remote_url = f"{base_url}/{filepath.name}"
-        with open(filepath, "rb") as f:
-            content = f.read()
-
-        resp = await client.put(remote_url, content=content)
+        async with _build_webdav_client() as client:
+            resp = await client.put(remote_url, content=content)
         if resp.status_code in (200, 201, 204):
             logger.info(f"已同步到 WebDAV: {filepath.name}")
             return True
-        else:
-            logger.warning(f"WebDAV 同步失败 [{filepath.name}]: HTTP {resp.status_code}")
-            return False
+        logger.warning(
+            f"WebDAV 同步失败 [{filepath.name}]: HTTP {resp.status_code}"
+        )
+        return False
     except Exception as e:
         logger.error(f"WebDAV 同步异常 [{filepath.name}]: {e}")
         return False
 
 
 async def sync_from_webdav(filename: str, local_path: Path) -> bool:
-    """从 WebDAV 下载备份文件"""
+    """
+    从 WebDAV 远程目录下载备份文件到本地。
+
+    Args:
+        filename: 远程文件名（不含路径）。
+        local_path: 本地保存路径。
+
+    Returns:
+        True 表示下载成功。
+    """
     s = get_settings()
     if not s.WEBDAV_ENABLED:
         return False
@@ -723,28 +1014,35 @@ async def sync_from_webdav(filename: str, local_path: Path) -> bool:
         return False
 
     try:
-        client = await _get_webdav_client()
-        if client is None:
-            return False
-
         remote_url = f"{base_url}/{filename}"
-        resp = await client.get(remote_url)
+        async with _build_webdav_client() as client:
+            resp = await client.get(remote_url)
         if resp.status_code == 200:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(local_path, "wb") as f:
-                f.write(resp.content)
+            local_path.write_bytes(resp.content)
             logger.info(f"已从 WebDAV 下载: {filename}")
             return True
-        else:
-            logger.warning(f"WebDAV 下载失败 [{filename}]: HTTP {resp.status_code}")
-            return False
+        logger.warning(
+            f"WebDAV 下载失败 [{filename}]: HTTP {resp.status_code}"
+        )
+        return False
     except Exception as e:
         logger.error(f"WebDAV 下载异常 [{filename}]: {e}")
         return False
 
 
 async def list_webdav_backups() -> List[Dict[str, Any]]:
-    """列出 WebDAV 远程备份文件"""
+    """
+    列出 WebDAV 远程目录中的所有备份文件。
+
+    通过 PROPFIND 请求获取目录列表，解析 WebDAV XML 响应。
+
+    Returns:
+        文件信息列表，每项含 filename、file_size_bytes、file_size_display。
+        连接失败或未启用时返回空列表。
+    """
+    from xml.etree import ElementTree as ET
+
     s = get_settings()
     if not s.WEBDAV_ENABLED:
         return []
@@ -754,20 +1052,17 @@ async def list_webdav_backups() -> List[Dict[str, Any]]:
         return []
 
     try:
-        client = await _get_webdav_client()
-        if client is None:
-            return []
-
-        resp = await client.request("PROPFIND", base_url, headers={"Depth": "1"})
+        async with _build_webdav_client() as client:
+            resp = await client.request(
+                "PROPFIND", base_url, headers={"Depth": "1"}
+            )
         if resp.status_code not in (207, 200):
             return []
 
-        # 简单解析 XML 响应提取文件名和大小
-        from xml.etree import ElementTree as ET
-        root = ET.fromstring(resp.text)
-
         ns = {"d": "DAV:"}
+        root = ET.fromstring(resp.text)
         files = []
+
         for response in root.findall("d:response", ns):
             href = response.findtext("d:href", "", ns)
             if not href:
@@ -776,8 +1071,8 @@ async def list_webdav_backups() -> List[Dict[str, Any]]:
             if not name.endswith(".backup"):
                 continue
 
-            propstat = response.find("d:propstat", ns)
             size_str = ""
+            propstat = response.find("d:propstat", ns)
             if propstat is not None:
                 prop = propstat.find("d:prop", ns)
                 if prop is not None:
@@ -785,20 +1080,32 @@ async def list_webdav_backups() -> List[Dict[str, Any]]:
                     if size_elem is not None and size_elem.text:
                         size_str = size_elem.text
 
+            size_bytes = int(size_str) if size_str.isdigit() else 0
             files.append({
                 "filename": name,
-                "file_size_bytes": int(size_str) if size_str.isdigit() else 0,
-                "file_size_display": _format_file_size(int(size_str)) if size_str.isdigit() else "未知",
+                "file_size_bytes": size_bytes,
+                "file_size_display": (
+                    _format_file_size(size_bytes) if size_bytes else "未知"
+                ),
             })
 
         return files
+
     except Exception as e:
         logger.warning(f"列出 WebDAV 文件失败: {e}")
         return []
 
 
 async def delete_webdav_backup(filename: str) -> bool:
-    """从 WebDAV 删除备份文件"""
+    """
+    从 WebDAV 远程目录删除指定备份文件。
+
+    Args:
+        filename: 要删除的文件名（不含路径）。
+
+    Returns:
+        True 表示删除成功（含文件不存在的 404 情况）。
+    """
     s = get_settings()
     if not s.WEBDAV_ENABLED:
         return False
@@ -808,12 +1115,9 @@ async def delete_webdav_backup(filename: str) -> bool:
         return False
 
     try:
-        client = await _get_webdav_client()
-        if client is None:
-            return False
-
         remote_url = f"{base_url}/{filename}"
-        resp = await client.delete(remote_url)
+        async with _build_webdav_client() as client:
+            resp = await client.delete(remote_url)
         return resp.status_code in (200, 204, 404)
     except Exception as e:
         logger.error(f"WebDAV 删除失败 [{filename}]: {e}")
@@ -822,22 +1126,42 @@ async def delete_webdav_backup(filename: str) -> bool:
 
 # ==================== 活动日志 ====================
 
-def _log_activity(db: Session, action: str, entity_type: str, detail_data: Dict[str, Any] = None) -> None:
-    """记录操作活动日志"""
+def _log_activity(
+    action: str,
+    entity_type: str,
+    detail_data: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    记录操作活动日志。
+
+    使用独立的数据库 Session（get_db_context），与调用方事务完全隔离，
+    避免在调用方事务中途强行 commit 破坏事务边界。
+
+    异常时仅记录警告，不向上抛出，不影响主业务流程。
+
+    Args:
+        action: 操作类型，如 "backup"、"restore"。
+        entity_type: 实体类型，如 "backup_file"、"backup_restore"。
+        detail_data: 附加详情字典，可选。
+    """
     try:
-        log = ActivityLog(
-            action=action,
-            entity_type=entity_type,
-            detail=json.dumps(detail_data, ensure_ascii=False, default=str) if detail_data else None,
-        )
-        db.add(log)
-        db.commit()
+        with get_db_context() as log_db:
+            log = ActivityLog(
+                action=action,
+                entity_type=entity_type,
+                detail=json.dumps(detail_data, ensure_ascii=False, default=str)
+                if detail_data
+                else None,
+            )
+            log_db.add(log)
     except Exception as e:
-        logger.warning(f"活动日志记录失败: {e}")
+        logger.warning(f"活动日志记录失败（已忽略）: {e}")
 
 
-# ==================== 自动备份 ====================
+# ==================== 自动备份状态 ====================
 
+# 进程级内存状态，仅用于单 worker 场景。
+# 多 worker 部署时各进程状态独立，应改为持久化到数据库或配置文件。
 _last_backup_info: Dict[str, Any] = {
     "last_backup_at": None,
     "last_backup_success": False,
@@ -846,13 +1170,24 @@ _last_backup_info: Dict[str, Any] = {
 
 
 def get_auto_backup_status() -> Dict[str, Any]:
-    """获取自动备份状态"""
+    """
+    获取自动备份的当前状态。
+
+    基于 last_backup_at 和 BACKUP_AUTO_INTERVAL_HOURS 推算下次备份时间。
+
+    Returns:
+        包含 enabled、interval_hours、last_backup_at、
+        next_backup_at、webdav_sync_enabled 等字段的状态字典。
+    """
     s = get_settings()
     next_at = None
+
     if _last_backup_info["last_backup_at"] and s.BACKUP_AUTO_ENABLED:
         try:
             last = datetime.fromisoformat(_last_backup_info["last_backup_at"])
-            next_at = (last + timedelta(hours=s.BACKUP_AUTO_INTERVAL_HOURS)).isoformat()
+            next_at = (
+                last + timedelta(hours=s.BACKUP_AUTO_INTERVAL_HOURS)
+            ).isoformat()
         except (ValueError, TypeError):
             pass
 
@@ -871,15 +1206,18 @@ def get_auto_backup_status() -> Dict[str, Any]:
 
 async def run_scheduled_backup() -> Optional[Path]:
     """
-    执行一次定时备份
+    执行一次定时备份任务。
 
     流程：
-    1. 创建备份
-    2. 如果 WebDAV 已启用，同步到云端
+    1. 创建本地加密备份
+    2. 若 WebDAV 已启用，同步到云端（失败不影响本地备份结果）
+
+    更新全局 _last_backup_info 状态供 get_auto_backup_status 查询。
+
+    Returns:
+        备份文件 Path，失败返回 None。
     """
     s = get_settings()
-    global _last_backup_info
-
     now = datetime.now(timezone.utc).isoformat()
     _last_backup_info["last_backup_at"] = now
 
@@ -896,12 +1234,13 @@ async def run_scheduled_backup() -> Optional[Path]:
                     if ok:
                         _last_backup_info["webdav_last_sync_at"] = now
                 except Exception as e:
-                    logger.warning(f"自动备份 WebDAV 同步失败: {e}")
+                    logger.warning(f"自动备份 WebDAV 同步失败（已忽略）: {e}")
 
             return filepath
-        else:
-            _last_backup_info["last_backup_success"] = False
-            return None
+
+        _last_backup_info["last_backup_success"] = False
+        return None
+
     except Exception as e:
         logger.error(f"定时备份失败: {e}")
         _last_backup_info["last_backup_success"] = False
