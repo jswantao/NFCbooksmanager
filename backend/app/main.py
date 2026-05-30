@@ -16,8 +16,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from loguru import logger
 
-from app.api import mapping, shelves, books, admin, images, config_api, import_api, nfc_bridge, nedb_import
+from app.api import mapping, shelves, books, admin, images, config_api, import_api, nedb_import
 from app.api import physical_shelves, backup, chat, smart_entry
+# NFC 桥接 API 已重构为三层架构包 (app/api/nfc_bridge/),
+# 单文件版 nfc_bridge.py 已删除。
+from app.api import nfc_bridge
 from app.core.config import get_settings, validate_config_on_startup
 from app.core.database import (
     init_db, close_all_connections,
